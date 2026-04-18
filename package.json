@@ -1,6 +1,6 @@
 {
   "name": "torana",
-  "version": "1.0.0-rc.0",
+  "version": "1.0.0-rc.1",
   "description": "Open-source Telegram gateway for agent runtimes. Configuration-driven, any-runner, webhook or polling.",
   "license": "MIT",
   "author": "Jason Butterfield <jbutterfield@gmail.com>",
@@ -23,9 +23,9 @@
   ],
   "type": "module",
   "bin": {
-    "torana": "./dist/cli.js"
+    "torana": "dist/cli.js"
   },
-  "main": "./dist/main.js",
+  "main": "dist/main.js",
   "files": [
     "dist/",
     "README.md",
