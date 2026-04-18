@@ -1,0 +1,25 @@
+# Minimal valid config used by the CI Docker smoke test (issue #4).
+# Goal: a config that loads + passes validation + migrates a fresh DB.
+# It never talks to Telegram — `torana migrate` and `torana validate` don't
+# need real credentials — so placeholder values here are fine.
+
+version: 1
+
+gateway:
+  port: 3000
+  data_dir: /tmp/torana-smoke/data
+  log_level: info
+
+transport:
+  default_mode: polling
+
+access_control:
+  allowed_user_ids: [1]
+
+bots:
+  - id: smoke
+    token: SMOKE:PLACEHOLDER
+    runner:
+      type: command
+      protocol: jsonl-text
+      cmd: ["true"]

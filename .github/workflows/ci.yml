@@ -61,3 +61,40 @@ jobs:
         run: bun run typecheck
       - name: Test
         run: bun test --timeout 15000
+
+  # Install the packed tarball inside a clean Docker container and exercise
+  # the published CLI. Catches the general class of "green in-repo CI but
+  # broken as installed" bugs that the pack-manifest check doesn't cover —
+  # bin-path errors, ESM/CJS interop at install time, missing permission
+  # bits, transitive imports that didn't bundle. See issue #4.
+  docker-install-smoke:
+    runs-on: ubuntu-latest
+    needs: lint-typecheck-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: Build
+        run: bun run build
+      - name: Pack tarball
+        run: npm pack
+      - name: Install + exercise in container
+        run: |
+          set -euo pipefail
+          TARBALL=$(ls torana-*.tgz | head -n1)
+          echo "Using tarball: $TARBALL"
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            oven/bun:latest \
+            bash -c '
+              set -euo pipefail
+              bun install -g "./'"$TARBALL"'"
+              export PATH="$HOME/.bun/bin:$PATH"
+              torana version
+              torana validate --config .github/ci-fixtures/torana.yaml
+              torana migrate --dry-run --config .github/ci-fixtures/torana.yaml
+            '

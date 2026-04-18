@@ -5,7 +5,10 @@
 version: 1
 
 gateway:
-  port: 3000
+  # Use ${PORT:-3000} so PaaS deployments (Railway/Heroku/Fly/Render) bind to
+  # the platform-chosen port instead of hardcoding 3000 and silently 502'ing
+  # at the edge. Falls back to 3000 for local runs.
+  port: ${PORT:-3000}
   data_dir: ./data
   log_level: info
 

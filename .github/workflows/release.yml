@@ -5,6 +5,16 @@ on:
     tags:
       - "v*.*.*"
       - "v*.*.*-*"
+  # Manual dry-run exercise: runs every step of the pipeline up to but not
+  # including `npm publish`. Lets us verify the build/test/pack path without
+  # cutting a real tag and landing in a re-tag cycle to fix a latent bug.
+  # See issue #2.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: true
+        description: "Skip npm publish (verify pipeline only)"
 
 # id-token:write is what npm's Trusted Publishing uses to mint a short-lived
 # OIDC credential for the publish — no NPM_TOKEN secret in this repo.
@@ -69,7 +79,23 @@ jobs:
           fi
           echo "Publishing $VERSION under dist-tag: $(grep dist_tag $GITHUB_OUTPUT)"
 
+      # workflow_dispatch dry-run: produce the tarball as a build artifact so
+      # a maintainer can inspect it (or feed it to a smoke install) without
+      # publishing. Only uploads on manual dispatch.
+      - name: Pack tarball (dry-run artifact)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: npm pack
+      - name: Upload tarball artifact
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: torana-tarball
+          path: torana-*.tgz
+          if-no-files-found: error
+
       # No NODE_AUTH_TOKEN here — npm uses OIDC via the id-token:write permission
       # above, authenticated against the Trusted Publisher configured on npmjs.com.
+      # Skipped on workflow_dispatch when dry_run=true (default for manual runs).
       - name: Publish to npm
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run == false }}
         run: npm publish --provenance --access public --tag ${{ steps.tag.outputs.dist_tag }}

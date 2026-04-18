@@ -47,6 +47,8 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
     transport: config.transport.default_mode,
   });
 
+  warnOnEmptyAcl(config);
+
   await ensureDirectories(config);
 
   // Apply migrations (if opts.autoMigrate or DB doesn't exist).
@@ -245,6 +247,27 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   };
   log.info("torana ready", { port: server.port });
   return running;
+}
+
+export function warnOnEmptyAcl(config: Config): void {
+  const globalEmpty = config.access_control.allowed_user_ids.length === 0;
+  const affectedBots = config.bots
+    .filter((b) => {
+      const override = b.access_control?.allowed_user_ids;
+      return override ? override.length === 0 : globalEmpty;
+    })
+    .map((b) => b.id);
+  if (affectedBots.length === 0) return;
+  if (globalEmpty && affectedBots.length === config.bots.length) {
+    log.warn(
+      "access_control.allowed_user_ids is empty — all inbound messages will be rejected. Add your Telegram user id(s) to allow traffic.",
+    );
+  } else {
+    log.warn(
+      "access_control.allowed_user_ids is empty for some bots — inbound messages to those bots will be rejected. Add user id(s) to allow traffic.",
+      { bots: affectedBots },
+    );
+  }
 }
 
 export async function ensureDirectories(config: Config): Promise<void> {

@@ -19,7 +19,7 @@ npm install -g torana
 # 2. Drop a config
 cat > torana.yaml <<'EOF'
 version: 1
-gateway: { port: 3000, data_dir: ./data }
+gateway: { port: ${PORT:-3000}, data_dir: ./data }
 transport: { default_mode: polling }
 access_control:
   allowed_user_ids: [${MY_TELEGRAM_USER_ID}]

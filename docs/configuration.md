@@ -39,11 +39,19 @@ To inherit a specific var, reference it via `${VAR}`. To disable PATH inheritanc
 ### `gateway`
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `port` | int | `3000` | HTTP listen port |
+| `port` | int | `3000` | HTTP listen port. On PaaS (Railway/Heroku/Fly/Render) use `${PORT:-3000}` — see note below |
 | `data_dir` | string | — (required) | Absolute or resolved against config file's dir |
 | `db_path` | string | `${data_dir}/gateway.db` | SQLite state file |
 | `log_level` | `debug\|info\|warn\|error` | `info` | |
 | `log_format` | `json\|text` | auto (json when non-TTY) | |
+
+> **Deploying to Railway / Heroku / Fly / Render?** Use `port: ${PORT:-3000}`.
+> These platforms set `$PORT` to a platform-chosen value (usually 8080) and
+> route public traffic there. Hardcoding a port will pass every internal
+> check — `/health` from inside the container, startup logs, even a
+> localhost `curl` — and return **502 Bad Gateway** at the edge, because the
+> router is forwarding to the platform port and finding nothing listening.
+> The gateway's own logs stay quiet: the requests never reach it.
 
 ### `telegram`
 | Key | Type | Default | Notes |
