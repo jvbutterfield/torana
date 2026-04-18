@@ -182,27 +182,22 @@ describe("shutdown", () => {
       },
     });
 
-    // Wait until the runner has emitted its echo and the outbox has had time
-    // to deliver it.
-    await fake.waitFor(
-      () =>
-        fake!.callsFor("alpha", "sendMessage").length > 0 ||
-        fake!.callsFor("alpha", "editMessageText").length > 0,
-      { timeoutMs: 10_000 },
-    );
+    // Wait specifically for the echo to land — the placeholder "👀 thinking..."
+    // send arrives well before the runner's done event, so waiting for any
+    // send would race shutdown against the runner (flaky on slow CI).
+    const hasEcho = (): boolean =>
+      fake!.callsFor("alpha", "sendMessage").some((c) =>
+        String(c.body.text ?? "").includes("echo: hello"),
+      ) ||
+      fake!.callsFor("alpha", "editMessageText").some((c) =>
+        String(c.body.text ?? "").includes("echo: hello"),
+      );
+    await fake.waitFor(hasEcho, { timeoutMs: 10_000 });
 
     await gateway.shutdown("test");
     gateway = null;
 
-    // After shutdown the DB should be closed and the echo delivery recorded.
-    const delivered =
-      fake.callsFor("alpha", "sendMessage").some(
-        (c) => String(c.body.text ?? "").includes("echo: hello"),
-      ) ||
-      fake.callsFor("alpha", "editMessageText").some(
-        (c) => String(c.body.text ?? "").includes("echo: hello"),
-      );
-    expect(delivered).toBe(true);
+    expect(hasEcho()).toBe(true);
   }, 30_000);
 
   test("runner grace window: stop() yields within configured grace (plus SIGKILL cost)", async () => {
