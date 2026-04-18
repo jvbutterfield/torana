@@ -86,15 +86,23 @@ jobs:
           set -euo pipefail
           TARBALL=$(ls torana-*.tgz | head -n1)
           echo "Using tarball: $TARBALL"
+          # Install the tarball into a scratch directory and invoke the bin
+          # directly. `bun install -g` against a local tarball path fails
+          # inside the oven/bun image with "ENOENT extracting tarball" (the
+          # global-install flow expects a registry URL). Local install into
+          # a fresh node_modules exercises the same consumption path — if
+          # the bin shim, shebang, or packed files are broken, this fails.
           docker run --rm \
             -v "$PWD:/work" \
             -w /work \
             oven/bun:latest \
             bash -c '
               set -euo pipefail
-              bun install -g "./'"$TARBALL"'"
-              export PATH="$HOME/.bun/bin:$PATH"
-              torana version
-              torana validate --config .github/ci-fixtures/torana.yaml
-              torana migrate --dry-run --config .github/ci-fixtures/torana.yaml
+              mkdir -p /tmp/smoke
+              cd /tmp/smoke
+              bun init -y > /dev/null
+              bun install "/work/'"$TARBALL"'"
+              ./node_modules/.bin/torana version
+              ./node_modules/.bin/torana validate --config /work/.github/ci-fixtures/torana.yaml
+              ./node_modules/.bin/torana migrate --dry-run --config /work/.github/ci-fixtures/torana.yaml
             '
