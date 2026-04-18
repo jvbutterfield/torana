@@ -194,7 +194,14 @@ export class OutboxProcessor {
       60_000,
       this.config.outbox.retry_base_ms * 2 ** row.attempt_count,
     );
-    const nextAttempt = new Date(Date.now() + backoff).toISOString();
+    // Format must match SQLite's `datetime('now')` ("YYYY-MM-DD HH:MM:SS")
+    // because the eligibility query does a lexicographic text comparison.
+    // A plain ISO-8601 string ("...T...Z") sorts AFTER the space-separated
+    // form, so same-day rows would never become eligible for retry.
+    const nextAttempt = new Date(Date.now() + backoff)
+      .toISOString()
+      .slice(0, 19)
+      .replace("T", " ");
 
     if (row.bot_id) {
       const counter =

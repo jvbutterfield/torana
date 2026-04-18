@@ -147,11 +147,13 @@ export class CommandRunner implements AgentRunner {
   }
 
   sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {
-    if (this.status !== "ready" || !this.proc) {
-      return { accepted: false, reason: "not_ready" };
-    }
+    // Order matters: a runner mid-turn has status "busy", and the caller
+    // needs to distinguish that from "hasn't finished starting yet".
     if (this.activeTurn !== null) {
       return { accepted: false, reason: "busy" };
+    }
+    if (this.status !== "ready" || !this.proc) {
+      return { accepted: false, reason: "not_ready" };
     }
 
     let payload: string;

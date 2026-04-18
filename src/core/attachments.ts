@@ -6,6 +6,7 @@ import { mkdir, writeFile, stat, readdir, unlink } from "node:fs/promises";
 import { resolve, isAbsolute, join } from "node:path";
 import { logger } from "../log.js";
 import type { BotId, Config } from "../config/schema.js";
+import type { GatewayDB } from "../db/gateway-db.js";
 import type { TelegramClient } from "../telegram/client.js";
 import type { TelegramMessage, Attachment } from "../telegram/types.js";
 
@@ -206,4 +207,37 @@ export async function sweepAttachmentsForTurns(
       /* already gone */
     }
   }
+}
+
+/**
+ * Delete attachment files for completed turns older than `retentionSecs`, and
+ * null out the `attachment_paths_json` column so subsequent sweeps skip them.
+ * Bounded at 500 turns per call (see db query) to keep worst-case cost
+ * predictable on large histories; callers run this on a timer.
+ *
+ * Returns the number of turns swept and files deleted (both useful for
+ * logging).
+ */
+export async function sweepExpiredAttachments(
+  db: GatewayDB,
+  dataDir: string,
+  retentionSecs: number,
+): Promise<{ turns: number; files: number }> {
+  const expired = db.getExpiredAttachmentTurns(retentionSecs);
+  let filesDeleted = 0;
+  for (const row of expired) {
+    let paths: string[] = [];
+    try {
+      const parsed = JSON.parse(row.attachment_paths_json);
+      if (Array.isArray(parsed)) paths = parsed.filter((p) => typeof p === "string");
+    } catch {
+      /* malformed — still clear the column so it doesn't keep coming back */
+    }
+    if (paths.length > 0) {
+      await sweepAttachmentsForTurns(dataDir, paths);
+      filesDeleted += paths.length;
+    }
+    db.clearTurnAttachments(row.id);
+  }
+  return { turns: expired.length, files: filesDeleted };
 }

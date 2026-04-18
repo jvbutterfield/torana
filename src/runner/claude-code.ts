@@ -34,6 +34,8 @@ export interface ClaudeCodeRunnerOptions {
   spawnImpl?: typeof spawn;
   /** Test hook — override log dir creation. */
   ensureLogDir?: (dir: string) => Promise<void>;
+  /** Test hook — fallback time before forcing ready. Default {@link DEFAULT_STARTUP_MS}. */
+  startupMs?: number;
 }
 
 export class ClaudeCodeRunner implements AgentRunner {
@@ -53,6 +55,7 @@ export class ClaudeCodeRunner implements AgentRunner {
   private stdoutRemainder = "";
   private stderrBuffer: string[] = [];
   private stopping = false;
+  private startupMs: number;
 
   constructor(opts: ClaudeCodeRunnerOptions) {
     this.botId = opts.botId;
@@ -66,6 +69,7 @@ export class ClaudeCodeRunner implements AgentRunner {
       });
     this.log = logger("runner.claude-code", { bot_id: opts.botId });
     this.pendingFreshSession = opts.freshSession ?? true;
+    this.startupMs = opts.startupMs ?? DEFAULT_STARTUP_MS;
   }
 
   on<E extends RunnerEventKind>(event: E, handler: RunnerEventHandler<E>): Unsubscribe {
@@ -139,11 +143,13 @@ export class ClaudeCodeRunner implements AgentRunner {
   }
 
   sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {
-    if (this.status !== "ready" || !this.proc) {
-      return { accepted: false, reason: "not_ready" };
-    }
+    // Order matters: a runner mid-turn has status "busy", and the caller
+    // needs to distinguish that from "hasn't finished starting yet".
     if (this.activeTurn !== null) {
       return { accepted: false, reason: "busy" };
+    }
+    if (this.status !== "ready" || !this.proc) {
+      return { accepted: false, reason: "not_ready" };
     }
 
     const content =
@@ -215,16 +221,16 @@ export class ClaudeCodeRunner implements AgentRunner {
     void this.readStderr(this.proc);
     void this.watchExit(this.proc);
 
-    // Readiness: settle after a short delay, matching v0 behavior. A real
-    // "ready" signal comes from the {type:"system", subtype:"init"} event but
-    // the Claude CLI doesn't always emit it before stdin is drained, so a
-    // timer is the pragmatic fallback.
+    // Readiness: the parser emits "ready" on {type:"system", subtype:"init"}
+    // and dispatchEvent promotes status at that point. The timer below is a
+    // fallback for older Claude CLI builds that don't emit init before stdin
+    // is drained.
     setTimeout(() => {
       if (this.status === "starting" && this.proc) {
         this.status = "ready";
         this.emitter.emit({ kind: "ready" });
       }
-    }, DEFAULT_STARTUP_MS);
+    }, this.startupMs);
   }
 
   private buildArgs(freshSession: boolean): string[] {
@@ -321,6 +327,9 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   private dispatchEvent(ev: RunnerEvent): void {
     // Track turn lifecycle so Ready/Busy state is correct.
+    if (ev.kind === "ready" && this.status === "starting") {
+      this.status = "ready";
+    }
     if (ev.kind === "done" || ev.kind === "error") {
       this.activeTurn = null;
       this.status = "ready";

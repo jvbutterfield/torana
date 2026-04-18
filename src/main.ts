@@ -15,6 +15,7 @@ import { OutboxProcessor } from "./outbox.js";
 import { StreamManager } from "./streaming.js";
 import { Bot } from "./core/bot.js";
 import { BotRegistry } from "./core/registry.js";
+import { sweepExpiredAttachments } from "./core/attachments.js";
 import { createServer, type Server } from "./server.js";
 import { WebhookTransport } from "./transport/webhook.js";
 import { PollingTransport } from "./transport/polling.js";
@@ -158,6 +159,31 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
     }
   }, 30_000);
 
+  // Periodic attachment sweeper — delete files for completed turns older
+  // than config.attachments.retention_secs. Bounded at 500 turns per tick.
+  // Runs hourly; retention default is 24h so even a large backlog clears
+  // within a day without spiking I/O.
+  const runSweeper = async (): Promise<void> => {
+    try {
+      const result = await sweepExpiredAttachments(
+        db,
+        config.gateway.data_dir,
+        config.attachments.retention_secs,
+      );
+      if (result.turns > 0) {
+        log.info("attachment sweeper", { turns: result.turns, files: result.files });
+      }
+    } catch (err) {
+      log.warn("attachment sweeper failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+  // Run once at startup to clear anything left over from the prior process,
+  // then on a fixed cadence.
+  void runSweeper();
+  const attachmentSweeperTimer = setInterval(() => void runSweeper(), 60 * 60 * 1000);
+
   let shutdownStarted = false;
   const running: RunningGateway = {
     server,
@@ -183,6 +209,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
 
       try {
         clearInterval(backlogTimer);
+        clearInterval(attachmentSweeperTimer);
 
         // 1. Stop accepting new updates.
         await Promise.all(transports.map((t) => t.stop()));
@@ -294,7 +321,7 @@ function registerFixedRoutes(
   }
 }
 
-function runCrashRecovery(
+export function runCrashRecovery(
   db: GatewayDB,
   clients: Map<string, TelegramClient>,
 ): void {

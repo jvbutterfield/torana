@@ -46,6 +46,8 @@ export class GatewayDB {
     setBotOffset: Statement;
     setBotDisabled: Statement;
     clearBotDisabled: Statement;
+    getExpiredAttachmentTurns: Statement;
+    clearTurnAttachments: Statement;
   };
 
   constructor(dbPath: string) {
@@ -186,6 +188,17 @@ export class GatewayDB {
       ),
       clearBotDisabled: d.prepare(
         "UPDATE bot_state SET disabled = 0, disabled_reason = NULL, updated_at = datetime('now') WHERE bot_id = ?",
+      ),
+      getExpiredAttachmentTurns: d.prepare(`
+        SELECT id, attachment_paths_json FROM turns
+        WHERE attachment_paths_json IS NOT NULL
+          AND completed_at IS NOT NULL
+          AND CAST(strftime('%s', completed_at) AS INTEGER) <= CAST(strftime('%s', 'now') AS INTEGER) - ?
+        ORDER BY id ASC
+        LIMIT 500
+      `),
+      clearTurnAttachments: d.prepare(
+        "UPDATE turns SET attachment_paths_json = NULL WHERE id = ?",
       ),
     };
   }
@@ -587,6 +600,24 @@ export class GatewayDB {
       | { completed_at: string }
       | null;
     return row?.completed_at ?? null;
+  }
+
+  /**
+   * Find completed turns whose attachment paths are older than `retentionSecs`
+   * seconds. Caller is responsible for deleting the files and then calling
+   * {@link clearTurnAttachments} to mark them swept.
+   */
+  getExpiredAttachmentTurns(
+    retentionSecs: number,
+  ): Array<{ id: number; attachment_paths_json: string }> {
+    return this.stmts.getExpiredAttachmentTurns.all(retentionSecs) as Array<{
+      id: number;
+      attachment_paths_json: string;
+    }>;
+  }
+
+  clearTurnAttachments(turnId: number): void {
+    this.stmts.clearTurnAttachments.run(turnId);
   }
 
   close(): void {
