@@ -72,6 +72,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { events, waitFor } = track(runner);
@@ -106,6 +107,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 10_000, // no timer promotion
     });
     // status still "stopped" before start().
@@ -119,6 +121,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { waitFor } = track(runner);
@@ -141,6 +144,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { waitFor } = track(runner);
@@ -160,6 +164,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("stubborn"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { waitFor } = track(runner);
@@ -180,6 +185,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("crash-on-start"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 10_000, // don't let the timer mask the exit
     });
     const { waitFor } = track(runner);
@@ -193,6 +199,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("auth-fail"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 10_000,
     });
     const { waitFor } = track(runner);
@@ -207,6 +214,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("crash-on-turn"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { waitFor } = track(runner);
@@ -226,6 +234,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     expect(runner.supportsReset()).toBe(true);
@@ -243,6 +252,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
         pass_continue_flag: true,
       },
       logDir: tmpDir,
+      protocolFlags: [],
       freshSession: false, // first spawn should include --continue per config
       startupMs: 100,
     });
@@ -284,6 +294,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { waitFor } = track(runner);
@@ -299,6 +310,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("normal"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 100,
     });
     const { waitFor } = track(runner);
@@ -313,6 +325,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
       botId: "alpha",
       config: makeConfig("auth-fail"),
       logDir: tmpDir,
+      protocolFlags: [],
       startupMs: 10_000,
     });
     const { waitFor } = track(runner);

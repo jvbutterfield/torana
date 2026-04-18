@@ -284,6 +284,54 @@ describe("StreamManager.finalizeTurn", () => {
     const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
     expect(edits.some((e) => String(e.body.text).includes("final authoritative"))).toBe(true);
   });
+
+  // Regression: fast-runner race — finalize runs before the placeholder send
+  // completes. Pre-fix, the placeholder stayed orphaned and the final text was
+  // delivered as a separate sendMessage. Post-fix, the send-callback edits the
+  // placeholder with the final text when it arrives.
+  test("fast-runner race: finalize before placeholder ACK edits placeholder, no extra send", async () => {
+    const turnId = harness.seedTurn("alpha");
+    harness.setPlaceholderMessageId(7777);
+    await harness.streaming.startTurn("alpha", turnId, 111);
+    // Do NOT drain — placeholder send is queued but not processed yet, so
+    // telegramMessageId on the turn state is still null.
+
+    harness.telegramCalls.length = 0;
+    await harness.streaming.finalizeTurn("alpha", "done already");
+    // Now drain — the placeholder sendMessage fires, its callback drains the
+    // stashed final text by editing the placeholder instead of orphaning it.
+    await harness.outbox.drain(300);
+
+    const sends = harness.telegramCalls.filter((c) => c.method === "sendMessage");
+    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    // Exactly one sendMessage (the placeholder itself); exactly one edit
+    // carrying the final text to the same message_id.
+    expect(sends).toHaveLength(1);
+    expect(sends[0].body.text).toContain("thinking");
+    expect(edits).toHaveLength(1);
+    expect(edits[0].body.message_id).toBe(7777);
+    expect(edits[0].body.text).toContain("done already");
+  });
+
+  test("fast-runner race, multi-chunk: first chunk edits placeholder, rest are fresh sends", async () => {
+    const turnId = harness.seedTurn("alpha");
+    harness.setPlaceholderMessageId(7778);
+    await harness.streaming.startTurn("alpha", turnId, 111);
+    // No drain — placeholder stays pending.
+
+    harness.telegramCalls.length = 0;
+    const big = "A".repeat(120) + "\n" + "B".repeat(120);
+    await harness.streaming.finalizeTurn("alpha", big);
+    await harness.outbox.drain(400);
+
+    const sends = harness.telegramCalls.filter((c) => c.method === "sendMessage");
+    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    // Placeholder send + one fresh send for chunk[1]; edit for chunk[0].
+    expect(sends.length).toBeGreaterThanOrEqual(2);
+    expect(edits.length).toBeGreaterThanOrEqual(1);
+    // First edit must target the placeholder's message_id.
+    expect(edits[0].body.message_id).toBe(7778);
+  });
 });
 
 describe("StreamManager.cancelTurn", () => {

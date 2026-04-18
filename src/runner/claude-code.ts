@@ -36,6 +36,13 @@ export interface ClaudeCodeRunnerOptions {
   ensureLogDir?: (dir: string) => Promise<void>;
   /** Test hook — fallback time before forcing ready. Default {@link DEFAULT_STARTUP_MS}. */
   startupMs?: number;
+  /**
+   * Test hook — override the protocol-required flags prepended to the CLI
+   * invocation. Production always uses {@link ClaudeCodeRunner.PROTOCOL_FLAGS};
+   * tests can pass `[]` to run a mock binary without the real claude flags
+   * bleeding into its argv.
+   */
+  protocolFlags?: string[];
 }
 
 export class ClaudeCodeRunner implements AgentRunner {
@@ -56,6 +63,7 @@ export class ClaudeCodeRunner implements AgentRunner {
   private stderrBuffer: string[] = [];
   private stopping = false;
   private startupMs: number;
+  private protocolFlags: readonly string[];
 
   constructor(opts: ClaudeCodeRunnerOptions) {
     this.botId = opts.botId;
@@ -70,6 +78,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     this.log = logger("runner.claude-code", { bot_id: opts.botId });
     this.pendingFreshSession = opts.freshSession ?? true;
     this.startupMs = opts.startupMs ?? DEFAULT_STARTUP_MS;
+    this.protocolFlags = opts.protocolFlags ?? ClaudeCodeRunner.PROTOCOL_FLAGS;
   }
 
   on<E extends RunnerEventKind>(event: E, handler: RunnerEventHandler<E>): Unsubscribe {
@@ -233,8 +242,22 @@ export class ClaudeCodeRunner implements AgentRunner {
     }, this.startupMs);
   }
 
+  // Protocol-required flags — these make the CLI emit the NDJSON shape
+  // torana parses. Not user-configurable.
+  private static readonly PROTOCOL_FLAGS = Object.freeze([
+    "--print",
+    "--output-format",
+    "stream-json",
+    "--input-format",
+    "stream-json",
+    "--include-partial-messages",
+    "--replay-user-messages",
+    "--verbose",
+    "--dangerously-skip-permissions",
+  ]);
+
   private buildArgs(freshSession: boolean): string[] {
-    const base = this.config.args.slice();
+    const base = [...this.protocolFlags, ...this.config.args];
     if (this.config.pass_continue_flag && !freshSession && !base.includes("--continue")) {
       base.push("--continue");
     }

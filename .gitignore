@@ -8,3 +8,7 @@ dist/
 data/
 coverage/
 *.tsbuildinfo
+
+# Local smoke-test workspace — contains dev-bot tokens, local paths,
+# and runtime DB. Never committed.
+smoke/

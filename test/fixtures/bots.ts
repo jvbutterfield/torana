@@ -25,7 +25,7 @@ function defaultRunner(): ClaudeCodeRunnerConfig {
   return {
     type: "claude-code",
     cli_path: "claude",
-    args: ["--print", "--output-format", "stream-json"],
+    args: [],
     env: {},
     pass_continue_flag: true,
   };

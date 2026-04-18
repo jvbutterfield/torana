@@ -199,23 +199,18 @@ export const BotReactionsSchema = z
   .default({ received_emoji: "👀" });
 
 // Claude-Code runner
+//
+// Protocol-required flags (--print --output-format stream-json --input-format
+// stream-json --include-partial-messages --replay-user-messages --verbose
+// --dangerously-skip-permissions) are always applied by the runner and are
+// NOT user-configurable — they are what makes torana able to parse the
+// CLI's output. The `args` key is for USER extras (e.g. `--agent cato`)
+// that get appended to the protocol flags.
 export const ClaudeCodeRunnerSchema = z
   .object({
     type: z.literal("claude-code"),
     cli_path: z.string().default("claude"),
-    args: z
-      .array(z.string())
-      .default([
-        "--print",
-        "--output-format",
-        "stream-json",
-        "--input-format",
-        "stream-json",
-        "--include-partial-messages",
-        "--replay-user-messages",
-        "--verbose",
-        "--dangerously-skip-permissions",
-      ]),
+    args: z.array(z.string()).default([]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
     pass_continue_flag: BoolPermissive.default(true),

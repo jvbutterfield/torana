@@ -140,10 +140,12 @@ Type is either `claude-code` or `command`. See [`runners.md`](runners.md).
 | Key | Default |
 |---|---|
 | `cli_path` | `claude` |
-| `args` | `["--print", "--output-format", "stream-json", ...]` |
+| `args` | `[]` — appended to protocol-required flags (see below) |
 | `cwd` | gateway cwd |
 | `env` | `{}` |
 | `pass_continue_flag` | `true` |
+
+The runner always passes these protocol-required flags to the CLI, in this order, before your `args`: `--print --output-format stream-json --input-format stream-json --include-partial-messages --replay-user-messages --verbose --dangerously-skip-permissions`. Your `args` are appended. `--continue` is then appended when `pass_continue_flag: true` and the session isn't fresh. Typical user `args`: `["--agent", "cato"]`.
 
 #### command
 | Key | Default |

@@ -28,6 +28,11 @@ export class StreamManager {
       flushTimer: ReturnType<typeof setTimeout> | null;
       hadFirstOutput: boolean;
       typingTimer: ReturnType<typeof setInterval> | null;
+      // Set by finalizeTurn when the placeholder send has not yet returned a
+      // messageId (fast-runner race). The send-callback drains these chunks
+      // by editing the placeholder with chunks[0] and queuing sends for the
+      // remainder, then removes the turn from activeTurns.
+      deferredFinalChunks: string[] | null;
     }
   >();
 
@@ -76,6 +81,7 @@ export class StreamManager {
       flushTimer: null,
       hadFirstOutput: false,
       typingTimer,
+      deferredFinalChunks: null,
     });
 
     this.sendTyping(botId);
@@ -87,13 +93,29 @@ export class StreamManager {
       "\u{1F440} thinking...",
       (messageId) => {
         const state = this.activeTurns.get(botId);
-        if (state && state.turnId === turnId) {
-          state.telegramMessageId = messageId;
-          this.db.updateStreamState(turnId, {
-            active_telegram_message_id: messageId,
-          });
-          this.sendTyping(botId);
+        if (!state || state.turnId !== turnId) return;
+
+        state.telegramMessageId = messageId;
+        this.db.updateStreamState(turnId, {
+          active_telegram_message_id: messageId,
+        });
+
+        if (state.deferredFinalChunks) {
+          // Fast-runner race: finalizeTurn ran before the placeholder send
+          // completed. Edit the placeholder with the final text in place of
+          // leaving an orphan "thinking..." and sending the response as a
+          // fresh message.
+          const chunks = state.deferredFinalChunks;
+          state.deferredFinalChunks = null;
+          this.outbox.queueEdit(turnId, botId, chatId, messageId, chunks[0]);
+          for (let i = 1; i < chunks.length; i++) {
+            this.outbox.queueSend(turnId, botId, chatId, chunks[i]);
+          }
+          this.activeTurns.delete(botId);
+          return;
         }
+
+        this.sendTyping(botId);
       },
     );
   }
@@ -150,7 +172,16 @@ export class StreamManager {
 
     const chunks = this.splitMessage(state.buffer);
 
-    if (chunks.length === 1 && state.telegramMessageId) {
+    if (state.telegramMessageId === null) {
+      // Fast-runner race: the placeholder send is still queued. Stash the
+      // chunks for the send-callback to drain — it will edit the placeholder
+      // with chunks[0] and queue sends for the rest once Telegram returns
+      // the messageId. See startTurn().
+      state.deferredFinalChunks = chunks;
+      return;
+    }
+
+    if (chunks.length === 1) {
       this.outbox.queueEdit(
         state.turnId,
         botId,
@@ -159,18 +190,14 @@ export class StreamManager {
         chunks[0],
       );
     } else {
-      let startIdx = 0;
-      if (state.telegramMessageId && chunks.length > 0) {
-        this.outbox.queueEdit(
-          state.turnId,
-          botId,
-          state.chatId,
-          state.telegramMessageId,
-          chunks[0],
-        );
-        startIdx = 1;
-      }
-      for (let i = startIdx; i < chunks.length; i++) {
+      this.outbox.queueEdit(
+        state.turnId,
+        botId,
+        state.chatId,
+        state.telegramMessageId,
+        chunks[0],
+      );
+      for (let i = 1; i < chunks.length; i++) {
         this.outbox.queueSend(state.turnId, botId, state.chatId, chunks[i]);
       }
     }
