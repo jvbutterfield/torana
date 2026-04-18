@@ -109,7 +109,7 @@ export class OutboxProcessor {
   ): Promise<void> {
     const client = this.clients.get(botId);
     if (!client) return;
-    await client.editMessageText(chatId, messageId, text).catch(() => {});
+    await client.editMessageText(chatId, messageId, text).catch(() => undefined);
   }
 
   private async processPending(): Promise<void> {
@@ -149,41 +149,50 @@ export class OutboxProcessor {
     try {
       if (row.kind === "send") {
         let result = await client.sendMessage(row.chat_id, formatted, "HTML");
-        if (!result && formatted !== payload.text) {
+        // Retry once in plain text if HTML parsing is the culprit.
+        if (!result.ok && formatted !== payload.text) {
           result = await client.sendMessage(row.chat_id, payload.text);
         }
-        if (result) {
+        if (result.ok) {
           this.db.markOutboxSent(row.id, result.messageId);
           const cb = this.sendCallbacks.get(row.id);
           if (cb) {
             this.sendCallbacks.delete(row.id);
             cb(result.messageId);
           }
+        } else if (!result.retriable) {
+          this.db.markOutboxFailed(row.id, result.description);
         } else {
-          this.handleFailure(row, "sendMessage returned null");
+          this.handleFailure(row, result.description);
         }
       } else if (row.kind === "edit") {
         if (!row.telegram_message_id) {
           this.db.markOutboxFailed(row.id, "edit without message_id");
           return;
         }
-        let ok = await client.editMessageText(
+        let result = await client.editMessageText(
           row.chat_id,
           row.telegram_message_id,
           formatted,
           "HTML",
         );
-        if (!ok && formatted !== payload.text) {
-          ok = await client.editMessageText(
+        // HTML parse error → try plain text. notModified already means the
+        // message content matches, so re-sending plain text wouldn't help.
+        if (!result.ok && !result.notModified && formatted !== payload.text) {
+          result = await client.editMessageText(
             row.chat_id,
             row.telegram_message_id,
             payload.text,
           );
         }
-        if (ok) {
+        if (result.ok || (!result.ok && result.notModified)) {
+          // Treat "not modified" as success: the displayed message already
+          // matches what we wanted to write.
           this.db.markOutboxSent(row.id);
+        } else if (!result.retriable) {
+          this.db.markOutboxFailed(row.id, result.description);
         } else {
-          this.handleFailure(row, "editMessageText failed");
+          this.handleFailure(row, result.description);
         }
       }
     } catch (err) {

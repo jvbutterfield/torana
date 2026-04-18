@@ -51,6 +51,14 @@ export interface TelegramClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+export type SendResult =
+  | { ok: true; messageId: number }
+  | { ok: false; retriable: boolean; description: string };
+
+export type EditResult =
+  | { ok: true }
+  | { ok: false; retriable: boolean; notModified: boolean; description: string };
+
 /**
  * Thin HTTP client for the Telegram Bot API. No persona awareness — botId is
  * just a tag used in logs.
@@ -151,19 +159,17 @@ export class TelegramClient {
     chatId: number,
     text: string,
     parseMode?: string,
-  ): Promise<{ messageId: number } | null> {
+  ): Promise<SendResult> {
     const body: Record<string, unknown> = { chat_id: chatId, text };
     if (parseMode) body.parse_mode = parseMode;
     try {
       const result = await this.api<{ message_id: number }>("sendMessage", body);
-      return { messageId: result.message_id };
+      return { ok: true, messageId: result.message_id };
     } catch (err) {
-      log.warn("sendMessage failed", {
-        bot_id: this.botId,
-        chat_id: chatId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
+      const retriable = err instanceof TelegramError ? err.isRetriable : true;
+      const description = err instanceof Error ? err.message : String(err);
+      log.warn("sendMessage failed", { bot_id: this.botId, chat_id: chatId, error: description });
+      return { ok: false, retriable, description };
     }
   }
 
@@ -172,7 +178,7 @@ export class TelegramClient {
     messageId: number,
     text: string,
     parseMode?: string,
-  ): Promise<boolean> {
+  ): Promise<EditResult> {
     const body: Record<string, unknown> = {
       chat_id: chatId,
       message_id: messageId,
@@ -181,13 +187,23 @@ export class TelegramClient {
     if (parseMode) body.parse_mode = parseMode;
     try {
       await this.api<unknown>("editMessageText", body);
-      return true;
+      return { ok: true };
     } catch (err) {
+      const description = err instanceof Error ? err.message : String(err);
+      // Telegram returns 400 "message is not modified" when the edit payload
+      // matches the current message exactly. Common in streaming because the
+      // fire-and-forget flush may have already pushed the full buffer before
+      // finalizeTurn queues the terminal edit. Treat as success.
+      const notModified = /message is not modified/i.test(description);
+      const retriable =
+        !notModified &&
+        (err instanceof TelegramError ? err.isRetriable : true);
       log.debug("editMessageText failed", {
         bot_id: this.botId,
-        error: err instanceof Error ? err.message : String(err),
+        not_modified: notModified,
+        error: description,
       });
-      return false;
+      return { ok: false, retriable, notModified, description };
     }
   }
 

@@ -234,9 +234,10 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     expect(new Date(raw.next_attempt_at + "Z").getTime()).toBeGreaterThan(
       Date.now() - 1000,
     );
-    // The TelegramClient swallows HTTP errors and returns null; outbox records
-    // "sendMessage returned null" rather than propagating the raw 500.
-    expect(raw.last_error).toContain("sendMessage returned null");
+    // TelegramClient surfaces the upstream error description so operators
+    // can diagnose the actual failure from the outbox row.
+    expect(raw.last_error).toContain("500");
+    expect(raw.last_error).toContain("server error");
   });
 
   test("429 rate-limit is retried like any other failure (status: retrying)", async () => {
@@ -338,20 +339,17 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     expect(cbMsgId.value).toBe(42);
   });
 
-  test("sendMessage returns null (4xx after format attempt) → retrying with failure message", async () => {
-    // Force a 400 so TelegramClient.sendMessage returns null.
+  test("non-retriable 4xx → failed (no retry loop)", async () => {
+    // 4xx errors are client errors: retrying won't help. The row moves to
+    // 'failed' after the plain-text fallback is also rejected.
     const fetchImpl = makeFetch((method, body) => {
       if (method === "sendMessage") {
-        // HTML parse error (400) — the first call with HTML parse_mode fails,
-        // then the plain-text retry should succeed IF formatting differs.
-        // For this test we want to check "really failed" path: always 400.
         if (body.parse_mode === "HTML") {
           return Response.json(
             { ok: false, error_code: 400, description: "can't parse entities" },
             { status: 400 },
           );
         }
-        // Plain text attempt: also fail.
         return Response.json(
           { ok: false, error_code: 400, description: "bad request" },
           { status: 400 },
@@ -370,7 +368,7 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     await outbox.drain(300);
 
     const row = harness.db.getOutboxRow(id);
-    expect(row?.status).toBe("retrying");
+    expect(row?.status).toBe("failed");
   });
 
   test("HTML fallback: first call fails with 400, plain-text retry succeeds", async () => {
@@ -573,6 +571,74 @@ describe("OutboxProcessor.processPending - edit flow", () => {
     expect(editCalls).toBe(2);
     const row = harness.db.getOutboxRow(id);
     expect(row?.status).toBe("sent");
+  });
+
+  test("edit with 'message is not modified' → marked sent (no retry loop)", async () => {
+    // Telegram returns 400 "message is not modified" when the edit payload
+    // matches the current message. Common in streaming where a fire-and-forget
+    // flush already pushed the final buffer before finalizeTurn queues the
+    // terminal edit. Must NOT dead-letter after 5 attempts.
+    let editCalls = 0;
+    const fetchImpl = makeFetch((method) => {
+      if (method === "editMessageText") {
+        editCalls += 1;
+        return Response.json(
+          {
+            ok: false,
+            error_code: 400,
+            description: "Bad Request: message is not modified",
+          },
+          { status: 400 },
+        );
+      }
+      return Response.json({ ok: true, result: true });
+    });
+    const { outbox } = harness.makeProcessor({
+      fetchImpl,
+      max_attempts: 5,
+      retry_base_ms: 10_000,
+    });
+    const turnId = harness.seedTurn("alpha");
+    const id = outbox.queueEdit(turnId, "alpha", 111, 4242, "same text");
+    await outbox.drain(100);
+    // Exactly one call — no HTML→plain fallback (same content would fail the
+    // same way), and no retry storm.
+    expect(editCalls).toBe(1);
+    const row = harness.db.getOutboxRow(id);
+    expect(row?.status).toBe("sent");
+  });
+
+  test("edit 4xx (non-retriable, not 'not modified') → failed immediately", async () => {
+    // Any other 400 means the request is malformed — retrying won't help.
+    // Row moves to 'failed' after the plain-text fallback is also rejected.
+    let editCalls = 0;
+    const fetchImpl = makeFetch((method, body) => {
+      if (method === "editMessageText") {
+        editCalls += 1;
+        if (body.parse_mode === "HTML") {
+          return Response.json(
+            { ok: false, error_code: 400, description: "can't parse entities" },
+            { status: 400 },
+          );
+        }
+        return Response.json(
+          { ok: false, error_code: 400, description: "chat not found" },
+          { status: 400 },
+        );
+      }
+      return Response.json({ ok: true, result: true });
+    });
+    const { outbox } = harness.makeProcessor({
+      fetchImpl,
+      max_attempts: 5,
+      retry_base_ms: 10_000,
+    });
+    const turnId = harness.seedTurn("alpha");
+    const id = outbox.queueEdit(turnId, "alpha", 111, 4242, "**bold**");
+    await outbox.drain(100);
+    expect(editCalls).toBe(2); // HTML then plain
+    const row = harness.db.getOutboxRow(id);
+    expect(row?.status).toBe("failed");
   });
 
   test("edit metric increment uses telegram_edit_failures (not send)", async () => {
