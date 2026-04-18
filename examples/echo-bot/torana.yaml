@@ -1,0 +1,28 @@
+# Echo-bot: smoke-tests the whole pipeline without touching Claude Code.
+# The runner simply echoes every message back. Use this to verify your Telegram
+# bot token, ACL, and polling setup before plugging in a real agent.
+
+version: 1
+
+gateway:
+  port: 3000
+  data_dir: ./data
+  log_level: info
+
+transport:
+  default_mode: polling
+
+access_control:
+  allowed_user_ids: [${MY_TELEGRAM_USER_ID}]
+
+bots:
+  - id: echo
+    token: ${TELEGRAM_BOT_TOKEN}
+    commands:
+      - trigger: /reset
+        action: builtin:reset
+    runner:
+      type: command
+      protocol: jsonl-text
+      cmd: ["bun", "./echo-runner.ts"]
+      on_reset: signal

@@ -1,31 +1,37 @@
+// Operational alerts — one delivery bot + one chat_id, decoupled from the
+// subject bot (§3.9). If the `alerts` block is absent, alerts are logged at
+// warn level only.
+
 import { logger } from "./log.js";
-import type { Config, PersonaName } from "./config.js";
-import type { TelegramClient } from "./telegram.js";
+import type { BotId, Config } from "./config/schema.js";
+import type { TelegramClient } from "./telegram/client.js";
 
 const log = logger("alerts");
 
-/**
- * Gateway-level Telegram alerts. Sends operational alerts to Jason's chat
- * via each persona's own bot token (same pattern as the old pty_wrapper watchdog).
- *
- * Alert dedup: each alert type per persona has a cooldown to avoid spam.
- */
+export type AlertKind =
+  | "workerDegraded"
+  | "workerCrashLoop"
+  | "tokenInvalid"
+  | "mailboxBacklog"
+  | "outboxFailures"
+  | "turnStalled"
+  | "attachmentDiskFull"
+  | "webhookSetFailed";
+
 export class AlertManager {
-  private config: Config;
-  private clients: Map<PersonaName, TelegramClient>;
-  private chatId: number;
-  private cooldowns = new Map<string, number>(); // key → timestamp of last alert
+  private cooldowns = new Map<string, number>();
   private cooldownMs: number;
+  private chatId: number | null;
+  private deliveryClient: TelegramClient | null;
 
   constructor(
     config: Config,
-    clients: Map<PersonaName, TelegramClient>,
-    cooldownMs = 600_000, // 10 min default cooldown per alert type
+    clients: Map<BotId, TelegramClient>,
   ) {
-    this.config = config;
-    this.clients = clients;
-    this.chatId = parseInt(config.allowedUserId, 10);
-    this.cooldownMs = cooldownMs;
+    const alerts = config.alerts;
+    this.cooldownMs = alerts?.cooldown_ms ?? 600_000;
+    this.chatId = alerts?.chat_id ?? null;
+    this.deliveryClient = alerts?.via_bot ? clients.get(alerts.via_bot) ?? null : null;
   }
 
   private shouldAlert(key: string): boolean {
@@ -36,49 +42,78 @@ export class AlertManager {
     return true;
   }
 
-  private async send(persona: PersonaName, text: string) {
-    const client = this.clients.get(persona);
-    if (!client) {
-      log.error("no client for alert", { persona });
+  private async emit(kind: AlertKind, botId: BotId | null, text: string): Promise<void> {
+    const key = `${kind}:${botId ?? "_"}`;
+    if (!this.shouldAlert(key)) return;
+
+    if (!this.deliveryClient || !this.chatId) {
+      log.warn(`alert: ${text}`, { alert_kind: kind, bot_id: botId });
       return;
     }
     try {
-      await client.sendMessage(this.chatId, text);
-      log.info("alert sent", { persona, text: text.slice(0, 80) });
+      await this.deliveryClient.sendMessage(this.chatId, text);
+      log.info("alert sent", { alert_kind: kind, bot_id: botId });
     } catch (err) {
-      log.error("alert send failed", { persona, error: String(err) });
+      log.error("alert send failed", {
+        alert_kind: kind,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
-  async workerDegraded(persona: PersonaName, reason: string) {
-    if (!this.shouldAlert(`degraded:${persona}`)) return;
-    await this.send(persona, `⚠️ Worker degraded: ${reason}`);
+  async workerDegraded(botId: BotId, reason: string): Promise<void> {
+    await this.emit("workerDegraded", botId, `⚠️ bot ${botId} degraded: ${reason}`);
   }
 
-  async workerCrashLoop(persona: PersonaName, failures: number) {
-    if (!this.shouldAlert(`crashloop:${persona}`)) return;
-    await this.send(persona, `⚠️ Worker crash loop — ${failures} consecutive failures. Retrying with backoff.`);
+  async workerCrashLoop(botId: BotId, failures: number): Promise<void> {
+    await this.emit(
+      "workerCrashLoop",
+      botId,
+      `⚠️ bot ${botId} crash loop: ${failures} consecutive failures`,
+    );
   }
 
-  async allWorkersAuthFailure() {
-    // Send via first available client
-    const persona = this.clients.keys().next().value;
-    if (!persona || !this.shouldAlert("auth:all")) return;
-    await this.send(persona, `🚨 All workers failing with auth errors — check CLAUDE_CODE_OAUTH_TOKEN.`);
+  async tokenInvalid(botId: BotId): Promise<void> {
+    await this.emit("tokenInvalid", botId, `🚨 bot ${botId} token invalid (401). Disabled.`);
   }
 
-  async mailboxBacklog(persona: PersonaName, depth: number) {
-    if (!this.shouldAlert(`backlog:${persona}`)) return;
-    await this.send(persona, `⚠️ Mailbox backlog: ${depth} queued turns.`);
+  async mailboxBacklog(botId: BotId, depth: number): Promise<void> {
+    await this.emit(
+      "mailboxBacklog",
+      botId,
+      `⚠️ bot ${botId} mailbox backlog: ${depth} queued turns`,
+    );
   }
 
-  async outboxFailures(persona: PersonaName, count: number) {
-    if (!this.shouldAlert(`outbox:${persona}`)) return;
-    await this.send(persona, `⚠️ ${count} outbox deliveries failed. Check Telegram Bot API.`);
+  async outboxFailures(botId: BotId, count: number): Promise<void> {
+    await this.emit(
+      "outboxFailures",
+      botId,
+      `⚠️ bot ${botId}: ${count} outbox deliveries dead-lettered`,
+    );
   }
 
-  async turnStalled(persona: PersonaName, turnId: number) {
-    if (!this.shouldAlert(`stall:${persona}`)) return;
-    await this.send(persona, `⚠️ Turn ${turnId} stalled — no worker output. Checking health...`);
+  async turnStalled(botId: BotId, turnId: number): Promise<void> {
+    await this.emit(
+      "turnStalled",
+      botId,
+      `⚠️ bot ${botId} turn ${turnId} stalled — no runner output`,
+    );
+  }
+
+  async attachmentDiskFull(): Promise<void> {
+    await this.emit(
+      "attachmentDiskFull",
+      null,
+      `⚠️ attachment storage full — new uploads rejected until sweeper runs`,
+    );
+  }
+
+  async webhookSetFailed(botId: BotId, reason: string): Promise<void> {
+    await this.emit(
+      "webhookSetFailed",
+      botId,
+      `⚠️ bot ${botId} setWebhook failed: ${reason}`,
+    );
   }
 }

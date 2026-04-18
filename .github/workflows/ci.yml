@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  lint-typecheck-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: No lifecycle scripts
+        run: |
+          set -euo pipefail
+          FORBIDDEN="preinstall postinstall install prepare"
+          for script in $FORBIDDEN; do
+            if jq -e ".scripts.\"$script\"" package.json > /dev/null 2>&1; then
+              echo "::error::package.json declares forbidden script '$script'"
+              exit 1
+            fi
+          done
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test --timeout 15000
+
+  macos-smoke:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test --timeout 15000

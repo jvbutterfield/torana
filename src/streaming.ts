@@ -1,39 +1,41 @@
 import { logger } from "./log.js";
-import type { GatewayDB } from "./db.js";
-import type { Config, PersonaName } from "./config.js";
+import type { BotId, Config } from "./config/schema.js";
+import type { GatewayDB } from "./db/gateway-db.js";
 import type { OutboxProcessor } from "./outbox.js";
-import type { TelegramClient } from "./telegram.js";
+import type { TelegramClient } from "./telegram/client.js";
 
 const log = logger("streaming");
 
 /**
- * Manages the streaming UX for one active turn: buffers text_delta events,
- * flushes edits to Telegram at a throttled cadence, handles long-message
- * splitting.
+ * Streaming UX for one active turn: buffers text_delta events, flushes edits
+ * to Telegram at a throttled cadence, splits long messages.
  */
 export class StreamManager {
   private config: Config;
   private db: GatewayDB;
   private outbox: OutboxProcessor;
-  private clients: Map<PersonaName, TelegramClient>;
+  private clients: Map<BotId, TelegramClient>;
 
-  private activeTurns = new Map<PersonaName, {
-    turnId: number;
-    chatId: number;
-    buffer: string;
-    telegramMessageId: number | null;
-    segmentIndex: number;
-    lastFlushTime: number;
-    flushTimer: ReturnType<typeof setTimeout> | null;
-    hadFirstOutput: boolean;
-    typingTimer: ReturnType<typeof setInterval> | null;
-  }>();
+  private activeTurns = new Map<
+    BotId,
+    {
+      turnId: number;
+      chatId: number;
+      buffer: string;
+      telegramMessageId: number | null;
+      segmentIndex: number;
+      lastFlushTime: number;
+      flushTimer: ReturnType<typeof setTimeout> | null;
+      hadFirstOutput: boolean;
+      typingTimer: ReturnType<typeof setInterval> | null;
+    }
+  >();
 
   constructor(
     config: Config,
     db: GatewayDB,
     outbox: OutboxProcessor,
-    clients: Map<PersonaName, TelegramClient>,
+    clients: Map<BotId, TelegramClient>,
   ) {
     this.config = config;
     this.db = db;
@@ -41,44 +43,30 @@ export class StreamManager {
     this.clients = clients;
   }
 
-  /**
-   * Cancel an active turn's stream state. Cleans up timers and edits the
-   * placeholder to show it was interrupted (so it doesn't sit as a stale
-   * "thinking..." message forever).
-   */
-  cancelTurn(persona: PersonaName) {
-    const prev = this.activeTurns.get(persona);
+  /** Cancel an in-flight stream (e.g. after fatal runner error). */
+  cancelTurn(botId: BotId): void {
+    const prev = this.activeTurns.get(botId);
     if (!prev) return;
 
     if (prev.typingTimer) clearInterval(prev.typingTimer);
     if (prev.flushTimer) clearTimeout(prev.flushTimer);
 
-    // Edit the orphaned placeholder so it doesn't sit as "thinking..." forever
     if (prev.telegramMessageId) {
       const display = prev.buffer.trim() || "(interrupted)";
-      this.outbox.queueEdit(prev.turnId, persona, prev.chatId, prev.telegramMessageId, display);
+      this.outbox.queueEdit(prev.turnId, botId, prev.chatId, prev.telegramMessageId, display);
     }
 
-    this.activeTurns.delete(persona);
-    log.info("turn cancelled", { persona, turnId: prev.turnId });
+    this.activeTurns.delete(botId);
+    log.info("turn cancelled", { bot_id: botId, turn_id: prev.turnId });
   }
 
-  async startTurn(persona: PersonaName, turnId: number, chatId: number) {
-    // Clean up any previous active turn for this persona (e.g., after worker
-    // crash or re-queue) so we don't leave orphaned "thinking..." messages.
-    this.cancelTurn(persona);
-
+  async startTurn(botId: BotId, turnId: number, chatId: number): Promise<void> {
+    this.cancelTurn(botId);
     this.db.initStreamState(turnId);
 
-    // Typing indicator strategy:
-    // - Telegram cancels "typing..." whenever the bot sends or edits a message.
-    // - So we re-send typing AFTER each outbound message (placeholder, edits).
-    // - A 4s interval is a safety net for gaps where no edits happen.
-    const typingTimer = setInterval(() => {
-      this.sendTyping(persona);
-    }, 4_000);
+    const typingTimer = setInterval(() => this.sendTyping(botId), 4_000);
 
-    this.activeTurns.set(persona, {
+    this.activeTurns.set(botId, {
       turnId,
       chatId,
       buffer: "",
@@ -90,56 +78,56 @@ export class StreamManager {
       typingTimer,
     });
 
-    // Send typing immediately (before the placeholder is queued/delivered)
-    this.sendTyping(persona);
+    this.sendTyping(botId);
 
-    // Send placeholder and wire up the message ID callback
     this.outbox.queueSendWithCallback(
-      turnId, persona, chatId, "\u{1F440} thinking...",
+      turnId,
+      botId,
+      chatId,
+      "\u{1F440} thinking...",
       (messageId) => {
-        const state = this.activeTurns.get(persona);
+        const state = this.activeTurns.get(botId);
         if (state && state.turnId === turnId) {
           state.telegramMessageId = messageId;
-          this.db.updateStreamState(turnId, { active_telegram_message_id: messageId });
-          log.debug("placeholder sent", { persona, messageId });
-          // Re-send typing after placeholder delivery (it cancelled the indicator)
-          this.sendTyping(persona);
+          this.db.updateStreamState(turnId, {
+            active_telegram_message_id: messageId,
+          });
+          this.sendTyping(botId);
         }
       },
     );
   }
 
-  appendText(persona: PersonaName, text: string) {
-    const state = this.activeTurns.get(persona);
+  appendText(botId: BotId, text: string): void {
+    const state = this.activeTurns.get(botId);
     if (!state) return;
 
     if (!state.hadFirstOutput) {
       state.hadFirstOutput = true;
       this.db.setTurnFirstOutput(state.turnId);
     }
-    // last_output_at is written on flush (throttled), not per-token
 
     state.buffer += text;
 
-    if (state.buffer.length >= this.config.messageLengthSafeMargin) {
-      this.flushAndSplit(persona);
+    if (state.buffer.length >= this.config.streaming.message_length_safe_margin) {
+      this.flushAndSplit(botId);
       return;
     }
 
     const now = Date.now();
-    if (now - state.lastFlushTime >= this.config.editCadenceMs) {
-      this.flush(persona);
+    if (now - state.lastFlushTime >= this.config.streaming.edit_cadence_ms) {
+      void this.flush(botId);
     } else if (!state.flushTimer) {
-      const delay = this.config.editCadenceMs - (now - state.lastFlushTime);
+      const delay = this.config.streaming.edit_cadence_ms - (now - state.lastFlushTime);
       state.flushTimer = setTimeout(() => {
         state.flushTimer = null;
-        this.flush(persona);
+        void this.flush(botId);
       }, delay);
     }
   }
 
-  async finalizeTurn(persona: PersonaName, finalText: string) {
-    const state = this.activeTurns.get(persona);
+  async finalizeTurn(botId: BotId, finalText: string): Promise<void> {
+    const state = this.activeTurns.get(botId);
     if (!state) return;
 
     if (state.typingTimer) {
@@ -151,54 +139,75 @@ export class StreamManager {
       state.flushTimer = null;
     }
 
-    // Use the final text from the result event (authoritative)
     if (finalText && finalText !== state.buffer) {
       state.buffer = finalText;
     }
 
     if (!state.buffer.trim()) {
-      this.activeTurns.delete(persona);
+      this.activeTurns.delete(botId);
       return;
     }
 
     const chunks = this.splitMessage(state.buffer);
 
     if (chunks.length === 1 && state.telegramMessageId) {
-      this.outbox.queueEdit(state.turnId, persona, state.chatId, state.telegramMessageId, chunks[0]);
+      this.outbox.queueEdit(
+        state.turnId,
+        botId,
+        state.chatId,
+        state.telegramMessageId,
+        chunks[0],
+      );
     } else {
       let startIdx = 0;
       if (state.telegramMessageId && chunks.length > 0) {
-        this.outbox.queueEdit(state.turnId, persona, state.chatId, state.telegramMessageId, chunks[0]);
+        this.outbox.queueEdit(
+          state.turnId,
+          botId,
+          state.chatId,
+          state.telegramMessageId,
+          chunks[0],
+        );
         startIdx = 1;
       }
       for (let i = startIdx; i < chunks.length; i++) {
-        this.outbox.queueSend(state.turnId, persona, state.chatId, chunks[i]);
+        this.outbox.queueSend(state.turnId, botId, state.chatId, chunks[i]);
       }
     }
 
-    this.activeTurns.delete(persona);
+    this.activeTurns.delete(botId);
   }
 
-  /** Send typing indicator for an active turn. No-op if turn is not active. */
-  private sendTyping(persona: PersonaName) {
-    const state = this.activeTurns.get(persona);
+  stopAll(): void {
+    for (const [, state] of this.activeTurns) {
+      if (state.typingTimer) clearInterval(state.typingTimer);
+      if (state.flushTimer) clearTimeout(state.flushTimer);
+    }
+    this.activeTurns.clear();
+  }
+
+  // --- internals ---
+
+  private sendTyping(botId: BotId): void {
+    const state = this.activeTurns.get(botId);
     if (!state) return;
-    const client = this.clients.get(persona);
+    const client = this.clients.get(botId);
     if (client) client.sendChatAction(state.chatId).catch(() => {});
   }
 
-  private async flush(persona: PersonaName) {
-    const state = this.activeTurns.get(persona);
+  private async flush(botId: BotId): Promise<void> {
+    const state = this.activeTurns.get(botId);
     if (!state || !state.telegramMessageId || !state.buffer.trim()) return;
 
     state.lastFlushTime = Date.now();
+    await this.outbox.fireAndForgetEdit(
+      botId,
+      state.chatId,
+      state.telegramMessageId,
+      state.buffer,
+    );
+    this.sendTyping(botId);
 
-    // Await the edit so the typing indicator fires AFTER Telegram processes it
-    // (otherwise typing arrives first and the edit immediately cancels it)
-    await this.outbox.fireAndForgetEdit(persona, state.chatId, state.telegramMessageId, state.buffer);
-    this.sendTyping(persona);
-
-    // Write last_output_at and buffer on flush cadence, not per-token
     this.db.setTurnLastOutput(state.turnId);
     this.db.updateStreamState(state.turnId, {
       buffer_text: state.buffer,
@@ -206,34 +215,44 @@ export class StreamManager {
     });
   }
 
-  private flushAndSplit(persona: PersonaName) {
-    const state = this.activeTurns.get(persona);
+  private flushAndSplit(botId: BotId): void {
+    const state = this.activeTurns.get(botId);
     if (!state) return;
 
     const currentText = state.buffer;
-
     if (state.telegramMessageId) {
-      this.outbox.queueEdit(state.turnId, persona, state.chatId, state.telegramMessageId, currentText);
+      this.outbox.queueEdit(
+        state.turnId,
+        botId,
+        state.chatId,
+        state.telegramMessageId,
+        currentText,
+      );
     }
 
     state.buffer = "";
     state.telegramMessageId = null;
-    state.segmentIndex++;
+    state.segmentIndex += 1;
 
     this.outbox.queueSendWithCallback(
-      state.turnId, persona, state.chatId, "...",
+      state.turnId,
+      botId,
+      state.chatId,
+      "...",
       (messageId) => {
-        const s = this.activeTurns.get(persona);
+        const s = this.activeTurns.get(botId);
         if (s && s.turnId === state.turnId) {
           s.telegramMessageId = messageId;
-          this.db.updateStreamState(s.turnId, { active_telegram_message_id: messageId });
+          this.db.updateStreamState(s.turnId, {
+            active_telegram_message_id: messageId,
+          });
         }
       },
     );
   }
 
   private splitMessage(text: string): string[] {
-    const limit = this.config.messageLengthLimit;
+    const limit = this.config.streaming.message_length_limit;
     if (text.length <= limit) return [text];
 
     const chunks: string[] = [];
@@ -249,13 +268,5 @@ export class StreamManager {
       remaining = remaining.slice(splitAt);
     }
     return chunks;
-  }
-
-  stopAll() {
-    for (const [, state] of this.activeTurns) {
-      if (state.typingTimer) clearInterval(state.typingTimer);
-      if (state.flushTimer) clearTimeout(state.flushTimer);
-    }
-    this.activeTurns.clear();
   }
 }

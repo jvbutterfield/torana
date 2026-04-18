@@ -1,297 +1,305 @@
-import { loadConfig, PERSONAS, type Config, type PersonaName } from "./config.js";
-import { GatewayDB } from "./db.js";
-import { TelegramClient } from "./telegram.js";
-import { WorkerManager, type WorkerEvent, type ResultEvent, type StreamEvent } from "./worker.js";
-import { OutboxProcessor } from "./outbox.js";
-import { StreamManager } from "./streaming.js";
-import { createServer, type HealthProvider } from "./server.js";
+// Runtime entry point: wires config → logger → DB → clients → streaming/outbox
+// → bots → transports → server, then runs until shut down.
+
+import { mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
+
+import type { Config } from "./config/schema.js";
+import { logger, setLogLevel, setLogFormat, setSecrets, autoFormat } from "./log.js";
+import { GatewayDB } from "./db/gateway-db.js";
+import { applyMigrations } from "./db/migrate.js";
+import { TelegramClient } from "./telegram/client.js";
 import { Metrics } from "./metrics.js";
 import { AlertManager } from "./alerts.js";
-import { logger, setLogLevel } from "./log.js";
-import { mkdirSync } from "node:fs";
+import { OutboxProcessor } from "./outbox.js";
+import { StreamManager } from "./streaming.js";
+import { Bot } from "./core/bot.js";
+import { BotRegistry } from "./core/registry.js";
+import { createServer, type Server } from "./server.js";
+import { WebhookTransport } from "./transport/webhook.js";
+import { PollingTransport } from "./transport/polling.js";
+import type { Transport } from "./transport/types.js";
 
 const log = logger("main");
 
-async function main() {
-  const config = loadConfig();
-  setLogLevel(config.logLevel);
+export interface StartOptions {
+  config: Config;
+  secrets: string[];
+  autoMigrate?: boolean;
+}
 
-  log.info("telegram gateway starting", { personas: PERSONAS });
+export interface RunningGateway {
+  server: Server;
+  registry: BotRegistry;
+  transports: Transport[];
+  shutdown(signal: string): Promise<void>;
+}
 
-  mkdirSync(`${config.dataRoot}/gateway`, { recursive: true });
-  mkdirSync(`${config.dataRoot}/logs`, { recursive: true });
-  for (const p of PERSONAS) {
-    mkdirSync(`${config.dataRoot}/gateway/attachments/${p}`, { recursive: true });
+export async function startGateway(opts: StartOptions): Promise<RunningGateway> {
+  const { config } = opts;
+  setLogLevel(config.gateway.log_level);
+  setLogFormat(config.gateway.log_format ?? autoFormat());
+  setSecrets(opts.secrets);
+
+  log.info("torana starting", {
+    bots: config.bots.map((b) => b.id),
+    transport: config.transport.default_mode,
+  });
+
+  await ensureDirectories(config);
+
+  // Apply migrations (if opts.autoMigrate or DB doesn't exist).
+  const dbPath = config.gateway.db_path!;
+  if (opts.autoMigrate) {
+    applyMigrations(dbPath, { snapshotV0Upgrade: true });
+  } else {
+    // Lightly check: if DB needs migration and autoMigrate not set, fail loudly.
+    const { planMigration } = await import("./db/migrate.js");
+    const plan = planMigration(dbPath);
+    if (plan.steps.length > 0) {
+      throw new Error(
+        `database schema is not current (from=${plan.currentVersion} to=${plan.targetVersion}).\n` +
+          `Run 'torana migrate --config <path>' first, or pass --auto-migrate.`,
+      );
+    }
   }
 
-  const db = new GatewayDB(config.dbPath);
-  const metrics = new Metrics();
+  const db = new GatewayDB(dbPath);
+  const metrics = new Metrics(config);
 
-  const clients = new Map<PersonaName, TelegramClient>();
-  for (const p of PERSONAS) {
-    clients.set(p, new TelegramClient(p, config.botTokens[p]));
+  const clients = new Map<string, TelegramClient>();
+  for (const bot of config.bots) {
+    clients.set(
+      bot.id,
+      new TelegramClient({
+        botId: bot.id,
+        token: bot.token,
+        apiBaseUrl: config.telegram.api_base_url,
+      }),
+    );
   }
 
   const alerts = new AlertManager(config, clients);
   const outbox = new OutboxProcessor(config, db, clients, metrics);
-  const stream = new StreamManager(config, db, outbox, clients);
+  const streaming = new StreamManager(config, db, outbox, clients);
 
+  // Build Bot instances.
+  const bots: Bot[] = config.bots.map(
+    (botConfig) =>
+      new Bot({
+        config,
+        botConfig,
+        db,
+        telegram: clients.get(botConfig.id)!,
+        streaming,
+        outbox,
+        metrics,
+        alerts,
+      }),
+  );
+
+  const registry = new BotRegistry({
+    config,
+    db,
+    bots,
+    clients,
+    streaming,
+    outbox,
+    metrics,
+    alerts,
+  });
+
+  // Crash recovery.
   runCrashRecovery(db, clients);
 
-  const workers = new Map<PersonaName, WorkerManager>();
-  for (const p of PERSONAS) {
-    const worker = new WorkerManager(config, db, p, metrics, alerts, (persona, event) => {
-      handleWorkerEvent(persona, event, db, stream, workers, config, metrics);
-    });
-    workers.set(p, worker);
+  // HTTP server + router.
+  const server = createServer({ port: config.gateway.port });
+  registerFixedRoutes(server, config, db, metrics, registry);
+
+  // Transports.
+  const webhookClients = new Map<string, TelegramClient>();
+  const pollingClients = new Map<string, TelegramClient>();
+  for (const bot of config.bots) {
+    const mode = bot.transport_override?.mode ?? config.transport.default_mode;
+    const c = clients.get(bot.id)!;
+    if (mode === "webhook") webhookClients.set(bot.id, c);
+    else pollingClients.set(bot.id, c);
   }
 
-  function tryDispatch(persona: PersonaName) {
-    const worker = workers.get(persona);
-    if (!worker || !worker.isIdle()) return;
-
-    const queued = db.getQueuedTurns(persona);
-    if (queued.length === 0) return;
-
-    const turn = queued[0];
-    const text = db.getTurnText(turn.id);
-    if (text === null) {
-      log.error("turn has no text", { persona, turnId: turn.id });
-      db.completeTurn(turn.id, "no message text");
-      return;
-    }
-
-    const attachments = db.getTurnAttachments(turn.id);
-    stream.startTurn(persona, turn.id, turn.chat_id);
-    const ok = worker.sendTurn(turn.id, text, attachments);
-    if (!ok) {
-      db.completeTurn(turn.id, "worker dispatch failed");
-      return;
-    }
-    db.setUpdateStatus(turn.source_update_id, "processing");
+  const transports: Transport[] = [];
+  if (webhookClients.size > 0) {
+    transports.push(
+      new WebhookTransport({
+        config,
+        router: server.router,
+        db,
+        clients: webhookClients,
+      }),
+    );
+  }
+  if (pollingClients.size > 0) {
+    transports.push(
+      new PollingTransport({ config, db, clients: pollingClients }),
+    );
   }
 
-  function handleInbound(
-    persona: PersonaName,
-    updateRowId: number,
-    chatId: number,
-    _messageId: number,
-    _fromUserId: string,
-    text: string,
-    attachmentPaths: string[],
-    _payloadJson: string,
-  ) {
-    // /new command: reset the Claude session for any persona.
-    // Intercept before turn creation — no turn is enqueued, nothing is forwarded
-    // to Claude.
-    if (text.trim() === "/new") {
-      db.setUpdateStatus(updateRowId, "completed");
-      log.info("fresh restart requested via /new", { persona, chatId });
-      const worker = workers.get(persona)!;
-      const client = clients.get(persona)!;
-      worker.freshRestart(() => {
-        client.sendMessage(chatId, "Session cleared. Fresh start ready.").catch(() => {});
-      });
-      return;
-    }
-
-    const turnId = db.createTurn(persona, chatId, updateRowId, attachmentPaths.length > 0 ? attachmentPaths : undefined);
-    metrics.inc(persona, "turns_queued");
-    log.info("turn queued", { persona, turnId, updateRowId });
-    tryDispatch(persona);
-  }
-
-  const getHealth: HealthProvider = () => {
-    const result: Record<string, any> = {};
-    const metricsSnapshot = metrics.snapshot();
-    for (const p of PERSONAS) {
-      const ws = db.getWorkerState(p);
-      result[p] = {
-        worker: ws?.status ?? "unknown",
-        mailbox_depth: db.getMailboxDepth(p),
-        last_turn_at: db.getLastTurnAt(p),
-        counters: metricsSnapshot[p].counters,
-        timers: metricsSnapshot[p].timers,
-      };
-      if (ws?.status === "degraded" && ws.last_error) {
-        result[p].error = ws.last_error;
-      }
-    }
-    return result as any;
-  };
-
-  const server = createServer(config, db, clients, handleInbound, getHealth, metrics);
-
-  for (const p of PERSONAS) {
-    const webhookUrl = `${config.webhookBaseUrl}/webhook/${p}`;
-    const client = clients.get(p)!;
-    try {
-      await client.setWebhook(webhookUrl, config.webhookSecret);
-    } catch (err) {
-      log.error("webhook registration failed", { persona: p, error: String(err) });
-    }
+  for (const t of transports) {
+    await t.start((botId, update) => registry.handleUpdate(botId, update).then(() => {}));
   }
 
   outbox.start();
+  await registry.startAll();
 
-  for (const p of PERSONAS) {
-    workers.get(p)!.start();
-  }
-
-  // Periodic dispatch check — catches any missed dispatches (e.g., after worker recovery)
-  setInterval(() => {
-    for (const p of PERSONAS) tryDispatch(p);
-  }, 2000);
-
-  // Periodic health check — alert on mailbox backlog
-  setInterval(() => {
-    for (const p of PERSONAS) {
-      const depth = db.getMailboxDepth(p);
-      if (depth >= 5) {
-        alerts.mailboxBacklog(p, depth);
-      }
+  // Periodic mailbox-backlog alert.
+  const backlogTimer = setInterval(() => {
+    for (const botId of registry.botIds) {
+      const depth = db.getMailboxDepth(botId);
+      if (depth >= 5) void alerts.mailboxBacklog(botId, depth);
     }
   }, 30_000);
 
-  let shuttingDown = false;
-  async function shutdown(signal: string) {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    log.info("shutting down", { signal });
-
-    server.stop();
-    outbox.stop();
-    stream.stopAll();
-
-    await Promise.all(PERSONAS.map(p => workers.get(p)!.stop()));
-
-    db.close();
-    log.info("shutdown complete");
-    process.exit(0);
-  }
-
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  process.on("SIGINT", () => shutdown("SIGINT"));
-
-  log.info("gateway ready", { port: config.port, personas: PERSONAS });
+  const running: RunningGateway = {
+    server,
+    registry,
+    transports,
+    async shutdown(signal: string) {
+      log.info("shutting down", { signal });
+      clearInterval(backlogTimer);
+      await Promise.all(transports.map((t) => t.stop()));
+      outbox.stop();
+      streaming.stopAll();
+      await registry.stopAll();
+      await server.stop();
+      db.close();
+      log.info("shutdown complete");
+    },
+  };
+  log.info("torana ready", { port: server.port });
+  return running;
 }
 
-function handleWorkerEvent(
-  persona: PersonaName,
-  event: WorkerEvent,
-  db: GatewayDB,
-  stream: StreamManager,
-  workers: Map<PersonaName, WorkerManager>,
+export async function ensureDirectories(config: Config): Promise<void> {
+  const dataDir = config.gateway.data_dir;
+  await mkdir(dataDir, { recursive: true });
+  await mkdir(resolve(dataDir, "logs"), { recursive: true });
+  await mkdir(resolve(dataDir, "attachments"), { recursive: true });
+  for (const bot of config.bots) {
+    await mkdir(resolve(dataDir, "attachments", bot.id), { recursive: true });
+    await mkdir(resolve(dataDir, "state", bot.id), { recursive: true });
+  }
+}
+
+function registerFixedRoutes(
+  server: Server,
   config: Config,
+  db: GatewayDB,
   metrics: Metrics,
-) {
-  const worker = workers.get(persona)!;
-  const turnId = worker.getActiveTurnId();
-
-  if (event.type === "stream_event") {
-    const se = event as StreamEvent;
-    const inner = se.event;
-    if (inner.type === "content_block_delta" && inner.delta?.type === "text_delta" && inner.delta.text) {
-      if (turnId !== null) {
-        stream.appendText(persona, inner.delta.text);
-      }
+  registry: BotRegistry,
+): void {
+  server.router.route("GET", "/health", async () => {
+    const bots: Record<string, unknown> = {};
+    let ok = true;
+    for (const botId of registry.botIds) {
+      const bot = registry.bot(botId)!;
+      const snap = registry.snapshotFor(bot);
+      bots[botId] = snap;
+      if (!snap.runner_ready) ok = false;
     }
-  } else if (event.type === "result") {
-    const re = event as ResultEvent;
-    if (turnId !== null) {
-      if (re.is_error) {
-        db.completeTurn(turnId, re.result || "unknown error");
-        stream.finalizeTurn(persona, re.result || "An error occurred.");
-        metrics.inc(persona, "turns_failed");
-      } else {
-        db.completeTurn(turnId);
-        stream.finalizeTurn(persona, re.result);
-        metrics.inc(persona, "turns_completed");
-      }
-      if (re.duration_ms) {
-        metrics.recordTimer(persona, "last_turn_duration_ms", re.duration_ms);
-      }
+    return new Response(
+      JSON.stringify({
+        status: ok ? "ok" : "degraded",
+        bots,
+        uptime_secs: metrics.uptimeSecs(),
+      }),
+      {
+        status: ok ? 200 : 503,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  });
 
-      const sourceId = db.getTurnSourceUpdateId(turnId);
-      if (sourceId !== null) {
-        db.setUpdateStatus(sourceId, re.is_error ? "failed" : "completed");
+  if (config.metrics.enabled) {
+    server.router.route("GET", "/metrics", async () => {
+      const botStates: Record<string, number> = {};
+      for (const botId of registry.botIds) {
+        const bot = registry.bot(botId)!;
+        const snap = registry.snapshotFor(bot);
+        botStates[botId] = snap.disabled ? 0 : snap.runner_ready ? 2 : 1;
       }
-    }
+      const body = metrics.renderPrometheus(botStates);
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "text/plain; version=0.0.4" },
+      });
+    });
+  }
 
-    worker.turnCompleted();
-
-    // Dispatch next queued turn (reuse tryDispatch — no inline copy)
-    // tryDispatch is in the closure scope of main(); we receive it indirectly
-    // through the workers map. Use a short delay to let the worker settle.
-    setTimeout(() => {
-      if (worker.isIdle()) {
-        const queued = db.getQueuedTurns(persona);
-        if (queued.length > 0) {
-          // The periodic dispatch will pick it up within 2s, or we could
-          // emit an event. For now, the 2s interval handles this.
-        }
+  if (config.dashboard.enabled && config.dashboard.proxy_target) {
+    const mountPath = config.dashboard.mount_path.replace(/\/+$/, "");
+    const target = config.dashboard.proxy_target.replace(/\/$/, "");
+    server.router.route("GET", `${mountPath}/*`, async (req) => {
+      const url = new URL(req.url);
+      const rel = url.pathname.slice(mountPath.length) || "/";
+      const backendUrl = `${target}${rel}${url.search}`;
+      try {
+        const proxyReq = new Request(backendUrl, {
+          method: req.method,
+          headers: req.headers,
+          body: req.body,
+        });
+        return await fetch(proxyReq);
+      } catch {
+        return new Response("Dashboard unavailable", { status: 502 });
       }
-    }, 100);
-  } else if (event.type === "rate_limit_event") {
-    const rle = event as any;
-    if (rle.rate_limit_info?.status !== "allowed") {
-      log.warn("rate limited", { persona, info: rle.rate_limit_info });
-    }
+    });
   }
 }
 
-function runCrashRecovery(db: GatewayDB, clients: Map<PersonaName, TelegramClient>) {
+function runCrashRecovery(
+  db: GatewayDB,
+  clients: Map<string, TelegramClient>,
+): void {
   log.info("running crash recovery");
-
-  const runningTurns = db.getRunningTurns();
-  for (const turn of runningTurns) {
-    // Clean up any orphaned placeholder message from the previous process.
-    // Without this, re-queuing the turn causes a second "thinking..." to be
-    // sent while the old one sits there forever.
-    const streamState = db.getStreamState(turn.id);
-    if (streamState?.active_telegram_message_id) {
-      const client = clients.get(turn.persona as PersonaName);
+  const running = db.getRunningTurns();
+  for (const turn of running) {
+    const ss = db.getStreamState(turn.id);
+    if (ss?.active_telegram_message_id) {
+      const client = clients.get(turn.bot_id);
       if (client) {
-        const display = streamState.buffer_text?.trim() || "(restarted)";
-        client.editMessageText(turn.chat_id, streamState.active_telegram_message_id, display).catch(() => {});
+        const display = ss.buffer_text?.trim() || "(restarted)";
+        void client.editMessageText(turn.chat_id, ss.active_telegram_message_id, display).catch(() => {});
       }
     }
-
     if (!turn.first_output_at) {
-      log.info("re-queuing orphaned turn (no output)", { turnId: turn.id, persona: turn.persona });
+      log.info("re-queueing orphaned turn", { turn_id: turn.id, bot_id: turn.bot_id });
       db.requeueTurn(turn.id);
-      // Cancel any pending placeholder send so it isn't delivered after restart.
-      // Without this, the stale "thinking..." outbox item fires alongside the
-      // new placeholder that startTurn creates, producing two "thinking..." messages.
       db.cancelPendingOutboxForTurn(turn.id);
     } else {
-      log.info("marking orphaned turn interrupted (had output)", { turnId: turn.id, persona: turn.persona });
+      log.info("marking orphaned turn interrupted", {
+        turn_id: turn.id,
+        bot_id: turn.bot_id,
+      });
       db.interruptTurn(turn.id, "Gateway restarted during active turn");
-
-      const client = clients.get(turn.persona as PersonaName);
+      const client = clients.get(turn.bot_id);
       if (client) {
-        client.sendMessage(turn.chat_id, "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.").catch(() => {});
+        void client.sendMessage(
+          turn.chat_id,
+          "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
+        );
       }
     }
   }
 
-  const pendingOutbox = db.getPendingOutbox();
-  for (const row of pendingOutbox) {
+  const pending = db.getPendingOutbox();
+  for (const row of pending) {
     if (row.kind === "edit" && db.hasSupersedingEdit(row.telegram_message_id, row.id)) {
       db.markOutboxFailed(row.id, "superseded by later send");
     }
-    // Leave remaining pending/retrying items for the outbox processor
   }
 
   db.resetAllWorkerStates();
-
   log.info("crash recovery complete", {
-    orphanedTurns: runningTurns.length,
-    pendingOutbox: pendingOutbox.length,
+    orphaned_turns: running.length,
+    pending_outbox: pending.length,
   });
 }
-
-main().catch(err => {
-  log.error("fatal startup error", { error: String(err) });
-  process.exit(1);
-});

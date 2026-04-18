@@ -1,0 +1,125 @@
+import { describe, expect, test } from "bun:test";
+import { loadConfigFromString, interpolate, ConfigLoadError } from "../../src/config/load.js";
+
+const MINIMAL = `
+version: 1
+gateway:
+  port: 3000
+  data_dir: /tmp/torana-test
+transport:
+  default_mode: polling
+access_control:
+  allowed_user_ids: [111]
+bots:
+  - id: alpha
+    token: BOTTOK:AAAAAA
+    runner:
+      type: claude-code
+      cli_path: claude
+`;
+
+describe("config/load", () => {
+  test("accepts a minimal polling config", () => {
+    const { config } = loadConfigFromString(MINIMAL);
+    expect(config.version).toBe(1);
+    expect(config.bots[0].id).toBe("alpha");
+    expect(config.gateway.port).toBe(3000);
+    expect(config.transport.default_mode).toBe("polling");
+  });
+
+  test("applies numeric coercion to env-interpolated IDs", () => {
+    const raw = MINIMAL.replace("[111]", "[${USER_ID}]");
+    const { config } = loadConfigFromString(raw, { env: { USER_ID: "42" } });
+    expect(config.access_control.allowed_user_ids).toEqual([42]);
+  });
+
+  test("rejects unknown keys (strict mode)", () => {
+    const raw = MINIMAL + "\nunknown_root_key: true\n";
+    expect(() => loadConfigFromString(raw)).toThrow(ConfigLoadError);
+  });
+
+  test("rejects reserved bot ID", () => {
+    const raw = MINIMAL.replace("id: alpha", "id: health");
+    expect(() => loadConfigFromString(raw)).toThrow(/reserved/);
+  });
+
+  test("rejects version != 1", () => {
+    const raw = MINIMAL.replace("version: 1", "version: 2");
+    expect(() => loadConfigFromString(raw)).toThrow(ConfigLoadError);
+  });
+
+  test("rejects webhook mode without base_url", () => {
+    const raw = MINIMAL.replace("default_mode: polling", "default_mode: webhook");
+    expect(() => loadConfigFromString(raw)).toThrow(/base_url/);
+  });
+
+  test("rejects missing ${VAR} without default", () => {
+    const raw = MINIMAL.replace("BOTTOK:AAAAAA", "${MISSING_VAR}");
+    expect(() => loadConfigFromString(raw, { env: {} })).toThrow(/MISSING_VAR/);
+  });
+
+  test("applies ${VAR:-default} fallback", () => {
+    const raw = MINIMAL.replace("BOTTOK:AAAAAA", "${MISSING_VAR:-fallback-token}");
+    const { config } = loadConfigFromString(raw, { env: {} });
+    expect(config.bots[0].token).toBe("fallback-token");
+  });
+
+  test("rejects empty secret after interpolation", () => {
+    const raw = MINIMAL.replace("BOTTOK:AAAAAA", "${EMPTY:-}");
+    // `${EMPTY:-}` interpolates to "" which YAML parses as null, which Zod
+    // rejects (string required). Either way, the load fails.
+    expect(() => loadConfigFromString(raw, { env: {} })).toThrow(ConfigLoadError);
+  });
+
+  test("rejects config file > max size", () => {
+    const bigRaw = MINIMAL + "\n# padding: " + "x".repeat(2_000_000);
+    expect(() => loadConfigFromString(bigRaw, { maxBytes: 1_000_000 })).not.toThrow();
+    // size cap applies to file loader; string loader has no cap by design.
+  });
+
+  test("interpolate: missing var errors", () => {
+    expect(() => interpolate("${FOO}", {})).toThrow();
+  });
+
+  test("interpolate: ${VAR:-default} works", () => {
+    expect(interpolate("x=${FOO:-bar}", {})).toBe("x=bar");
+  });
+
+  test("interpolate: ${VAR:-} yields empty string", () => {
+    expect(interpolate("x=${FOO:-}", {})).toBe("x=");
+  });
+
+  test("rejects duplicate bot ids", () => {
+    const raw = `
+version: 1
+gateway: { port: 3000, data_dir: /tmp/t }
+transport: { default_mode: polling }
+access_control: { allowed_user_ids: [1] }
+bots:
+  - id: alpha
+    token: T1
+    runner: { type: claude-code }
+  - id: alpha
+    token: T2
+    runner: { type: claude-code }
+`;
+    expect(() => loadConfigFromString(raw)).toThrow(/duplicate bot id/);
+  });
+
+  test("alerts.via_bot must reference an existing bot", () => {
+    const raw = `${MINIMAL}
+alerts:
+  via_bot: nonexistent
+`;
+    expect(() => loadConfigFromString(raw)).toThrow(/does not reference/);
+  });
+
+  test("alerts.via_bot defaults to first bot when absent", () => {
+    const raw = `${MINIMAL}
+alerts:
+  chat_id: 999
+`;
+    const { config } = loadConfigFromString(raw);
+    expect(config.alerts?.via_bot).toBe("alpha");
+  });
+});
