@@ -1,13 +1,14 @@
-// Echo runner — speaks the torana `jsonl-text` protocol.
-// Reads one-line-JSON envelopes on stdin and echoes the text back on stdout.
-// Exit cleanly when stdin closes.
+// Minimal jsonl-text runner used by integration tests. Echoes text back
+// and terminates the turn with a `done`. Small, zero-dependency, identical
+// semantics to examples/echo-bot/echo-runner.ts but kept separate so the
+// tests don't depend on the example's contents.
 
-export {}; // mark as module so top-level declarations are module-scoped
+export {}; // mark as module so top-level declarations don't collide across files
 
 process.stdout.write(JSON.stringify({ type: "ready" }) + "\n");
 
-type TurnEnvelope = { type: "turn"; turn_id: string; text: string };
-type ResetEnvelope = { type: "reset" };
+type TurnIn = { type: "turn"; turn_id: string; text: string; attachments?: unknown[] };
+type ResetIn = { type: "reset" };
 
 function emit(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -23,7 +24,7 @@ async function main(): Promise<void> {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let env: TurnEnvelope | ResetEnvelope;
+      let env: TurnIn | ResetIn;
       try {
         env = JSON.parse(trimmed);
       } catch {
@@ -34,12 +35,9 @@ async function main(): Promise<void> {
         continue;
       }
       if (env.type === "turn") {
-        emit({
-          type: "text",
-          turn_id: env.turn_id,
-          text: `echo: ${env.text}`,
-        });
-        emit({ type: "done", turn_id: env.turn_id });
+        const reply = `echo: ${env.text}`;
+        emit({ type: "text", turn_id: env.turn_id, text: reply });
+        emit({ type: "done", turn_id: env.turn_id, final_text: reply });
       }
     }
   }

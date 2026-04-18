@@ -28,6 +28,8 @@ export interface BotOptions {
   outbox: OutboxProcessor;
   metrics: Metrics;
   alerts: AlertManager;
+  /** Test-only: inject a pre-built runner instead of instantiating from config. */
+  runner?: AgentRunner;
 }
 
 export class Bot {
@@ -45,6 +47,8 @@ export class Bot {
 
   private activeTurnId: number | null = null;
   private readyOnce = false;
+  private stopping = false;
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: BotOptions) {
     this.config = opts.config;
@@ -56,7 +60,7 @@ export class Bot {
     this.metrics = opts.metrics;
     this.alerts = opts.alerts;
     this.log = logger("bot", { bot_id: opts.botConfig.id });
-    this.runner = this.instantiateRunner();
+    this.runner = opts.runner ?? this.instantiateRunner();
 
     this.runner.on("ready", () => this.onRunnerReady());
     this.runner.on("text_delta", (ev) => this.onTextDelta(ev));
@@ -80,11 +84,17 @@ export class Bot {
 
   async start(): Promise<void> {
     this.db.initWorkerState(this.botConfig.id);
+    this.db.initBotState(this.botConfig.id);
     await this.runner.start();
   }
 
-  async stop(): Promise<void> {
-    await this.runner.stop();
+  async stop(graceMs?: number): Promise<void> {
+    this.stopping = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
+    await this.runner.stop(graceMs);
   }
 
   /**
@@ -125,6 +135,14 @@ export class Bot {
     if (!this.readyOnce) {
       this.readyOnce = true;
       this.log.info("runner ready");
+    }
+    // Reset the consecutive_failures counter on any successful start. A
+    // runner that reaches 'ready' again after a crash loop clears its
+    // credit, so the next fatal starts backoff from zero.
+    const state = this.db.getWorkerState(this.botConfig.id);
+    if (state && state.consecutive_failures > 0) {
+      this.log.info("crash loop recovered", { prior_failures: state.consecutive_failures });
+      this.db.updateWorkerState(this.botConfig.id, { consecutive_failures: 0 });
     }
     this.db.updateWorkerState(this.botConfig.id, {
       status: "ready",
@@ -175,6 +193,7 @@ export class Bot {
 
   private onFatal(ev: Extract<RunnerEvent, { kind: "fatal" }>): void {
     this.log.error("runner fatal", { code: ev.code, message: ev.message });
+    this.metrics.inc(this.botConfig.id, "worker_restarts");
 
     if (this.activeTurnId !== null) {
       const turnId = this.activeTurnId;
@@ -183,14 +202,58 @@ export class Bot {
       this.streaming.cancelTurn(this.botConfig.id);
     }
 
+    // Auth failures never retry — the credential is wrong, not transient.
     if (ev.code === "auth") {
       this.db.setBotDisabled(this.botConfig.id, `auth failure: ${ev.message}`);
+      this.db.updateWorkerState(this.botConfig.id, {
+        status: "degraded",
+        last_error: ev.message,
+      });
+      this.metrics.inc(this.botConfig.id, "worker_startup_failures");
       void this.alerts.tokenInvalid(this.botConfig.id);
-    } else {
-      void this.alerts.workerCrashLoop(this.botConfig.id, 1);
+      return;
     }
 
-    this.db.updateWorkerState(this.botConfig.id, { status: "degraded", last_error: ev.message });
+    // Non-auth: increment consecutive_failures and decide whether to retry.
+    const state = this.db.getWorkerState(this.botConfig.id);
+    const failures = (state?.consecutive_failures ?? 0) + 1;
+    this.db.updateWorkerState(this.botConfig.id, {
+      consecutive_failures: failures,
+      last_error: ev.message,
+    });
+
+    const max = this.config.worker_tuning.max_consecutive_failures;
+    if (failures >= max) {
+      this.log.error("max consecutive failures — stopping retries", { failures });
+      this.db.updateWorkerState(this.botConfig.id, { status: "degraded" });
+      void this.alerts.workerDegraded(
+        this.botConfig.id,
+        `${failures} consecutive failures — stopped retrying`,
+      );
+      return;
+    }
+
+    if (failures >= 3) {
+      void this.alerts.workerCrashLoop(this.botConfig.id, failures);
+    }
+
+    if (this.stopping) return;
+
+    const baseMs = this.config.worker_tuning.crash_loop_backoff_base_ms;
+    const capMs = this.config.worker_tuning.crash_loop_backoff_cap_ms;
+    const backoff = Math.min(capMs, baseMs * 2 ** (failures - 1));
+    this.log.info("scheduling runner restart", { failures, backoff_ms: backoff });
+    this.db.updateWorkerState(this.botConfig.id, { status: "restarting" });
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (this.stopping) return;
+      void this.runner.start().catch((err) => {
+        this.log.error("runner restart failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    }, backoff);
   }
 
   private onRateLimit(ev: Extract<RunnerEvent, { kind: "rate_limit" }>): void {

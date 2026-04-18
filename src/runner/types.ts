@@ -57,7 +57,11 @@ export interface AgentRunner {
   readonly botId: BotId;
 
   start(): Promise<void>;
-  stop(signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
+  /**
+   * Stop the runner. Implementations send SIGTERM, wait `graceMs` for the
+   * subprocess to exit, then SIGKILL if still alive. Default grace is 5000ms.
+   */
+  stop(graceMs?: number): Promise<void>;
 
   sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult;
 

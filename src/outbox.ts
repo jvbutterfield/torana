@@ -43,6 +43,26 @@ export class OutboxProcessor {
     this.sendCallbacks.clear();
   }
 
+  /**
+   * Best-effort flush of pending outbox rows before shutdown. Blocks until
+   * either the pending queue is empty or `maxMs` elapses. Rows in 'retrying'
+   * status with a future `next_attempt_at` are intentionally NOT rushed —
+   * those are left for the next process start. See §3.12 of the plan.
+   */
+  async drain(maxMs: number): Promise<void> {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+      const pending = this.db.getPendingOutbox();
+      if (pending.length === 0) return;
+      await this.processPending();
+      if (Date.now() >= deadline) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    log.warn("drain deadline reached; leaving pending rows for next start", {
+      pending: this.db.getPendingOutbox().length,
+    });
+  }
+
   queueSend(turnId: number, botId: BotId, chatId: number, text: string): number {
     return this.db.insertOutbox(turnId, botId, chatId, "send", JSON.stringify({ text }));
   }

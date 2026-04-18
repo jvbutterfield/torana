@@ -84,20 +84,29 @@ export class CommandRunner implements AgentRunner {
     await this.spawnOnce();
   }
 
-  async stop(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): Promise<void> {
+  async stop(graceMs = 5000): Promise<void> {
     this.stopping = true;
     this.status = "stopping";
-    if (this.proc) {
+    const proc = this.proc;
+    if (proc) {
       try {
-        this.proc.kill(signal);
+        proc.kill("SIGTERM");
       } catch {
         /* dead */
       }
+      const killer = setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          /* ok */
+        }
+      }, graceMs);
       try {
-        await this.proc.exited;
+        await proc.exited;
       } catch {
         /* ignore */
       }
+      clearTimeout(killer);
       this.proc = null;
     }
     this.logStream?.end();

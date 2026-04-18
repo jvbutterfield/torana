@@ -158,19 +158,58 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
     }
   }, 30_000);
 
+  let shutdownStarted = false;
   const running: RunningGateway = {
     server,
     registry,
     transports,
     async shutdown(signal: string) {
+      if (shutdownStarted) return;
+      shutdownStarted = true;
       log.info("shutting down", { signal });
-      clearInterval(backlogTimer);
-      await Promise.all(transports.map((t) => t.stop()));
-      outbox.stop();
-      streaming.stopAll();
-      await registry.stopAll();
-      await server.stop();
-      db.close();
+
+      const deadline =
+        Date.now() + config.shutdown.hard_timeout_secs * 1000;
+
+      // Hard-cutoff watchdog: if the orderly path hangs, exit 1.
+      const hardTimer = setTimeout(() => {
+        log.error("shutdown hard timeout — forcing exit", {
+          hard_timeout_secs: config.shutdown.hard_timeout_secs,
+        });
+        process.exit(1);
+      }, config.shutdown.hard_timeout_secs * 1000);
+      // Don't let the watchdog itself keep the process alive.
+      (hardTimer as unknown as { unref?: () => void }).unref?.();
+
+      try {
+        clearInterval(backlogTimer);
+
+        // 1. Stop accepting new updates.
+        await Promise.all(transports.map((t) => t.stop()));
+
+        // 2. Drain outbox up to shutdown.outbox_drain_secs.
+        const drainBudgetMs = Math.max(
+          0,
+          Math.min(
+            config.shutdown.outbox_drain_secs * 1000,
+            deadline - Date.now(),
+          ),
+        );
+        await outbox.drain(drainBudgetMs);
+        outbox.stop();
+
+        streaming.stopAll();
+
+        // 3. Stop runners with per-runner grace.
+        const runnerGraceMs = config.shutdown.runner_grace_secs * 1000;
+        await registry.stopAll(runnerGraceMs);
+
+        // 4. Server + DB.
+        await server.stop();
+        db.close();
+      } finally {
+        clearTimeout(hardTimer);
+      }
       log.info("shutdown complete");
     },
   };

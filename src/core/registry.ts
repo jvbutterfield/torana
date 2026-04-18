@@ -57,12 +57,12 @@ export class BotRegistry {
     this.dispatchTimer = setInterval(() => this.dispatchAll(), 2000);
   }
 
-  async stopAll(): Promise<void> {
+  async stopAll(graceMs?: number): Promise<void> {
     if (this.dispatchTimer) {
       clearInterval(this.dispatchTimer);
       this.dispatchTimer = null;
     }
-    await Promise.all([...this.bots.values()].map((b) => b.stop()));
+    await Promise.all([...this.bots.values()].map((b) => b.stop(graceMs)));
   }
 
   /**
