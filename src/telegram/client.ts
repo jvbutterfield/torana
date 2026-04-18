@@ -60,8 +60,8 @@ export type EditResult =
   | { ok: false; retriable: boolean; notModified: boolean; description: string };
 
 /**
- * Thin HTTP client for the Telegram Bot API. No persona awareness — botId is
- * just a tag used in logs.
+ * Thin HTTP client for the Telegram Bot API. `botId` is just a tag used in logs;
+ * the client holds one token and is otherwise stateless.
  */
 export class TelegramClient {
   readonly botId: BotId;

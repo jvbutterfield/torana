@@ -39,8 +39,11 @@ jobs:
       - name: Test
         run: bun test --timeout 15000
 
-      - name: npm audit (high+)
-        run: npm audit --audit-level=high
+      # Use `bun audit` instead of `npm audit`: bun is the install path here,
+      # so no package-lock.json exists. `bun audit` reads bun.lock and hits the
+      # same advisory DB as npm.
+      - name: Audit dependencies (high+)
+        run: bun audit --audit-level=high
 
       - name: Build
         run: bun run build
