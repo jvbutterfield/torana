@@ -26,15 +26,108 @@ export interface LoadOptions {
 
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 
-/** Interpolate ${VAR} and ${VAR:-default} references. Missing ${VAR} without a default is fatal. */
+/**
+ * Interpolate `${VAR}` and `${VAR:-default}` references. Missing `${VAR}` without a default is fatal.
+ *
+ * Runs on the raw config text before YAML parse, so we first mask out YAML
+ * comments — a literal `${VAR}` in prose inside a `#` comment should not be
+ * treated as a real reference. This bit rc.1 users: see plan §14.L bug 1.
+ *
+ * Errors include `line`/`column` so the user can find the reference.
+ */
 export function interpolate(input: string, env: Record<string, string | undefined>): string {
-  return input.replace(/\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/g, (_match, name, fallback) => {
+  const masked = maskYamlComments(input);
+  return input.replace(/\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/g, (match, name, fallback, offset) => {
+    // `masked` has the same length as `input` — if the same offset in `masked`
+    // has been replaced with spaces, the reference lives inside a comment and
+    // we must leave the original text unchanged.
+    if (masked[offset] === " ") return match;
     const val = env[name];
     if (val !== undefined && val !== "") return val;
     if (fallback !== undefined) return fallback;
     if (val === "") return "";
-    throw new ConfigLoadError(`env var \${${name}} is not set and has no default`);
+    const { line, column } = offsetToLineColumn(input, offset);
+    throw new ConfigLoadError(
+      `env var \${${name}} is not set and has no default (at line ${line}, column ${column})`,
+    );
   });
+}
+
+/**
+ * Replace YAML comment spans with spaces, preserving every other character and
+ * the overall length. Comment start is an unquoted `#` that is either at start
+ * of line or preceded by whitespace (YAML's rule). Handles single- and
+ * double-quoted string context so `#` inside a quoted value is not mistaken
+ * for a comment.
+ */
+function maskYamlComments(input: string): string {
+  const out: string[] = [];
+  let inSingle = false;
+  let inDouble = false;
+  let inComment = false;
+  let prev = "";
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i]!;
+    if (inComment) {
+      if (c === "\n") {
+        inComment = false;
+        out.push(c);
+      } else {
+        out.push(" ");
+      }
+      prev = c;
+      continue;
+    }
+    if (c === "\\" && inDouble) {
+      // double-quoted strings support \" and friends; skip the next char
+      out.push(c);
+      if (i + 1 < input.length) {
+        out.push(input[i + 1]!);
+        i++;
+      }
+      prev = c;
+      continue;
+    }
+    if (c === "'" && !inDouble) {
+      inSingle = !inSingle;
+      out.push(c);
+      prev = c;
+      continue;
+    }
+    if (c === '"' && !inSingle) {
+      inDouble = !inDouble;
+      out.push(c);
+      prev = c;
+      continue;
+    }
+    if (c === "#" && !inSingle && !inDouble && (prev === "" || /\s/.test(prev))) {
+      inComment = true;
+      out.push(" ");
+      prev = c;
+      continue;
+    }
+    if (c === "\n") {
+      inSingle = false;
+      inDouble = false;
+    }
+    out.push(c);
+    prev = c;
+  }
+  return out.join("");
+}
+
+function offsetToLineColumn(input: string, offset: number): { line: number; column: number } {
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < offset && i < input.length; i++) {
+    if (input[i] === "\n") {
+      line++;
+      column = 1;
+    } else {
+      column++;
+    }
+  }
+  return { line, column };
 }
 
 /** Main entry point: read from disk, interpolate, parse YAML, validate. */

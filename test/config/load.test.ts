@@ -89,6 +89,37 @@ describe("config/load", () => {
     expect(interpolate("x=${FOO:-}", {})).toBe("x=");
   });
 
+  test("interpolate: literal ${VAR} inside a YAML comment is left alone", () => {
+    // rc.1 incident: prose in a comment was treated as a real env reference.
+    const raw = "# Secret-bearing vars use ${SOMETHING}\nx: ${FOO:-ok}\n";
+    const out = interpolate(raw, {});
+    expect(out).toContain("${SOMETHING}");
+    expect(out).toContain("x: ok");
+  });
+
+  test("interpolate: ${VAR} after an inline comment is not substituted", () => {
+    const raw = "key: value  # look here: ${MISSING}\n";
+    // Must not throw on MISSING — it's inside an inline comment.
+    expect(() => interpolate(raw, {})).not.toThrow();
+  });
+
+  test("interpolate: ${VAR} inside a double-quoted string IS still interpolated", () => {
+    const raw = 'key: "hash # and ${HELLO}"\n';
+    expect(interpolate(raw, { HELLO: "world" })).toBe('key: "hash # and world"\n');
+  });
+
+  test("interpolate: missing-var error reports line and column", () => {
+    const raw = "gateway:\n  port: 3000\n  token: ${GONE}\n";
+    try {
+      interpolate(raw, {});
+      throw new Error("expected throw");
+    } catch (err) {
+      expect((err as Error).message).toMatch(/GONE/);
+      expect((err as Error).message).toMatch(/line 3/);
+      expect((err as Error).message).toMatch(/column 10/);
+    }
+  });
+
   test("rejects duplicate bot ids", () => {
     const raw = `
 version: 1

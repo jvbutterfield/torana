@@ -41,6 +41,12 @@ jobs:
         run: bun run typecheck
       - name: Test
         run: bun test --timeout 15000
+      # Build + verify the tarball would ship the runtime-loaded SQL files.
+      # Regression guard for the rc.1 incident where migrations shipped empty.
+      - name: Build
+        run: bun run build
+      - name: Verify pack manifest
+        run: bun run scripts/verify-pack.ts
 
   macos-smoke:
     runs-on: macos-latest

@@ -50,6 +50,11 @@ jobs:
       - name: Build
         run: bun run build
 
+      # Guard against shipping a tarball without the runtime-loaded SQL files
+      # (rc.1 regression). Fails the publish before it mints an OIDC token.
+      - name: Verify pack manifest
+        run: bun run scripts/verify-pack.ts
+
       # Compute the npm dist-tag: prerelease versions (anything with a `-`
       # after the version) publish under `rc` so they don't take the `latest`
       # pointer from a stable release. Stable versions publish as `latest`.

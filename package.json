@@ -1,6 +1,6 @@
 {
   "name": "torana",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "Open-source Telegram gateway for agent runtimes. Configuration-driven, any-runner, webhook or polling.",
   "license": "MIT",
   "author": "Jason Butterfield <jbutterfield@gmail.com>",
@@ -42,7 +42,7 @@
     "lint": "bun x eslint src",
     "format": "bun x prettier --write .",
     "format:check": "bun x prettier --check .",
-    "build": "bun build src/cli.ts --target=bun --outdir=dist --external bun:sqlite",
+    "build": "bun run scripts/build.ts",
     "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "dependencies": {

@@ -35,12 +35,15 @@ export interface MigrationPlan {
   snapshotPath?: string;
 }
 
+// __dirname varies by how the code is running:
+//   - source: src/db/  → sibling schema.sql and migrations/
+//   - bundled (npm-published): dist/  → scripts/build.ts copies SQL to dist/db/
+function sqlCandidates(relative: string): string[] {
+  return [resolve(__dirname, relative), resolve(__dirname, "db", relative)];
+}
+
 function readSchemaSql(): string {
-  // schema.sql sits next to this file in src/db/, or dist/db/ after build.
-  const candidates = [
-    resolve(__dirname, "schema.sql"),
-    resolve(__dirname, "../../src/db/schema.sql"),
-  ];
+  const candidates = sqlCandidates("schema.sql");
   for (const p of candidates) {
     if (existsSync(p)) return readFileSync(p, "utf8");
   }
@@ -48,10 +51,7 @@ function readSchemaSql(): string {
 }
 
 function readMigrationSql(name: string): string {
-  const candidates = [
-    resolve(__dirname, "migrations", name),
-    resolve(__dirname, "../../src/db/migrations", name),
-  ];
+  const candidates = sqlCandidates(`migrations/${name}`);
   for (const p of candidates) {
     if (existsSync(p)) return readFileSync(p, "utf8");
   }
