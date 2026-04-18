@@ -105,6 +105,7 @@ describe("PollingTransport", () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
       transport: {
         default_mode: "polling",
+        allowed_updates: ["message"],
         polling: {
           timeout_secs: 1,
           backoff_base_ms: 100,

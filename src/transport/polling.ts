@@ -3,6 +3,7 @@
 // on restart; dedup on inbound_updates is still the last line of defense.
 
 import { logger } from "../log.js";
+import { nextBackoffMs } from "../backoff.js";
 import type { BotId, Config } from "../config/schema.js";
 import type { TelegramClient } from "../telegram/client.js";
 import type { GatewayDB } from "../db/gateway-db.js";
@@ -68,7 +69,7 @@ class BotPoller {
       /* best-effort */
     }
 
-    const allowedUpdates = this.config.transport.webhook?.allowed_updates ?? ["message"];
+    const allowedUpdates = this.config.transport.allowed_updates;
     const timeoutSecs = this.config.transport.polling.timeout_secs;
     const limit = this.config.transport.polling.max_updates_per_batch;
     const baseBackoff = this.config.transport.polling.backoff_base_ms;
@@ -120,7 +121,7 @@ class BotPoller {
           return;
         }
         this.failureCount += 1;
-        const wait = Math.min(capBackoff, baseBackoff * 2 ** (this.failureCount - 1));
+        const wait = nextBackoffMs(this.failureCount - 1, baseBackoff, capBackoff);
         log.warn("poll failed; backing off", {
           bot_id: this.botId,
           failure: this.failureCount,

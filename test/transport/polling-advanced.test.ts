@@ -86,6 +86,7 @@ function buildTransport(opts: {
   const config = makeTestConfig([botConfig], {
     transport: {
       default_mode: "polling",
+      allowed_updates: ["message"],
       polling: {
         timeout_secs: 1,
         backoff_base_ms: opts.backoff_base_ms ?? 50,

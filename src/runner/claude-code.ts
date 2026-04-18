@@ -1,6 +1,5 @@
 // ClaudeCodeRunner — wraps `claude --print --output-format stream-json ...`
-// and translates its NDJSON into RunnerEvent. Handles start/stop/reset lifecycle,
-// crash loops, stderr buffering, and log capture.
+// and translates its NDJSON into RunnerEvent.
 
 import { spawn, type Subprocess } from "bun";
 import { createWriteStream, type WriteStream } from "node:fs";
@@ -16,11 +15,13 @@ import {
   type RunnerEvent,
   type RunnerEventHandler,
   type RunnerEventKind,
+  type RunnerStatus,
   type SendTurnResult,
   type TurnId,
   type Unsubscribe,
 } from "./types.js";
 import { createClaudeNdjsonParser } from "./protocols/claude-ndjson.js";
+import { encodeClaudeNdjsonTurn } from "./protocols/shared.js";
 
 const DEFAULT_STARTUP_MS = 2_000;
 
@@ -56,7 +57,7 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private logStream: WriteStream | null = null;
-  private status: "stopped" | "starting" | "ready" | "busy" | "stopping" = "stopped";
+  private status: RunnerStatus = "stopped";
   private activeTurn: TurnId | null = null;
   private pendingFreshSession: boolean;
   private stdoutRemainder = "";
@@ -161,19 +162,9 @@ export class ClaudeCodeRunner implements AgentRunner {
       return { accepted: false, reason: "not_ready" };
     }
 
-    const content =
-      attachments.length > 0
-        ? `${text}\n\n${attachments.map((a) => `[Attached file: ${a.path}]`).join("\n")}`
-        : text;
-
-    const envelope = JSON.stringify({
-      type: "user",
-      message: { role: "user", content },
-    });
-
     try {
       const stdin = this.proc.stdin;
-      stdin.write(envelope + "\n");
+      stdin.write(encodeClaudeNdjsonTurn(text, attachments));
       stdin.flush();
     } catch (err) {
       this.log.error("stdin write failed", { error: String(err) });
@@ -340,22 +331,30 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
 
     // Synthesize fatal/exit if no explicit fatal has been emitted by the parser.
+    // Never include the stderr tail in `ev.message`: it flows through the Bot
+    // layer into persisted state that a redactor can't know about (upstream
+    // API keys in a stack trace, etc.). The full stderr is already captured
+    // to the per-bot log file for operator debugging.
     const fatalCode: "auth" | "exit" = this.looksLikeAuthFailure() ? "auth" : "exit";
-    const msg = `claude subprocess exited with code ${exitCode}` +
-      (this.stderrBuffer.length ? `; last stderr: ${this.stderrBuffer.slice(-3).join(" | ")}` : "");
-    this.emitter.emit({ kind: "fatal", code: fatalCode, message: msg });
+    this.emitter.emit({
+      kind: "fatal",
+      code: fatalCode,
+      message: `claude subprocess exited with code ${exitCode}`,
+    });
     this.activeTurn = null;
     this.status = "stopped";
   }
 
   private dispatchEvent(ev: RunnerEvent): void {
-    // Track turn lifecycle so Ready/Busy state is correct.
     if (ev.kind === "ready" && this.status === "starting") {
       this.status = "ready";
     }
     if (ev.kind === "done" || ev.kind === "error") {
       this.activeTurn = null;
-      this.status = "ready";
+      // Don't flip to "ready" if we're already tearing down — the subprocess
+      // could be about to exit, and promoting status would let sendTurn race
+      // into a dead pipe.
+      if (this.status === "busy") this.status = "ready";
     }
     this.emitter.emit(ev);
   }

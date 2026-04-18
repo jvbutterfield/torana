@@ -1,8 +1,10 @@
 import { logger } from "./log.js";
+import { nextBackoffMs } from "./backoff.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { GatewayDB } from "./db/gateway-db.js";
 import type { TelegramClient } from "./telegram/client.js";
 import type { Metrics } from "./metrics.js";
+import type { AlertManager } from "./alerts.js";
 import { markdownToTelegramHtml } from "./format.js";
 
 const log = logger("outbox");
@@ -14,6 +16,7 @@ export class OutboxProcessor {
   private db: GatewayDB;
   private clients: Map<BotId, TelegramClient>;
   private metrics: Metrics;
+  private alerts: AlertManager | null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private sendCallbacks = new Map<number, SendCallback>();
   private processing = false;
@@ -23,11 +26,13 @@ export class OutboxProcessor {
     db: GatewayDB,
     clients: Map<BotId, TelegramClient>,
     metrics: Metrics,
+    alerts: AlertManager | null = null,
   ) {
     this.config = config;
     this.db = db;
     this.clients = clients;
     this.metrics = metrics;
+    this.alerts = alerts;
   }
 
   start(): void {
@@ -47,7 +52,7 @@ export class OutboxProcessor {
    * Best-effort flush of pending outbox rows before shutdown. Blocks until
    * either the pending queue is empty or `maxMs` elapses. Rows in 'retrying'
    * status with a future `next_attempt_at` are intentionally NOT rushed —
-   * those are left for the next process start. See §3.12 of the plan.
+   * those are left for the next process start.
    */
   async drain(maxMs: number): Promise<void> {
     const deadline = Date.now() + maxMs;
@@ -190,9 +195,10 @@ export class OutboxProcessor {
     row: { id: number; attempt_count: number; kind?: string; bot_id?: BotId },
     error: string,
   ): void {
-    const backoff = Math.min(
+    const backoff = nextBackoffMs(
+      row.attempt_count,
+      this.config.outbox.retry_base_ms,
       60_000,
-      this.config.outbox.retry_base_ms * 2 ** row.attempt_count,
     );
     // Format must match SQLite's `datetime('now')` ("YYYY-MM-DD HH:MM:SS")
     // because the eligibility query does a lexicographic text comparison.
@@ -211,9 +217,11 @@ export class OutboxProcessor {
       this.metrics.inc(row.bot_id, counter);
     }
 
+    const nextAttemptCount = row.attempt_count + 1;
+    const willDeadLetter = nextAttemptCount >= this.config.outbox.max_attempts;
     log.warn("outbox delivery failed", {
       id: row.id,
-      attempt: row.attempt_count + 1,
+      attempt: nextAttemptCount,
       max_attempts: this.config.outbox.max_attempts,
       error,
     });
@@ -224,5 +232,9 @@ export class OutboxProcessor {
       nextAttempt,
       this.config.outbox.max_attempts,
     );
+
+    if (willDeadLetter && row.bot_id && this.alerts) {
+      void this.alerts.outboxFailures(row.bot_id, nextAttemptCount);
+    }
   }
 }

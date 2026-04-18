@@ -17,6 +17,7 @@ import {
   type RunnerEvent,
   type RunnerEventHandler,
   type RunnerEventKind,
+  type RunnerStatus,
   type SendTurnResult,
   type TurnId,
   type Unsubscribe,
@@ -27,6 +28,7 @@ import {
   encodeReset,
   encodeTurn,
 } from "./protocols/jsonl-text.js";
+import { encodeClaudeNdjsonTurn } from "./protocols/shared.js";
 
 export interface CommandRunnerOptions {
   botId: BotId;
@@ -47,7 +49,7 @@ export class CommandRunner implements AgentRunner {
 
   private proc: Subprocess<"pipe", "pipe", "pipe"> | null = null;
   private logStream: WriteStream | null = null;
-  private status: "stopped" | "starting" | "ready" | "busy" | "stopping" = "stopped";
+  private status: RunnerStatus = "stopped";
   private activeTurn: TurnId | null = null;
   private stopping = false;
 
@@ -156,18 +158,10 @@ export class CommandRunner implements AgentRunner {
       return { accepted: false, reason: "not_ready" };
     }
 
-    let payload: string;
-    if (this.config.protocol === "jsonl-text") {
-      payload = encodeTurn(turnId, text, attachments);
-    } else {
-      // claude-ndjson envelope (matches what ClaudeCodeRunner feeds).
-      const content =
-        attachments.length > 0
-          ? `${text}\n\n${attachments.map((a) => `[Attached file: ${a.path}]`).join("\n")}`
-          : text;
-      payload =
-        JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n";
-    }
+    const payload =
+      this.config.protocol === "jsonl-text"
+        ? encodeTurn(turnId, text, attachments)
+        : encodeClaudeNdjsonTurn(text, attachments);
 
     try {
       this.proc.stdin.write(payload);
@@ -298,12 +292,13 @@ export class CommandRunner implements AgentRunner {
   }
 
   private dispatchEvent(ev: RunnerEvent): void {
-    if (ev.kind === "ready") {
+    if (ev.kind === "ready" && (this.status === "starting" || this.status === "busy")) {
       this.status = "ready";
     }
     if (ev.kind === "done" || ev.kind === "error") {
       this.activeTurn = null;
-      this.status = "ready";
+      // Don't flip to "ready" if we're already tearing down.
+      if (this.status === "busy") this.status = "ready";
     }
     this.emitter.emit(ev);
   }

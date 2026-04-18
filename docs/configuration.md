@@ -54,9 +54,9 @@ To inherit a specific var, reference it via `${VAR}`. To disable PATH inheritanc
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `default_mode` | `webhook\|polling` | — (required) | Per-bot `transport_override.mode` overrides |
+| `allowed_updates` | string[] | `["message"]` | Passed to `setWebhook`/`getUpdates`; applies to both transports |
 | `webhook.base_url` | URL | — | Required iff any bot uses webhook |
 | `webhook.secret` | string (non-empty) | — | Required iff any bot uses webhook |
-| `webhook.allowed_updates` | string[] | `["message"]` | |
 | `polling.timeout_secs` | int 1..60 | `25` | `getUpdates` long-poll timeout |
 | `polling.backoff_base_ms` | int | `1000` | |
 | `polling.backoff_cap_ms` | int | `30000` | |

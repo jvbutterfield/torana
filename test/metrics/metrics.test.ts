@@ -214,18 +214,16 @@ describe("AlertManager", () => {
     await a.tokenInvalid("alpha");
     await a.mailboxBacklog("alpha", 12);
     await a.outboxFailures("alpha", 3);
-    await a.turnStalled("alpha", 42);
     await a.attachmentDiskFull();
     await a.webhookSetFailed("alpha", "bad url");
-    expect(sends).toHaveLength(8);
+    expect(sends).toHaveLength(7);
     expect(sends[0].text).toMatch(/degraded/);
     expect(sends[1].text).toMatch(/crash loop/);
     expect(sends[2].text).toMatch(/token invalid/);
     expect(sends[3].text).toMatch(/backlog/);
     expect(sends[4].text).toMatch(/outbox/);
-    expect(sends[5].text).toMatch(/stalled/);
-    expect(sends[6].text).toMatch(/disk|full/i);
-    expect(sends[7].text).toMatch(/webhook|setWebhook/i);
+    expect(sends[5].text).toMatch(/disk|full/i);
+    expect(sends[6].text).toMatch(/webhook|setWebhook/i);
   });
 
   test("via_bot pointing at a bot with no client: falls back to log-only", async () => {

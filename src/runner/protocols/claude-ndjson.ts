@@ -1,9 +1,15 @@
 // Translates Claude Code's --output-format=stream-json NDJSON into RunnerEvent.
-// See §3.3 of the plan for the full mapping table. Unknown event shapes are
-// dropped (logged at debug) for forward compat with newer Claude Code versions.
+// Unknown event shapes are dropped (logged at debug) for forward compat with
+// newer Claude Code versions.
 
 import { logger } from "../../log.js";
 import type { RunnerEvent, TurnId } from "../types.js";
+import {
+  createLineBufferedParser,
+  extractUsage,
+  normalizeStopReason,
+  type LineBufferedParser,
+} from "./shared.js";
 
 const log = logger("claude-ndjson");
 
@@ -12,16 +18,9 @@ export interface ClaudeNdjsonParseOptions {
   currentTurnId: () => TurnId | null;
 }
 
-export interface ClaudeNdjsonParser {
-  /** Feed a stdout chunk; invokes `onEvent` for every normalized event. */
-  feed(chunk: string, onEvent: (event: RunnerEvent) => void): void;
-  /** Flush any buffered partial line (call on stream close). */
-  flush(onEvent: (event: RunnerEvent) => void): void;
-}
+export type ClaudeNdjsonParser = LineBufferedParser;
 
 export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): ClaudeNdjsonParser {
-  let remainder = "";
-
   function translate(raw: unknown, onEvent: (event: RunnerEvent) => void): void {
     if (!raw || typeof raw !== "object") return;
     const ev = raw as Record<string, unknown>;
@@ -46,7 +45,7 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
             onEvent({ kind: "text_delta", turnId, text: delta.text });
           }
         }
-        // thinking_delta is intentionally dropped (matches v0 behavior).
+        // thinking_delta is intentionally not surfaced to the user.
         return;
       }
 
@@ -58,12 +57,11 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
         }
         return;
       }
-      // content_block_stop and message_* stream events don't produce surfaces.
       return;
     }
 
     if (type === "assistant") {
-      // mid-turn assistant event — stream_event is authoritative, drop.
+      // mid-turn assistant event — stream_event is authoritative.
       return;
     }
 
@@ -85,11 +83,10 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
         return;
       }
 
-      const stopReason = normalizeStopReason(ev.stop_reason);
       onEvent({
         kind: "done",
         turnId,
-        stopReason,
+        stopReason: normalizeStopReason(ev.stop_reason),
         usage: extractUsage(ev),
         finalText,
         durationMs: duration,
@@ -109,53 +106,7 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
     log.debug("unknown ndjson event — dropped", { type: String(type) });
   }
 
-  function handleLine(line: string, onEvent: (event: RunnerEvent) => void): void {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch (err) {
-      log.debug("non-json line dropped", { line: trimmed.slice(0, 120) });
-      return;
-    }
-    translate(parsed, onEvent);
-  }
-
-  return {
-    feed(chunk, onEvent) {
-      remainder += chunk;
-      const lines = remainder.split("\n");
-      remainder = lines.pop() ?? "";
-      for (const line of lines) handleLine(line, onEvent);
-    },
-    flush(onEvent) {
-      if (remainder) {
-        handleLine(remainder, onEvent);
-        remainder = "";
-      }
-    },
-  };
-}
-
-function normalizeStopReason(
-  raw: unknown,
-): "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | undefined {
-  if (raw === "end_turn" || raw === "max_tokens" || raw === "stop_sequence" || raw === "tool_use") {
-    return raw;
-  }
-  return undefined;
-}
-
-function extractUsage(
-  ev: Record<string, unknown>,
-): { input_tokens?: number; output_tokens?: number } | undefined {
-  const u = ev.usage as Record<string, unknown> | undefined;
-  if (!u) return undefined;
-  const out: { input_tokens?: number; output_tokens?: number } = {};
-  if (typeof u.input_tokens === "number") out.input_tokens = u.input_tokens;
-  if (typeof u.output_tokens === "number") out.output_tokens = u.output_tokens;
-  return Object.keys(out).length ? out : undefined;
+  return createLineBufferedParser("claude-ndjson", translate);
 }
 
 function parseRetryAfter(info: Record<string, unknown>): number | undefined {

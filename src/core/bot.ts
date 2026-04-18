@@ -1,13 +1,5 @@
-// One `Bot` bundles: config, Telegram client, runner, and references to
-// shared services (DB, streaming, outbox, metrics, alerts). The BotRegistry
-// (below, in registry.ts) owns the collection of Bot instances.
-//
-// Lifecycle:
-//   - new Bot(...)
-//   - start(): initializes runner, subscribes to its events
-//   - stop(): cleanly stops the runner
-
 import { logger, type Logger } from "../log.js";
+import { nextBackoffMs } from "../backoff.js";
 import type { BotConfig, Config } from "../config/schema.js";
 import type { TelegramClient } from "../telegram/client.js";
 import type { GatewayDB } from "../db/gateway-db.js";
@@ -46,7 +38,6 @@ export class Bot {
   private log: Logger;
 
   private activeTurnId: number | null = null;
-  private readyOnce = false;
   private stopping = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -132,10 +123,6 @@ export class Bot {
   // --- Runner event handlers ---
 
   private onRunnerReady(): void {
-    if (!this.readyOnce) {
-      this.readyOnce = true;
-      this.log.info("runner ready");
-    }
     // Reset the consecutive_failures counter on any successful start. A
     // runner that reaches 'ready' again after a crash loop clears its
     // credit, so the next fatal starts backoff from zero.
@@ -245,9 +232,11 @@ export class Bot {
 
     if (this.stopping) return;
 
-    const baseMs = this.config.worker_tuning.crash_loop_backoff_base_ms;
-    const capMs = this.config.worker_tuning.crash_loop_backoff_cap_ms;
-    const backoff = Math.min(capMs, baseMs * 2 ** (failures - 1));
+    const backoff = nextBackoffMs(
+      failures - 1,
+      this.config.worker_tuning.crash_loop_backoff_base_ms,
+      this.config.worker_tuning.crash_loop_backoff_cap_ms,
+    );
     this.log.info("scheduling runner restart", { failures, backoff_ms: backoff });
     this.db.updateWorkerState(this.botConfig.id, { status: "restarting" });
 

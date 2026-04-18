@@ -1,5 +1,4 @@
 // makeTestBot factory — lets each test pick its own bot cardinality.
-// See §5 of the plan.
 
 import type {
   BotConfig,
@@ -46,6 +45,7 @@ export function makeTestConfig(
     telegram: { api_base_url: "https://api.telegram.org" },
     transport: {
       default_mode: "polling",
+      allowed_updates: ["message"],
       polling: {
         timeout_secs: 25,
         backoff_base_ms: 1000,

@@ -14,7 +14,6 @@ export type AlertKind =
   | "tokenInvalid"
   | "mailboxBacklog"
   | "outboxFailures"
-  | "turnStalled"
   | "attachmentDiskFull"
   | "webhookSetFailed";
 
@@ -90,14 +89,6 @@ export class AlertManager {
       "outboxFailures",
       botId,
       `⚠️ bot ${botId}: ${count} outbox deliveries dead-lettered`,
-    );
-  }
-
-  async turnStalled(botId: BotId, turnId: number): Promise<void> {
-    await this.emit(
-      "turnStalled",
-      botId,
-      `⚠️ bot ${botId} turn ${turnId} stalled — no runner output`,
     );
   }
 

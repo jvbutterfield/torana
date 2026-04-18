@@ -205,8 +205,10 @@ describe("ClaudeCodeRunner lifecycle", () => {
     const { waitFor } = track(runner);
     await runner.start();
     const ev = (await waitFor("fatal", 5000)) as { kind: "fatal"; code?: string; message: string };
+    // Auth signal lives in `code`, not in the message: the message must not
+    // carry subprocess stderr (which could contain third-party secrets).
     expect(ev.code).toBe("auth");
-    expect(ev.message.toLowerCase()).toContain("not logged in");
+    expect(ev.message.toLowerCase()).not.toContain("not logged in");
   }, 20_000);
 
   test("crash during turn → fatal, activeTurn cleared", async () => {

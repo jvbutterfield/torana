@@ -1,6 +1,8 @@
-// Attachment download helpers — enforces the mime-derived filename allowlist
-// from §4.3 of the plan (SECURITY). Telegram's file_path and original_filename
-// are never used to compute the on-disk name or extension.
+// Attachment download helpers. SECURITY: on-disk filenames are fully
+// gateway-controlled — extensions come from a fixed mime-type allowlist.
+// Telegram's `file_path` and `original_filename` are never used for the
+// on-disk name or extension (they are attacker-influenced and could contain
+// path separators, NUL bytes, or misleading extensions).
 
 import { mkdir, writeFile, stat, readdir, unlink } from "node:fs/promises";
 import { resolve, isAbsolute, join } from "node:path";

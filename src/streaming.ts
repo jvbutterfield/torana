@@ -65,7 +65,7 @@ export class StreamManager {
     log.info("turn cancelled", { bot_id: botId, turn_id: prev.turnId });
   }
 
-  async startTurn(botId: BotId, turnId: number, chatId: number): Promise<void> {
+  startTurn(botId: BotId, turnId: number, chatId: number): void {
     this.cancelTurn(botId);
     this.db.initStreamState(turnId);
 

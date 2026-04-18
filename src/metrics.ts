@@ -108,7 +108,7 @@ export class Metrics {
     return Math.floor(this.uptimeMs() / 1000);
   }
 
-  /** Prometheus text-exposition format (§3.11). */
+  /** Prometheus text-exposition format. */
   renderPrometheus(botStates: Record<BotId, number>): string {
     const lines: string[] = [];
     lines.push("# HELP gateway_uptime_secs Seconds since gateway process start.");

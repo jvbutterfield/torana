@@ -81,7 +81,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   }
 
   const alerts = new AlertManager(config, clients);
-  const outbox = new OutboxProcessor(config, db, clients, metrics);
+  const outbox = new OutboxProcessor(config, db, clients, metrics, alerts);
   const streaming = new StreamManager(config, db, outbox, clients);
 
   // Build Bot instances.
@@ -135,6 +135,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
         router: server.router,
         db,
         clients: webhookClients,
+        alerts,
       }),
     );
   }
@@ -144,9 +145,11 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
     );
   }
 
-  for (const t of transports) {
-    await t.start((botId, update) => registry.handleUpdate(botId, update).then(() => {}));
-  }
+  await Promise.all(
+    transports.map((t) =>
+      t.start((botId, update) => registry.handleUpdate(botId, update).then(() => {})),
+    ),
+  );
 
   outbox.start();
   await registry.startAll();

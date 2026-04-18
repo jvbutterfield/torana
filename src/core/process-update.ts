@@ -1,5 +1,5 @@
-// Shared processUpdate path (§3.6). Both webhook and polling transports
-// route into this function. The steps in order:
+// Shared processUpdate path. Both webhook and polling transports route into
+// this function. The steps in order:
 //   1. Shape-validate the update
 //   2. Quick dedup check (read-only)
 //   3. ACL
@@ -14,6 +14,7 @@ import type { BotConfig, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { TelegramClient } from "../telegram/client.js";
 import type { TelegramUpdate } from "../telegram/types.js";
+import type { AlertManager } from "../alerts.js";
 import {
   downloadAttachments,
   computeAttachmentsDiskUsage,
@@ -41,6 +42,7 @@ export interface ProcessUpdateDeps {
   db: GatewayDB;
   botConfig: BotConfig;
   telegram: TelegramClient;
+  alerts?: AlertManager;
   /** Callback fired when a new turn has been enqueued — dispatcher will pick it up. */
   onEnqueued?: (turnId: number) => void;
   /** Provides the command dispatcher context (runner + status snapshot). */
@@ -174,30 +176,40 @@ export async function processUpdate(
     return { status: "rejected_unsupported_media" };
   }
 
-  if (!hasText && !message.photo && !message.document) {
+  const hasAttachments = !!message.photo || !!message.document;
+  if (!hasText && !hasAttachments) {
     // Nothing to forward and nothing rejected.
     return { status: "dropped_no_text" };
   }
 
-  // Step 6 — attachment download.
-  const diskUsage = await computeAttachmentsDiskUsage(config.gateway.data_dir);
-  if (diskUsage >= config.attachments.disk_usage_cap_bytes) {
-    await telegram
-      .sendMessage(
-        chatId,
-        "Attachment storage is full — please try again later.",
-      )
-      .catch(() => {});
-    return { status: "dropped_malformed", errors: ["disk_usage_cap"] };
-  }
+  // Step 6 — attachment download. The disk-usage walk is skipped when the
+  // message has nothing to download — the common text-only case doesn't need
+  // to `readdir` the entire attachments tree.
+  let attachments: Awaited<ReturnType<typeof downloadAttachments>>["attachments"] = [];
+  let errors: string[] = [];
+  if (hasAttachments) {
+    const diskUsage = await computeAttachmentsDiskUsage(config.gateway.data_dir);
+    if (diskUsage >= config.attachments.disk_usage_cap_bytes) {
+      if (deps.alerts) void deps.alerts.attachmentDiskFull();
+      await telegram
+        .sendMessage(
+          chatId,
+          "Attachment storage is full — please try again later.",
+        )
+        .catch(() => {});
+      return { status: "dropped_malformed", errors: ["disk_usage_cap"] };
+    }
 
-  const { attachments, errors } = await downloadAttachments(
-    config,
-    botConfig.id,
-    update.update_id,
-    message,
-    telegram,
-  );
+    const result = await downloadAttachments(
+      config,
+      botConfig.id,
+      update.update_id,
+      message,
+      telegram,
+    );
+    attachments = result.attachments;
+    errors = result.errors;
+  }
   if (errors.length > 0) {
     for (const err of errors) {
       log.warn("attachment download issue", { bot_id: botConfig.id, error: err });

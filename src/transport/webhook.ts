@@ -8,6 +8,7 @@ import { logger } from "../log.js";
 import type { BotId, Config } from "../config/schema.js";
 import type { TelegramClient } from "../telegram/client.js";
 import type { GatewayDB } from "../db/gateway-db.js";
+import type { AlertManager } from "../alerts.js";
 import type {
   HttpRouter,
   OnUpdateHandler,
@@ -30,6 +31,7 @@ export interface WebhookTransportOptions {
   db: GatewayDB;
   /** Map of botId → TelegramClient for bots using webhook transport. */
   clients: Map<BotId, TelegramClient>;
+  alerts?: AlertManager;
 }
 
 export class WebhookTransport implements Transport {
@@ -40,6 +42,7 @@ export class WebhookTransport implements Transport {
   private router: HttpRouter;
   private db: GatewayDB;
   private clients: Map<BotId, TelegramClient>;
+  private alerts: AlertManager | null;
   private unregister: Unregister | null = null;
   private secret: string;
 
@@ -48,6 +51,7 @@ export class WebhookTransport implements Transport {
     this.router = opts.router;
     this.db = opts.db;
     this.clients = opts.clients;
+    this.alerts = opts.alerts ?? null;
     this.botIds = [...opts.clients.keys()];
     const secret = opts.config.transport.webhook?.secret;
     if (!secret) {
@@ -69,7 +73,8 @@ export class WebhookTransport implements Transport {
       async (req, params) => this.handle(req, params, onUpdate),
     );
 
-    for (const [botId, client] of this.clients) {
+    const allowedUpdates = this.config.transport.allowed_updates;
+    const registerOne = async (botId: BotId, client: TelegramClient): Promise<void> => {
       const target = `${baseUrl.replace(/\/$/, "")}/webhook/${botId}`;
       try {
         const info = await client.getWebhookInfo();
@@ -80,22 +85,18 @@ export class WebhookTransport implements Transport {
             new: target,
           });
         }
-        await client.setWebhook(
-          target,
-          this.secret,
-          this.config.transport.webhook?.allowed_updates ?? ["message"],
-        );
+        await client.setWebhook(target, this.secret, allowedUpdates);
       } catch (err) {
-        log.error("setWebhook failed", {
-          bot_id: botId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        this.db.setBotDisabled(
-          botId,
-          `setWebhook failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        const reason = err instanceof Error ? err.message : String(err);
+        log.error("setWebhook failed", { bot_id: botId, error: reason });
+        this.db.setBotDisabled(botId, `setWebhook failed: ${reason}`);
+        if (this.alerts) void this.alerts.webhookSetFailed(botId, reason);
       }
-    }
+    };
+
+    await Promise.all(
+      [...this.clients.entries()].map(([botId, client]) => registerOne(botId, client)),
+    );
   }
 
   async stop(): Promise<void> {

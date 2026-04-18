@@ -15,7 +15,6 @@ export class GatewayDB {
     startTurn: Statement;
     completeTurn: Statement;
     interruptTurn: Statement;
-    markTurnDead: Statement;
     setTurnFirstOutput: Statement;
     setTurnLastOutput: Statement;
     getRunningTurns: Statement;
@@ -61,12 +60,12 @@ export class GatewayDB {
     log.info("database ready");
   }
 
-  /** Test-only hook so tests can apply schema.sql without a migration run. */
+  /** Raw SQL exec — used by tests to seed fixtures. */
   exec(sql: string): void {
     this._db.exec(sql);
   }
 
-  /** Direct query access for utility code (e.g. doctor checks). */
+  /** Prepare a raw statement — used by tests to assert DB state. */
   query(sql: string): Statement {
     return this._db.prepare(sql);
   }
@@ -94,9 +93,6 @@ export class GatewayDB {
       ),
       interruptTurn: d.prepare(
         "UPDATE turns SET status = 'interrupted', completed_at = datetime('now'), error_text = ? WHERE id = ?",
-      ),
-      markTurnDead: d.prepare(
-        "UPDATE turns SET status = 'dead', completed_at = datetime('now'), error_text = ? WHERE id = ?",
       ),
       setTurnFirstOutput: d.prepare(
         "UPDATE turns SET first_output_at = COALESCE(first_output_at, datetime('now')), last_output_at = datetime('now') WHERE id = ?",
@@ -277,10 +273,6 @@ export class GatewayDB {
 
   interruptTurn(turnId: number, reason: string): void {
     this.stmts.interruptTurn.run(reason, turnId);
-  }
-
-  markTurnDead(turnId: number, reason: string): void {
-    this.stmts.markTurnDead.run(reason, turnId);
   }
 
   setTurnFirstOutput(turnId: number): void {

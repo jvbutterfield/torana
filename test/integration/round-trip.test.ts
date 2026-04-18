@@ -56,12 +56,12 @@ function makeConfig(options: {
     telegram: { api_base_url: options.apiBaseUrl },
     transport: {
       default_mode: options.mode,
+      allowed_updates: ["message"],
       webhook:
         options.mode === "webhook"
           ? {
               base_url: options.webhookBaseUrl!,
               secret: options.webhookSecret!,
-              allowed_updates: ["message"],
             }
           : undefined,
       polling: {

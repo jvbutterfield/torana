@@ -19,10 +19,10 @@ Your `transport.webhook.base_url` must be reachable from Telegram's servers (pub
 ```yaml
 transport:
   default_mode: webhook
+  allowed_updates: [message]             # applies to both webhook and polling
   webhook:
     base_url: https://bots.example.com
     secret: ${TELEGRAM_WEBHOOK_SECRET}   # random long string
-    allowed_updates: [message]
 ```
 
 **Secret rotation (zero-downtime):**

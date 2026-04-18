@@ -1,5 +1,4 @@
 // AgentRunner interface and the normalized event shape all runners emit.
-// See §3.3 of docs/plans/oss-gateway-plan.md for the full contract.
 
 import type { BotId } from "../config/schema.js";
 import type { Attachment } from "../telegram/types.js";
@@ -7,6 +6,8 @@ import type { Attachment } from "../telegram/types.js";
 export type TurnId = string;
 
 export type Unsubscribe = () => void;
+
+export type RunnerStatus = "stopped" | "starting" | "ready" | "busy" | "stopping";
 
 export type RunnerEventKind =
   | "ready"
@@ -49,8 +50,7 @@ export type SendTurnResult =
   | { accepted: true; turnId: TurnId }
   | {
       accepted: false;
-      reason: "busy" | "not_ready" | "unsupported_attachment";
-      detail?: string;
+      reason: "busy" | "not_ready";
     };
 
 export interface AgentRunner {

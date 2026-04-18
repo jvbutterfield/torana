@@ -45,7 +45,6 @@ export const TransportWebhookSchema = z
   .object({
     base_url: UrlString.optional(),
     secret: NonEmptyString.optional(),
-    allowed_updates: z.array(z.string()).default(["message"]),
   })
   .strict();
 
@@ -67,6 +66,7 @@ export const TransportPollingSchema = z
 export const TransportSchema = z
   .object({
     default_mode: z.enum(["webhook", "polling"]),
+    allowed_updates: z.array(z.string()).default(["message"]),
     webhook: TransportWebhookSchema.optional(),
     polling: TransportPollingSchema,
   })

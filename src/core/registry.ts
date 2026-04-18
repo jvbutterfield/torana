@@ -3,6 +3,7 @@
 // runners.
 
 import { logger } from "../log.js";
+import type { AlertManager } from "../alerts.js";
 import type { BotConfig, BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { TelegramClient } from "../telegram/client.js";
@@ -13,7 +14,6 @@ import { processUpdate, type ProcessUpdateOutcome } from "./process-update.js";
 import type { BotStatusSnapshot, CommandContext } from "./commands.js";
 import type { StreamManager } from "../streaming.js";
 import type { OutboxProcessor } from "../outbox.js";
-import type { AlertManager } from "../alerts.js";
 
 const log = logger("registry");
 
@@ -34,6 +34,7 @@ export class BotRegistry {
   private bots: Map<BotId, Bot>;
   private clients: Map<BotId, TelegramClient>;
   private metrics: Metrics;
+  private alerts: AlertManager;
   private dispatchTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: BotRegistryOptions) {
@@ -42,6 +43,7 @@ export class BotRegistry {
     this.bots = new Map(opts.bots.map((b) => [b.id, b]));
     this.clients = opts.clients;
     this.metrics = opts.metrics;
+    this.alerts = opts.alerts;
   }
 
   bot(id: BotId): Bot | undefined {
@@ -81,6 +83,7 @@ export class BotRegistry {
         db: this.db,
         botConfig: bot.botConfig,
         telegram: bot.telegram,
+        alerts: this.alerts,
         onEnqueued: () => this.dispatchFor(botId),
         commandContextFactory: (args) => this.buildCommandContext(bot, args),
       },
