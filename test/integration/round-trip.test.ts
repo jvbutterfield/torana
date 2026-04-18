@@ -210,7 +210,7 @@ describe("integration: round-trip", () => {
     expect(fake.callsFor("beta", "setMessageReaction")).toHaveLength(1);
   }, 20_000);
 
-  test("webhook: wrong secret → 403, no runner dispatch", async () => {
+  test("webhook: wrong secret and unknown bot return identical responses (no enumeration)", async () => {
     const token = "TOK_SEC:CCCCCCC";
     fake = new FakeTelegram({ bots: { [token]: "gamma" } });
     const apiBase = await fake.start();
@@ -231,7 +231,8 @@ describe("integration: round-trip", () => {
       timeoutMs: 5_000,
     });
 
-    const resp = await fetch(`http://127.0.0.1:${port}/webhook/gamma`, {
+    // Known bot, wrong secret.
+    const wrongSecret = await fetch(`http://127.0.0.1:${port}/webhook/gamma`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -239,9 +240,23 @@ describe("integration: round-trip", () => {
       },
       body: JSON.stringify(makeTextUpdate(1, "ping")),
     });
-    expect(resp.status).toBe(403);
+    // Unknown bot, wrong secret.
+    const unknownBot = await fetch(`http://127.0.0.1:${port}/webhook/does-not-exist`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Bot-Api-Secret-Token": "wrong-secret",
+      },
+      body: JSON.stringify(makeTextUpdate(1, "ping")),
+    });
 
-    // Give the runner a chance to do something it shouldn't.
+    // Both return 200 with the same body, so an unauthenticated requester
+    // can't tell bot existence from response shape alone.
+    expect(wrongSecret.status).toBe(200);
+    expect(unknownBot.status).toBe(200);
+    expect(await wrongSecret.text()).toBe(await unknownBot.text());
+
+    // And the runner did NOT dispatch despite the 200.
     await new Promise((r) => setTimeout(r, 500));
     expect(fake.callsFor("gamma", "setMessageReaction")).toHaveLength(0);
     expect(telegramHasEchoOf(fake, "gamma", "echo: ping")).toBe(false);

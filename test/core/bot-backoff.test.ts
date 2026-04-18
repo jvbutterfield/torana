@@ -150,11 +150,16 @@ describe("Bot crash-loop backoff", () => {
     expect(stub.startCalls).toBe(1);
 
     // Inject a fatal; the Bot's onFatal handler is wired at construction.
-    stub.simulateFatal("exit", "process died");
+    // The fatal message includes content that must NOT be persisted (it can
+    // contain subprocess stderr with third-party secrets). onFatal should
+    // store the stable code instead.
+    stub.simulateFatal("exit", "process died: secret=sk-leak-123");
 
     const row = bdb.getWorkerState("alpha");
     expect(row?.consecutive_failures).toBe(1);
-    expect(row?.last_error).toContain("process died");
+    expect(row?.last_error).toBe("runner_exit");
+    expect(row?.last_error).not.toContain("secret");
+    expect(row?.last_error).not.toContain("sk-leak");
 
     // Wait past the backoff window and confirm restart fired.
     await new Promise((r) => setTimeout(r, 150));
@@ -170,10 +175,18 @@ describe("Bot crash-loop backoff", () => {
     await bot.start();
     expect(stub.startCalls).toBe(1);
 
-    stub.simulateFatal("auth", "401 unauthorized");
+    // Auth-fatal message may contain stderr of the form
+    //   "Authentication failed. Token=sk-ant-api03-SECRET123"
+    // which must not be persisted into `bot_state.disabled_reason`
+    // (served via the unauthenticated /health endpoint).
+    stub.simulateFatal("auth", "401: token=sk-ant-api03-secret123 rejected");
 
     const botState = bdb.getBotState("alpha");
     expect(botState?.disabled).toBe(1);
+    // Regression: reason should be the stable code, never the raw message.
+    expect(botState?.disabled_reason).toBe("auth_failure");
+    expect(botState?.disabled_reason).not.toContain("sk-ant");
+    expect(botState?.disabled_reason).not.toContain("secret");
 
     await new Promise((r) => setTimeout(r, 200));
     expect(stub.startCalls).toBe(1);

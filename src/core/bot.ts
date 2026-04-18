@@ -192,22 +192,28 @@ export class Bot {
   }
 
   private onFatal(ev: Extract<RunnerEvent, { kind: "fatal" }>): void {
-    this.log.error("runner fatal", { code: ev.code, message: ev.message });
+    // `ev.message` may contain a tail of subprocess stderr — potentially
+    // including third-party secrets the redactor can't know about (upstream
+    // API keys printed in a stack trace, etc.). Persist and log the stable
+    // code only. The full stderr is already captured to the per-bot log
+    // file at ${data_dir}/logs/<bot_id>.log for operator debugging.
+    const stableCode = `runner_${ev.code ?? "unknown"}`;
+    this.log.error("runner fatal", { code: ev.code });
     this.metrics.inc(this.botConfig.id, "worker_restarts");
 
     if (this.activeTurnId !== null) {
       const turnId = this.activeTurnId;
       this.activeTurnId = null;
-      this.db.interruptTurn(turnId, `runner fatal: ${ev.message}`);
+      this.db.interruptTurn(turnId, stableCode);
       this.streaming.cancelTurn(this.botConfig.id);
     }
 
     // Auth failures never retry — the credential is wrong, not transient.
     if (ev.code === "auth") {
-      this.db.setBotDisabled(this.botConfig.id, `auth failure: ${ev.message}`);
+      this.db.setBotDisabled(this.botConfig.id, "auth_failure");
       this.db.updateWorkerState(this.botConfig.id, {
         status: "degraded",
-        last_error: ev.message,
+        last_error: stableCode,
       });
       this.metrics.inc(this.botConfig.id, "worker_startup_failures");
       void this.alerts.tokenInvalid(this.botConfig.id);
@@ -219,7 +225,7 @@ export class Bot {
     const failures = (state?.consecutive_failures ?? 0) + 1;
     this.db.updateWorkerState(this.botConfig.id, {
       consecutive_failures: failures,
-      last_error: ev.message,
+      last_error: stableCode,
     });
 
     const max = this.config.worker_tuning.max_consecutive_failures;

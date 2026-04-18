@@ -111,14 +111,20 @@ export class WebhookTransport implements Transport {
     onUpdate: OnUpdateHandler,
   ): Promise<Response> {
     const botId = params.botId;
-    if (!botId || !this.clients.has(botId)) {
-      return new Response("OK", { status: 200 });
-    }
+    const botExists = !!botId && this.clients.has(botId);
 
+    // Unknown bot id and invalid secret both return 200 with no body. An
+    // unauthenticated requester can't tell them apart, so `/webhook/:botId`
+    // can't be used to enumerate deployed bots. The warn log still fires
+    // for an invalid secret against a real bot so operators see attack
+    // traffic.
     const header = req.headers.get("x-telegram-bot-api-secret-token") ?? "";
-    if (!safeCompare(header, this.secret)) {
-      log.warn("invalid webhook secret", { bot_id: botId });
-      return new Response("Forbidden", { status: 403 });
+    const secretOk = safeCompare(header, this.secret);
+    if (!botExists || !secretOk) {
+      if (botExists && !secretOk) {
+        log.warn("invalid webhook secret", { bot_id: botId });
+      }
+      return new Response("OK", { status: 200 });
     }
 
     let body: unknown;
