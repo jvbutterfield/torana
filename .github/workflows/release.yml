@@ -21,14 +21,16 @@ jobs:
         with:
           bun-version: latest
 
+      # Trusted Publishing requires npm >= 11.5.1. Node 24 ships npm 11.x
+      # natively; using Node 22 + `npm install -g npm@latest` hits a known
+      # MODULE_NOT_FOUND bug where the self-upgrade corrupts the running npm.
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
-      # Node 22 ships npm 10.x; Trusted Publishing requires npm >= 11.5.1.
-      - name: Upgrade npm
-        run: npm install -g npm@latest
+      - name: Print npm version
+        run: npm --version
 
       - name: Install deps
         run: bun install --frozen-lockfile
