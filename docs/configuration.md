@@ -142,7 +142,7 @@ When off, `/metrics` returns 404.
 | `runner` | object | yes | Discriminated on `type` |
 
 ### `bots[].runner`
-Type is either `claude-code` or `command`. See [`runners.md`](runners.md).
+Type is one of `claude-code`, `codex`, or `command`. See [`runners.md`](runners.md).
 
 #### claude-code
 | Key | Default |
@@ -155,11 +155,26 @@ Type is either `claude-code` or `command`. See [`runners.md`](runners.md).
 
 The runner always passes these protocol-required flags to the CLI, in this order, before your `args`: `--print --output-format stream-json --input-format stream-json --include-partial-messages --replay-user-messages --verbose --dangerously-skip-permissions`. Your `args` are appended. `--continue` is then appended when `pass_continue_flag: true` and the session isn't fresh. Typical user `args`: `["--agent", "cato"]`.
 
+#### codex
+| Key | Default |
+|---|---|
+| `cli_path` | `codex` |
+| `args` | `[]` — user extras appended to the runner-built argv (e.g. `["--profile", "x"]`) |
+| `cwd` | gateway cwd |
+| `env` | `{}` |
+| `pass_resume_flag` | `true` — capture `thread_id` and resume on subsequent turns |
+| `approval_mode` | `full-auto` (one of `untrusted`, `on-request`, `never`, `full-auto`, `yolo`) |
+| `sandbox` | `workspace-write` (one of `read-only`, `workspace-write`, `danger-full-access`) |
+| `model` | (optional `--model` override) |
+| `acknowledge_dangerous` | `false` — required to be `true` if `approval_mode: yolo` |
+
+The runner always invokes `codex exec [resume <thread_id>] --json --skip-git-repo-check …`. The `exec` subcommand, `--json`, and `--skip-git-repo-check` are protocol-required and not user-configurable. Approval/sandbox flags are derived from `approval_mode` and `sandbox`. The user prompt is piped on stdin (the runner appends `-` as the prompt argument). Image attachments are passed as repeated `--image <path>`; non-image attachments are skipped with a warning. On resume turns, `--sandbox` is omitted (Codex inherits sandbox from the original session and `exec resume` rejects the flag).
+
 #### command
 | Key | Default |
 |---|---|
 | `cmd` | (required; argv) |
-| `protocol` | (required: `jsonl-text` or `claude-ndjson`) |
+| `protocol` | (required: `jsonl-text`, `claude-ndjson`, or `codex-jsonl`) |
 | `cwd` | gateway cwd |
 | `env` | `{}` |
 | `on_reset` | `signal` |

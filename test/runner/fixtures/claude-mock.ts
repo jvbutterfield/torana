@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+export {}; // mark as module so top-level declarations are module-scoped
+
 // A behavior-configurable mock that speaks the claude --output-format stream-json
 // protocol. Used for ClaudeCodeRunner lifecycle tests. Modes are chosen via
 // the first CLI arg:

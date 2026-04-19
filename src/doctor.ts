@@ -111,11 +111,13 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
-  // C005 — runner entry point executable. For claude-code we check cli_path;
-  // for command we check cmd[0]. Resolved via PATH if not absolute.
+  // C005 — runner entry point executable. For claude-code/codex we check
+  // cli_path; for command we check cmd[0]. Resolved via PATH if not absolute.
   for (const bot of config.bots) {
     const entry =
-      bot.runner.type === "claude-code" ? bot.runner.cli_path : bot.runner.cmd[0];
+      bot.runner.type === "claude-code" || bot.runner.type === "codex"
+        ? bot.runner.cli_path
+        : bot.runner.cmd[0];
     const resolved = await resolveEntryPoint(entry);
     if (resolved) {
       checks.push({
@@ -131,6 +133,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       });
     }
   }
+
 
   // C006 — webhook base_url reachable (HEAD; any non-5xx is pass).
   const usesWebhook =

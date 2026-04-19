@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createClaudeNdjsonParser } from "../../src/runner/protocols/claude-ndjson.js";
+import { createCodexJsonlParser } from "../../src/runner/protocols/codex-jsonl.js";
 import {
   createJsonlTextParser,
   encodeTurn,
@@ -171,5 +172,153 @@ describe("jsonl-text parser", () => {
     const parser = createJsonlTextParser();
     const events = collect(parser, "not json\n");
     expect(events).toHaveLength(0);
+  });
+});
+
+describe("codex-jsonl parser", () => {
+  test("thread.started captures thread_id via callback (no event emitted)", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    const events = collect(
+      parser,
+      JSON.stringify({ type: "thread.started", thread_id: "tid-abc" }) + "\n",
+    );
+    expect(captured).toEqual(["tid-abc"]);
+    expect(events).toHaveLength(0);
+  });
+
+  test("synthetic ready promotes status (for command-runner wrappers)", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => null });
+    const events = collect(parser, JSON.stringify({ type: "ready" }) + "\n");
+    expect(events).toEqual([{ kind: "ready" }]);
+  });
+
+  test("turn.started is silent", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(parser, JSON.stringify({ type: "turn.started" }) + "\n");
+    expect(events).toHaveLength(0);
+  });
+
+  test("item.started for command_execution emits status tool_use", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({
+        type: "item.started",
+        item: { id: "i1", type: "command_execution", status: "in_progress" },
+      }) + "\n",
+    );
+    expect(events).toEqual([{ kind: "status", turnId: "T1", phase: "tool_use" }]);
+  });
+
+  test("item.started for reasoning is silent (not surfaced)", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({
+        type: "item.started",
+        item: { id: "i1", type: "reasoning" },
+      }) + "\n",
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  test("item.completed for agent_message emits one text_delta", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({
+        type: "item.completed",
+        item: { id: "i3", type: "agent_message", text: "the answer is 42" },
+      }) + "\n",
+    );
+    expect(events).toEqual([
+      { kind: "text_delta", turnId: "T1", text: "the answer is 42" },
+    ]);
+  });
+
+  test("item.completed for non-agent_message types is dropped", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({
+        type: "item.completed",
+        item: { id: "i4", type: "command_execution", exit_code: 0 },
+      }) + "\n",
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  test("turn.completed emits done with usage", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({
+        type: "turn.completed",
+        usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 25 },
+      }) + "\n",
+    );
+    expect(events).toHaveLength(1);
+    const e = events[0];
+    expect(e.kind).toBe("done");
+    if (e.kind === "done") {
+      expect(e.turnId).toBe("T1");
+      expect(e.stopReason).toBe("end_turn");
+      expect(e.usage).toEqual({ input_tokens: 100, output_tokens: 25 });
+    }
+  });
+
+  test("turn.failed with error.message emits error", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({
+        type: "turn.failed",
+        error: { message: "model refused" },
+      }) + "\n",
+    );
+    expect(events).toHaveLength(1);
+    const e = events[0];
+    expect(e.kind).toBe("error");
+    if (e.kind === "error") {
+      expect(e.turnId).toBe("T1");
+      expect(e.message).toBe("model refused");
+      expect(e.retriable).toBe(false);
+    }
+  });
+
+  test("error event with no in-flight turn is dropped", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => null });
+    const events = collect(
+      parser,
+      JSON.stringify({ type: "error", message: "stray" }) + "\n",
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  test("unknown event types are dropped (forward compat)", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const events = collect(
+      parser,
+      JSON.stringify({ type: "future.event", payload: 1 }) + "\n",
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  test("handles chunked input across feeds", () => {
+    const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
+    const ev = {
+      type: "item.completed",
+      item: { id: "i3", type: "agent_message", text: "split across feeds" },
+    };
+    const raw = JSON.stringify(ev) + "\n";
+    const events: RunnerEvent[] = [];
+    parser.feed(raw.slice(0, 25), (e) => events.push(e));
+    parser.feed(raw.slice(25), (e) => events.push(e));
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe("text_delta");
   });
 });

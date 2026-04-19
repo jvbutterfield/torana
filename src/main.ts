@@ -48,6 +48,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   });
 
   warnOnEmptyAcl(config);
+  warnOnYoloCodexBots(config);
 
   await ensureDirectories(config);
 
@@ -268,6 +269,17 @@ export function warnOnEmptyAcl(config: Config): void {
       { bots: affectedBots },
     );
   }
+}
+
+export function warnOnYoloCodexBots(config: Config): void {
+  const bots = config.bots
+    .filter((b) => b.runner.type === "codex" && b.runner.approval_mode === "yolo")
+    .map((b) => b.id);
+  if (bots.length === 0) return;
+  log.warn(
+    "codex approval_mode='yolo' bypasses all sandboxing — only run inside an externally hardened environment (container, VM, isolated user account).",
+    { bots },
+  );
 }
 
 export async function ensureDirectories(config: Config): Promise<void> {

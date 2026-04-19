@@ -23,6 +23,7 @@ import {
   type Unsubscribe,
 } from "./types.js";
 import { createClaudeNdjsonParser } from "./protocols/claude-ndjson.js";
+import { createCodexJsonlParser } from "./protocols/codex-jsonl.js";
 import {
   createJsonlTextParser,
   encodeReset,
@@ -136,7 +137,7 @@ export class CommandRunner implements AgentRunner {
     // signal mode: send a reset envelope on stdin (only meaningful for jsonl-text).
     if (this.config.protocol !== "jsonl-text") {
       this.log.warn(
-        "on_reset=signal is a no-op for claude-ndjson protocol; consider on_reset=restart",
+        `on_reset=signal is a no-op for ${this.config.protocol} protocol; consider on_reset=restart`,
       );
       return;
     }
@@ -158,10 +159,13 @@ export class CommandRunner implements AgentRunner {
       return { accepted: false, reason: "not_ready" };
     }
 
+    // Stdin envelope by protocol. `codex-jsonl` reuses the jsonl-text envelope
+    // shape because Codex itself doesn't accept stdin envelopes — wrappers
+    // around the codex CLI multiplex turns themselves.
     const payload =
-      this.config.protocol === "jsonl-text"
-        ? encodeTurn(turnId, text, attachments)
-        : encodeClaudeNdjsonTurn(text, attachments);
+      this.config.protocol === "claude-ndjson"
+        ? encodeClaudeNdjsonTurn(text, attachments)
+        : encodeTurn(turnId, text, attachments);
 
     try {
       this.proc.stdin.write(payload);
@@ -238,7 +242,9 @@ export class CommandRunner implements AgentRunner {
     const parser =
       this.config.protocol === "jsonl-text"
         ? createJsonlTextParser()
-        : createClaudeNdjsonParser({ currentTurnId: () => this.activeTurn });
+        : this.config.protocol === "claude-ndjson"
+          ? createClaudeNdjsonParser({ currentTurnId: () => this.activeTurn })
+          : createCodexJsonlParser({ currentTurnId: () => this.activeTurn });
 
     try {
       while (true) {

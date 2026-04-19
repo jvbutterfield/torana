@@ -1,6 +1,6 @@
 {
   "name": "torana",
-  "version": "1.0.0-rc.3",
+  "version": "1.0.0-rc.4",
   "description": "Open-source Telegram gateway for agent runtimes. Configuration-driven, any-runner, webhook or polling.",
   "license": "MIT",
   "author": "Jason Butterfield <jbutterfield@gmail.com>",

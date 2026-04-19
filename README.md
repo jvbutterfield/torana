@@ -1,14 +1,64 @@
+<div align="center">
+
 # torana
+
+**An open-source Telegram gateway for agent runtimes.**
+Drop a YAML config, point it at Claude Code, Codex, or any subprocess — get a production-grade Telegram bot.
 
 [![npm version](https://img.shields.io/npm/v/torana.svg)](https://www.npmjs.com/package/torana)
 [![CI](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml/badge.svg)](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Bun ≥ 1.3](https://img.shields.io/badge/bun-%E2%89%A5%201.3-black)](https://bun.sh)
+[![Tests: 255](https://img.shields.io/badge/tests-255%20passing-brightgreen)](#testing)
 
-> **torana** (Sanskrit: तोरण, *ceremonial gateway*) — an open-source Telegram gateway for agent runtimes. Configuration-driven, any-runner, webhook or polling.
+**torana** (Sanskrit: तोरण, *ceremonial gateway*) — the doorway between Telegram and your agents.
 
-Run any Telegram bot backed by any agent runtime. Drop a YAML config, point it at your agent CLI (Claude Code, your own subprocess, whatever), and torana handles the rest: inbound updates, dedup, streaming edits, crash recovery, attachments, slash commands, graceful shutdown.
+</div>
 
-> **Status:** v1.0.0-rc. Approaching 1.0.
+---
+
+## What you get
+
+A single binary that runs one or more Telegram bots, each backed by whatever agent runtime you want. Webhook or polling. Streaming edits. Crash recovery. Dedup. Attachments. Slash commands. Graceful shutdown. Structured logs that redact secrets.
+
+You write YAML. torana handles the rest.
+
+```yaml
+# torana.yaml — two bots, different runtimes, one process.
+bots:
+  - id: reviewer                        # code-review bot running Claude Code
+    token: ${TELEGRAM_BOT_TOKEN_REVIEW}
+    runner:
+      type: claude-code
+      env: { CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN} }
+
+  - id: drafter                         # prose drafter running OpenAI Codex
+    token: ${TELEGRAM_BOT_TOKEN_DRAFT}
+    runner:
+      type: codex
+      approval_mode: full-auto
+      env: { OPENAI_API_KEY: ${OPENAI_API_KEY} }
+```
+
+```sh
+torana doctor --config torana.yaml   # catch misconfig before starting
+torana start  --config torana.yaml   # done
+```
+
+---
+
+## Why torana
+
+**You're building a Telegram-facing agent** and you've hit one of these:
+
+- Every example you found glues together `node-telegram-bot-api`, a database you don't want, and 400 lines of session/dedup/retry boilerplate — and it still loses messages on restart.
+- You want different bots backed by different LLMs (Claude for code, Codex for writing, your own subprocess for niche tasks) but don't want to run three separate services.
+- You've tried running `claude-code` or `codex` behind Telegram yourself and discovered the 15 edge cases: Telegram's 4096-char limit, edit-rate throttling, partial stream replies, mid-turn crashes, orphan attachments, webhook secret validation.
+- You want a bot you can actually leave running — not a prototype.
+
+torana is the infrastructure layer for that. It is **not** an agent, not a framework, not an SDK. It's the gateway that turns an agent CLI into a reliable Telegram service.
+
+---
 
 ## 60-second quickstart
 
@@ -16,75 +66,216 @@ Run any Telegram bot backed by any agent runtime. Drop a YAML config, point it a
 # 1. Install (Bun ≥ 1.3)
 npm install -g torana
 
-# 2. Drop a config
-cat > torana.yaml <<'EOF'
+# 2. Get a bot token from @BotFather in Telegram. Note your Telegram user id.
+export TELEGRAM_BOT_TOKEN=123456:ABCDEF...
+export MY_TELEGRAM_USER_ID=111222333
+
+# 3. Clone the echo example and run it — no agent API key required.
+git clone https://github.com/jvbutterfield/torana.git
+cd torana/examples/echo-bot
+torana doctor --config torana.yaml
+torana start  --config torana.yaml
+
+# 4. Message your bot. It echoes back. You've proven the pipeline end-to-end.
+```
+
+Once echo works, swap the `runner:` block for `claude-code` or `codex` and you're live. See [`examples/echo-bot/`](examples/echo-bot/) and [`examples/codex-bot/`](examples/codex-bot/).
+
+---
+
+## Runners
+
+Three runners ship built-in. Pick per bot.
+
+| Runner | Wraps | Use it when |
+| --- | --- | --- |
+| **`claude-code`** | The `claude` CLI. | You want Anthropic's Claude with its full agentic tool-use, file edits, subagents. Best for code. |
+| **`codex`** | The OpenAI `codex` CLI (`codex exec --json`). | You want OpenAI's Codex with its sandbox/approval model. Best for writing and mixed tasks. |
+| **`command`** | Any subprocess speaking a simple line protocol (`jsonl-text`, `claude-ndjson`, or `codex-jsonl`). | You're running your own model, a local Ollama setup, or a custom agent. |
+
+Session continuity works everywhere: `--continue` for Claude Code, `codex exec resume <id>` for Codex, protocol-defined reset for `command`.
+
+Full details: [`docs/runners.md`](docs/runners.md).
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    TG[Telegram]
+    subgraph torana[torana process]
+      direction LR
+      T[Transport<br/>webhook or polling]
+      D[Dispatcher<br/>+ dedup + ACL]
+      B1[Bot: reviewer]
+      B2[Bot: drafter]
+      R1[claude-code<br/>runner]
+      R2[codex<br/>runner]
+      DB[(SQLite<br/>WAL + outbox)]
+      T --> D
+      D --> B1 --> R1
+      D --> B2 --> R2
+      B1 -.state.-> DB
+      B2 -.state.-> DB
+    end
+    TG <--> T
+    R1 <--> CC[claude CLI]
+    R2 <--> CX[codex CLI]
+```
+
+One process. One SQLite database. Per-bot isolated runners. Crashes in one bot don't take down the others.
+
+---
+
+## Operational guarantees
+
+**Delivery.**
+- Inbound `update_id` deduplicated in SQLite — safe to replay a webhook or resume polling after a crash.
+- Outbound sends go through a **dead-letter outbox** with exponential backoff. A flaky Telegram response doesn't lose a reply.
+
+**Crash recovery.**
+- Runner state is a durable state machine in SQLite. A hard crash mid-turn resumes correctly on next start — no orphan "thinking..." messages, no double-sends.
+- `torana doctor` runs pre-flight checks (C001–C008) so you find configuration problems before starting, not during your first real message.
+
+**Streaming.**
+- Runner output is streamed into Telegram message edits at a configurable cadence (default 1.5s), respecting Telegram's edit-rate ceiling and the 4096-char limit (with safe margin).
+- Long replies auto-split across messages. No lost content.
+
+**Safety defaults.**
+- Default-deny ACL. An empty `allowed_user_ids` list rejects all traffic and logs a loud warning so you notice.
+- Secret redaction. Bot tokens and webhook secrets are redacted from logs automatically, including from `/bot<TOKEN>/` URL paths.
+- Attachment hardening. Mime-derived filename allowlist, disk cap, retention sweep. Files never escape the data directory.
+
+**Observability.**
+- Structured JSON logs, per-bot log files tailable at `<data_dir>/logs/<bot_id>.log`.
+- `GET /health` with per-bot readiness, mailbox depth, last turn time.
+- Optional Prometheus metrics.
+
+---
+
+## Hybrid configurations
+
+Different bots, different runtimes, one process:
+
+```yaml
 version: 1
 gateway: { port: ${PORT:-3000}, data_dir: ./data }
 transport: { default_mode: polling }
 access_control:
   allowed_user_ids: [${MY_TELEGRAM_USER_ID}]
+
 bots:
-  - id: hello
-    token: ${TELEGRAM_BOT_TOKEN}
+  - id: reviewer
+    token: ${TELEGRAM_BOT_TOKEN_REVIEWER}
+    commands:
+      - { trigger: /reset,  action: builtin:reset }
+      - { trigger: /status, action: builtin:status }
+    runner:
+      type: claude-code
+      cwd: /data/projects/reviewer
+      env:
+        CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
+
+  - id: drafter
+    token: ${TELEGRAM_BOT_TOKEN_DRAFTER}
+    runner:
+      type: codex
+      approval_mode: full-auto
+      sandbox: workspace-write
+      env:
+        OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+  - id: local
+    token: ${TELEGRAM_BOT_TOKEN_LOCAL}
     runner:
       type: command
       protocol: jsonl-text
-      cmd: ["node", "echo.js"]
-EOF
-
-# 3. Run doctor to catch config mistakes early
-torana doctor --config torana.yaml
-
-# 4. Start
-torana start --config torana.yaml
+      cmd: ["bun", "./my-runner.ts"]
 ```
 
-See [`examples/echo-bot/`](examples/echo-bot/) for a runnable end-to-end smoke test.
+The dispatcher routes each update to its bot's runner independently. No special configuration required.
+
+---
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `torana start` | Run the gateway |
-| `torana doctor` | Validate config and check Telegram reachability |
+| `torana doctor` | Validate config + check Telegram reachability + runner binary + DB state |
 | `torana validate` | Offline schema check — no Telegram, no DB |
 | `torana migrate` | Apply pending DB migrations (`--dry-run` to preview) |
 | `torana version` | Print package version + Bun runtime |
 
-## Features
-
-- **Multiple bots from one process** — each bot has its own Telegram token, ACL, runner, and slash commands.
-- **Two built-in runners**: `claude-code` (wraps the Claude Code CLI) and `command` (any subprocess speaking a simple JSONL protocol).
-- **Two transports**: webhook (production) and polling (dev, firewalled, or MacBook). Per-bot override.
-- **SQLite state** with WAL, crash recovery, and a dead-letter outbox for Telegram sends.
-- **Streaming** — edits Telegram messages live as the runner produces text.
-- **Attachments** — photos and documents download safely into the data dir and get handed to the runner.
-- **Safety defaults** — default-deny ACL, mime-derived filename allowlist, disk caps, structured JSON logs that redact secrets.
-
-Non-goals for v1: group chats, voice/video, inline mode, pluggable storage backends, agent-to-agent messaging.
-
-## Runtime
-
-Bun ≥ 1.3. Node support may come later but is not planned for v1.
+---
 
 ## Environment inheritance
 
-**Important:** `runner.env` is the *complete* environment passed to the subprocess. Parent-process env vars are **not** inherited by default (except `PATH`). To inherit a variable, reference it via `${VAR}` interpolation. This matches the explicit-env-passing ethos of reproducible deploys and avoids classic "works locally, broken in prod" bugs.
+`runner.env` is the **complete** environment handed to the subprocess. Parent-process env vars are *not* inherited by default (except `PATH`). To pass a variable, reference it via `${VAR}` interpolation:
 
-Whatever starts torana must also set up any env the runner needs, or list every required env var in `runner.env`.
+```yaml
+env:
+  OPENAI_API_KEY: ${OPENAI_API_KEY}    # inherited from torana's env
+  HOME: ${HOME}                         # needed for OAuth-authenticated CLIs
+  CUSTOM: literal-value                 # static
+```
+
+This is deliberate. It matches the explicit-env-passing ethos of reproducible deploys and avoids the classic "works locally, broken in prod" failure mode where the subprocess silently inherits a variable in one environment and not another.
+
+---
+
+## Non-goals (v1)
+
+Explicit scope. torana does **not**:
+
+- Handle group chats, voice, video, or inline mode.
+- Implement its own agent logic — runners do that.
+- Pluggable storage backends. SQLite only. WAL-mode, durable, operationally simple.
+- Agent-to-agent messaging. Each bot is independent.
+
+If you need any of those, torana is the wrong tool and that's fine.
+
+---
+
+## Status
+
+**v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 255 tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
+
+Recent:
+- **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
+- **rc.2** — fixed published tarball missing migration SQL
+- **rc.1** — initial v1 candidate
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
+
+---
+
+## Testing
+
+```sh
+bun test                           # unit + integration: 255 tests, ~25s
+CODEX_E2E=1 bun test               # includes end-to-end tests against the live codex CLI
+```
+
+The e2e tests require an authenticated `codex` binary and burn API quota, so they're opt-in. CI doesn't run them.
+
+---
 
 ## Docs
 
 - [`docs/configuration.md`](docs/configuration.md) — full config reference
+- [`docs/runners.md`](docs/runners.md) — built-in runners, including Claude Code and Codex setup
 - [`docs/transports.md`](docs/transports.md) — webhook vs polling
-- [`docs/runners.md`](docs/runners.md) — built-in runners + Claude Code setup
-- [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own
+- [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own runner
 - [`docs/security.md`](docs/security.md) — threat model, ACL, secrets
 - [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
 
+---
+
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). Bug reports + feature requests in [Issues](https://github.com/jvbutterfield/torana/issues).
+Bug reports and feature requests in [Issues](https://github.com/jvbutterfield/torana/issues). PRs welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md). Security issues go through [`SECURITY.md`](SECURITY.md), not public issues.
 
 ## License
 

@@ -217,12 +217,50 @@ export const ClaudeCodeRunnerSchema = z
   })
   .strict();
 
+// Codex runner
+//
+// Wraps the OpenAI Codex CLI (`codex exec`). Codex is one-shot per turn:
+// each `sendTurn()` spawns a fresh `codex exec` (or `codex exec resume <id>`)
+// rather than feeding stdin envelopes to a long-lived process. The runner
+// captures the `thread_id` from the first turn's `thread.started` event and
+// uses it for subsequent turns when `pass_resume_flag` is true.
+//
+// Protocol-required flag (`--json`) and the prompt-on-stdin sentinel (`-`) are
+// always applied by the runner and are NOT user-configurable. `args` is for
+// USER extras (e.g. `--model`, `--profile`).
+export const CodexRunnerSchema = z
+  .object({
+    type: z.literal("codex"),
+    cli_path: z.string().default("codex"),
+    args: z.array(z.string()).default([]),
+    cwd: PathString.optional(),
+    env: z.record(z.string(), z.string()).default({}),
+    /** Capture the first turn's thread_id and resume on subsequent turns. */
+    pass_resume_flag: BoolPermissive.default(true),
+    /**
+     * Approval mode → maps to `--ask-for-approval`, `--full-auto`, or `--yolo`.
+     * `yolo` requires `acknowledge_dangerous: true` (validated at config root).
+     */
+    approval_mode: z
+      .enum(["untrusted", "on-request", "never", "full-auto", "yolo"])
+      .default("full-auto"),
+    /** Sandbox mode → `--sandbox`. */
+    sandbox: z
+      .enum(["read-only", "workspace-write", "danger-full-access"])
+      .default("workspace-write"),
+    /** Optional `--model` override. */
+    model: z.string().optional(),
+    /** Required to enable `approval_mode: yolo`. */
+    acknowledge_dangerous: BoolPermissive.default(false),
+  })
+  .strict();
+
 // Command runner
 export const CommandRunnerSchema = z
   .object({
     type: z.literal("command"),
     cmd: z.array(z.string()).min(1),
-    protocol: z.enum(["jsonl-text", "claude-ndjson"]),
+    protocol: z.enum(["jsonl-text", "claude-ndjson", "codex-jsonl"]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
     on_reset: z.enum(["signal", "restart"]).default("signal"),
@@ -231,6 +269,7 @@ export const CommandRunnerSchema = z
 
 export const RunnerSchema = z.discriminatedUnion("type", [
   ClaudeCodeRunnerSchema,
+  CodexRunnerSchema,
   CommandRunnerSchema,
 ]);
 
@@ -329,6 +368,22 @@ export const ConfigSchema = z
       }
     }
 
+    // codex approval_mode='yolo' requires explicit acknowledge_dangerous=true.
+    for (const [idx, bot] of cfg.bots.entries()) {
+      if (
+        bot.runner.type === "codex" &&
+        bot.runner.approval_mode === "yolo" &&
+        !bot.runner.acknowledge_dangerous
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["bots", idx, "runner", "acknowledge_dangerous"],
+          message:
+            "approval_mode='yolo' requires acknowledge_dangerous=true (skips all sandboxing — use only inside an externally hardened environment)",
+        });
+      }
+    }
+
     // Dashboard mount_path must not collide with any bot id used as URL segment.
     if (cfg.dashboard.enabled) {
       const mp = cfg.dashboard.mount_path.replace(/^\/+/, "").split("/")[0];
@@ -349,6 +404,7 @@ export type Config = z.infer<typeof ConfigSchema>;
 export type BotConfig = z.infer<typeof BotSchema>;
 export type RunnerConfig = z.infer<typeof RunnerSchema>;
 export type ClaudeCodeRunnerConfig = z.infer<typeof ClaudeCodeRunnerSchema>;
+export type CodexRunnerConfig = z.infer<typeof CodexRunnerSchema>;
 export type CommandRunnerConfig = z.infer<typeof CommandRunnerSchema>;
 
 /** Fields whose resolved values are to be collected by the redactor. Leaves: (config root) -> dotted path. */

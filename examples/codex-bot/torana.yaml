@@ -1,0 +1,50 @@
+# Codex-bot: end-to-end smoke test using the OpenAI Codex CLI as the runner.
+# Requires `codex` on $PATH (npm install -g @openai/codex) and either
+# `codex login` (OAuth) or OPENAI_API_KEY in the environment.
+
+version: 1
+
+gateway:
+  # Use ${PORT:-3000} so PaaS deployments (Railway/Heroku/Fly/Render) bind to
+  # the platform-chosen port instead of hardcoding 3000.
+  port: ${PORT:-3000}
+  data_dir: ./data
+  log_level: info
+
+transport:
+  default_mode: polling
+
+access_control:
+  allowed_user_ids: [${MY_TELEGRAM_USER_ID}]
+
+bots:
+  - id: cody
+    token: ${TELEGRAM_BOT_TOKEN}
+    commands:
+      - trigger: /reset
+        action: builtin:reset
+      - trigger: /status
+        action: builtin:status
+    runner:
+      type: codex
+      cli_path: codex
+      # Per-bot Codex config dir (keeps OAuth/sessions isolated when running
+      # multiple Codex bots from the same gateway).
+      cwd: ./data
+      pass_resume_flag: true
+      # full-auto = on-request approvals + workspace-write sandbox. Sane
+      # default for an unattended bot. Use `yolo` only inside a hardened
+      # container/VM and set acknowledge_dangerous: true.
+      approval_mode: full-auto
+      sandbox: workspace-write
+      env:
+        # Pick one auth method:
+        # (a) API key — works without HOME; this is the simplest path.
+        OPENAI_API_KEY: ${OPENAI_API_KEY}
+        # (b) OAuth via `codex login` — requires HOME (or CODEX_HOME) so codex
+        #     can find ~/.codex/auth.json. runner.env is the COMPLETE env
+        #     handed to the subprocess; if you don't pass HOME, codex can't
+        #     locate its auth files even though they exist on disk.
+        # HOME: ${HOME}
+        # CODEX_HOME: /data/state/codex/cody  # use a per-bot dir if you run
+        #                                     # multiple Codex bots

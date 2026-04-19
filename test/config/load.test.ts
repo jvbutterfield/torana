@@ -153,4 +153,99 @@ alerts:
     const { config } = loadConfigFromString(raw);
     expect(config.alerts?.via_bot).toBe("alpha");
   });
+
+  test("codex runner: minimal config applies sensible defaults", () => {
+    const raw = MINIMAL.replace(
+      "    runner:\n      type: claude-code\n      cli_path: claude",
+      "    runner:\n      type: codex",
+    );
+    const { config } = loadConfigFromString(raw);
+    const r = config.bots[0].runner;
+    expect(r.type).toBe("codex");
+    if (r.type === "codex") {
+      expect(r.cli_path).toBe("codex");
+      expect(r.approval_mode).toBe("full-auto");
+      expect(r.sandbox).toBe("workspace-write");
+      expect(r.pass_resume_flag).toBe(true);
+      expect(r.acknowledge_dangerous).toBe(false);
+    }
+  });
+
+  test("codex approval_mode='yolo' without acknowledge_dangerous is rejected", () => {
+    const raw = MINIMAL.replace(
+      "    runner:\n      type: claude-code\n      cli_path: claude",
+      "    runner:\n      type: codex\n      approval_mode: yolo",
+    );
+    expect(() => loadConfigFromString(raw)).toThrow(/acknowledge_dangerous/);
+  });
+
+  test("codex approval_mode='yolo' with acknowledge_dangerous=true is accepted", () => {
+    const raw = MINIMAL.replace(
+      "    runner:\n      type: claude-code\n      cli_path: claude",
+      "    runner:\n      type: codex\n      approval_mode: yolo\n      acknowledge_dangerous: true",
+    );
+    const { config } = loadConfigFromString(raw);
+    const r = config.bots[0].runner;
+    expect(r.type).toBe("codex");
+    if (r.type === "codex") {
+      expect(r.approval_mode).toBe("yolo");
+      expect(r.acknowledge_dangerous).toBe(true);
+    }
+  });
+
+  test("hybrid: claude-code and codex bots in the same config", () => {
+    const raw = `
+version: 1
+gateway:
+  port: 3000
+  data_dir: /tmp/torana-test
+transport:
+  default_mode: polling
+access_control:
+  allowed_user_ids: [111]
+bots:
+  - id: claude_bot
+    token: T1
+    runner:
+      type: claude-code
+  - id: codex_bot
+    token: T2
+    runner:
+      type: codex
+      model: gpt-5
+`;
+    const { config } = loadConfigFromString(raw);
+    expect(config.bots).toHaveLength(2);
+    expect(config.bots[0].runner.type).toBe("claude-code");
+    expect(config.bots[1].runner.type).toBe("codex");
+    if (config.bots[1].runner.type === "codex") {
+      expect(config.bots[1].runner.model).toBe("gpt-5");
+    }
+  });
+
+  test("command runner accepts new codex-jsonl protocol", () => {
+    const raw = `
+version: 1
+gateway:
+  port: 3000
+  data_dir: /tmp/torana-test
+transport:
+  default_mode: polling
+access_control:
+  allowed_user_ids: [111]
+bots:
+  - id: alpha
+    token: T1
+    runner:
+      type: command
+      protocol: codex-jsonl
+      cmd: ["bun", "wrapper.ts"]
+`;
+    const { config } = loadConfigFromString(raw);
+    const r = config.bots[0].runner;
+    expect(r.type).toBe("command");
+    if (r.type === "command") {
+      expect(r.protocol).toBe("codex-jsonl");
+    }
+  });
 });

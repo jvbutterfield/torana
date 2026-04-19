@@ -5,6 +5,7 @@ import type { TelegramClient } from "../telegram/client.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { AgentRunner, RunnerEvent } from "../runner/types.js";
 import { ClaudeCodeRunner } from "../runner/claude-code.js";
+import { CodexRunner } from "../runner/codex.js";
 import { CommandRunner } from "../runner/command.js";
 import type { StreamManager } from "../streaming.js";
 import type { OutboxProcessor } from "../outbox.js";
@@ -260,6 +261,13 @@ export class Bot {
     const logDir = `${this.config.gateway.data_dir}/logs`;
     if (runnerConfig.type === "claude-code") {
       return new ClaudeCodeRunner({
+        botId: this.botConfig.id,
+        config: runnerConfig,
+        logDir,
+      });
+    }
+    if (runnerConfig.type === "codex") {
+      return new CodexRunner({
         botId: this.botConfig.id,
         config: runnerConfig,
         logDir,
