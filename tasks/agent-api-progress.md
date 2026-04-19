@@ -12,17 +12,17 @@ after the first ask works against a real binary.
 
 | Phase | Status | User stories | Notes |
 |---|---|---|---|
-| 1 — Foundation | ✅ Complete (commit `c2b7cee`) | US-001 US-002 US-003 US-004 | Config + DB + /v1 routing + auth + runner iface stubs |
-| 2a — ClaudeCodeRunner side-sessions | ⏳ Next | US-005 | Codex (US-006) + Command (US-007) DEFERRED to after end-to-end works |
-| 3 — Side-session pool | ⏳ Pending | US-008 | LRU + idle/hard TTL + orphan listeners |
-| 4a — Ask handler (only) | ⏳ Pending | US-009 US-010 | Real `handleAsk`, `handleGetTurn` bodies, `awaitSideTurn`. Inject (US-011, US-012) DEFERRED. |
-| 5 — Cross-cutting (minimal) | ⏳ Partial | US-013 US-014 | Only bits needed for ask: body size caps. Full multipart + idempotency come with inject. |
-| — End-to-end smoke test | ⏳ Pending | — | Real `claude` binary round-trip through `torana ask` (via curl — CLI is Phase 6) |
-| 4b — Inject path | ⏳ Deferred | US-011 US-012 | Requires process-update writes to user_chats, marker wrapping, Bot.enqueueProgrammaticTurn |
-| 2b — CodexRunner side-sessions | ⏳ Deferred | US-006 | Per-turn spawn with `codex exec resume` |
-| 2c — CommandRunner side-sessions | ⏳ Deferred | US-007 | Protocol capability descriptors |
-| 6 — CLI + skills | ⏳ Deferred | US-018 US-019 US-020 | `torana ask/inject/turns/bots/config/skills install` + Claude + Codex skill packages |
-| 7 — Observability + docs | ⏳ Deferred | US-015 US-016 US-017 | Metrics histograms, doctor C009–C014 + R001–R003, docs/agent-api.md + cli.md + README |
+| 1 — Foundation | ✅ Complete (`c2b7cee`) | US-001 US-002 US-003 US-004 | Config + DB + /v1 routing + auth + runner iface stubs |
+| 2a — ClaudeCodeRunner side-sessions | ✅ Complete (`117a9bb`) | US-005 | |
+| 3 — Side-session pool | ✅ Complete (`24aec5b`) | US-008 | LRU + idle/hard TTL + orphan listeners |
+| 4a — Ask + turns handlers | ✅ Complete (`94445a1`) | US-009 US-010 | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints |
+| — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
+| 4b — Inject path | ⏳ Next (recommended) | US-011 US-012 | Requires process-update writes to user_chats, marker wrapping |
+| 5 — Cross-cutting (full) | ⏳ Pending | US-013 US-014 | Multipart attachments + idempotency + orphan-file sweep |
+| 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
+| 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
+| 6 — CLI + skills | ⏳ Pending | US-018 US-019 US-020 | `torana ask/inject/turns/bots/config/skills install` + Claude + Codex skill packages |
+| 7 — Observability + docs | ⏳ Pending | US-015 US-016 US-017 | Metrics histograms, doctor C009–C014 + R001–R003, docs/agent-api.md + cli.md + README |
 
 ---
 
