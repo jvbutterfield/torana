@@ -32,7 +32,7 @@ describe("side-session id validation", () => {
 });
 
 describe("runner side-session defaults (Phase 1 stubs)", () => {
-  test("ClaudeCodeRunner reports unsupported", () => {
+  test("ClaudeCodeRunner reports supported (Phase 2a real impl)", () => {
     const r = new ClaudeCodeRunner({
       botId: "bot1",
       config: {
@@ -44,13 +44,7 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
       },
       logDir: "/tmp",
     });
-    expect(r.supportsSideSessions()).toBe(false);
-    expect(() => r.sendSideTurn("sid", "tid", "hi", [])).toThrow(
-      RunnerDoesNotSupportSideSessions,
-    );
-    expect(r.startSideSession("sid")).rejects.toBeInstanceOf(
-      RunnerDoesNotSupportSideSessions,
-    );
+    expect(r.supportsSideSessions()).toBe(true);
   });
 
   test("CodexRunner reports unsupported", () => {
