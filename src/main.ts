@@ -25,6 +25,8 @@ import {
   registerAgentApiHealthRoute,
   registerAgentApiRoutes,
 } from "./agent-api/router.js";
+import { SideSessionPool } from "./agent-api/pool.js";
+import { OrphanListenerManager } from "./agent-api/orphan-listeners.js";
 
 const log = logger("main");
 
@@ -135,8 +137,14 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   });
 
   const agentApiUnregs: Unregister[] = [];
+  let agentApiPool: SideSessionPool | null = null;
+  let agentApiOrphans: OrphanListenerManager | null = null;
+  let agentApiIdempotencySweep: ReturnType<typeof setInterval> | null = null;
   if (config.agent_api?.enabled) {
     const tokens = opts.agentApiTokens ?? [];
+    agentApiPool = new SideSessionPool({ config, db, registry });
+    agentApiOrphans = new OrphanListenerManager(db, agentApiPool);
+    agentApiPool.startSweeper();
     agentApiUnregs.push(
       ...registerAgentApiRoutes(server.router, {
         config,
@@ -144,8 +152,21 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
         registry,
         tokens,
         log: logger("agent-api"),
+        pool: agentApiPool,
+        orphans: agentApiOrphans,
       }),
     );
+    const retention = config.agent_api.inject.idempotency_retention_ms;
+    agentApiIdempotencySweep = setInterval(() => {
+      try {
+        db.sweepIdempotency(Date.now() - retention);
+      } catch (err) {
+        log.warn("idempotency sweep failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }, 60 * 60 * 1000);
+    (agentApiIdempotencySweep as unknown as { unref?: () => void }).unref?.();
     log.info("agent_api routes registered", { tokens: tokens.length });
   }
 
@@ -245,6 +266,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       try {
         clearInterval(backlogTimer);
         clearInterval(attachmentSweeperTimer);
+        if (agentApiIdempotencySweep) clearInterval(agentApiIdempotencySweep);
 
         // Unregister agent-api routes so new calls 404 before we tear down.
         for (const u of agentApiUnregs) {
@@ -271,8 +293,13 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
 
         streaming.stopAll();
 
-        // 3. Stop runners with per-runner grace.
+        // 3a. Tear down agent-api side sessions before the main runners
+        //     so ask handlers observe fatal events rather than hangs.
         const runnerGraceMs = config.shutdown.runner_grace_secs * 1000;
+        if (agentApiOrphans) agentApiOrphans.shutdown();
+        if (agentApiPool) await agentApiPool.shutdown(runnerGraceMs);
+
+        // 3. Stop main runners with per-runner grace.
         await registry.stopAll(runnerGraceMs);
 
         // 4. Server + DB.

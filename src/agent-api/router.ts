@@ -1,12 +1,24 @@
-// Agent API /v1/* route registration. Handlers are stubs in Phase 1 —
-// Phase 4+ fills in the bodies.
+// Agent API /v1/* route registration.
 
 import type { HttpRouter, Unregister } from "../transport/types.js";
 import { authenticate, authorize } from "./auth.js";
 import { errorResponse, jsonResponse, mapAuthFailure } from "./errors.js";
 import type { AgentApiDeps, AuthedHandler, Scope } from "./types.js";
+import type { SideSessionPool } from "./pool.js";
+import type { OrphanListenerManager } from "./orphan-listeners.js";
+import { handleAsk } from "./handlers/ask.js";
+import { handleGetTurn } from "./handlers/turns.js";
+import {
+  handleListSessions,
+  handleDeleteSession,
+} from "./handlers/sessions.js";
 
 import pkg from "../../package.json" with { type: "json" };
+
+export interface AgentApiRouterDeps extends AgentApiDeps {
+  pool: SideSessionPool;
+  orphans: OrphanListenerManager;
+}
 
 /**
  * Register `/v1/health` — public, no auth. Always available so operators
@@ -34,23 +46,24 @@ export function registerAgentApiHealthRoute(
  */
 export function registerAgentApiRoutes(
   router: HttpRouter,
-  deps: AgentApiDeps,
+  deps: AgentApiRouterDeps,
 ): Unregister[] {
   const unregs: Unregister[] = [];
 
-  // POST /v1/bots/:bot_id/ask  (scope: ask)
+  const askHandler = handleAsk(deps);
+  const listSessions = handleListSessions(deps);
+  const deleteSession = handleDeleteSession(deps);
+
   unregs.push(
     router.route(
       "POST",
       "/v1/bots/:bot_id/ask",
-      authed(deps, "ask", async () =>
-        // Phase 4 will replace this.
-        errorResponse("internal_error", "ask handler not yet implemented"),
-      ),
+      authed(deps, "ask", askHandler),
     ),
   );
 
-  // POST /v1/bots/:bot_id/inject  (scope: inject)
+  // Phase 4b implements a real inject handler. For now return 501 with a
+  // typed code so the route surface stays complete.
   unregs.push(
     router.route(
       "POST",
@@ -61,43 +74,8 @@ export function registerAgentApiRoutes(
     ),
   );
 
-  // GET /v1/turns/:turn_id  — auth in-handler (scope depends on turn origin).
-  unregs.push(
-    router.route("GET", "/v1/turns/:turn_id", async (req, params) => {
-      const turnId = Number(params.turn_id);
-      if (!Number.isInteger(turnId) || turnId < 1) {
-        return errorResponse("turn_not_found");
-      }
-      const a = authenticate(deps.tokens, req.headers.get("Authorization"));
-      if ("kind" in a) return mapAuthFailure(a);
+  unregs.push(router.route("GET", "/v1/turns/:turn_id", handleGetTurn(deps)));
 
-      const turn = deps.db.getTurnExtended(turnId);
-      if (
-        !turn ||
-        !turn.agent_api_token_name ||
-        turn.agent_api_token_name !== a.token.name
-      ) {
-        return errorResponse("turn_not_found");
-      }
-      const needed: Scope = turn.source === "agent_api_ask" ? "ask" : "inject";
-      const authz = authorize(a.token, turn.bot_id, needed);
-      if (authz) return mapAuthFailure(authz);
-
-      // Phase 4 fills in the per-status body logic.
-      return jsonResponse(200, {
-        turn_id: turn.id,
-        status:
-          turn.status === "queued" || turn.status === "running"
-            ? "in_progress"
-            : turn.status === "completed"
-              ? "done"
-              : "failed",
-        text: turn.final_text ?? undefined,
-      });
-    }),
-  );
-
-  // GET /v1/bots — caller-scoped listing.
   unregs.push(
     router.route("GET", "/v1/bots", async (req) => {
       const a = authenticate(deps.tokens, req.headers.get("Authorization"));
@@ -111,43 +89,32 @@ export function registerAgentApiRoutes(
           return {
             bot_id: id,
             runner_type: bot.botConfig.runner.type,
-            supports_side_sessions: false, // Phase 2 flips this per-runner.
+            supports_side_sessions: bot.runner.supportsSideSessions(),
           };
         });
       return jsonResponse(200, { bots });
     }),
   );
 
-  // GET /v1/bots/:bot_id/sessions — admin read, scope=ask.
   unregs.push(
     router.route(
       "GET",
       "/v1/bots/:bot_id/sessions",
-      authed(deps, "ask", async () =>
-        // Phase 3 will read from the live pool.
-        jsonResponse(200, { sessions: [] }),
-      ),
+      authed(deps, "ask", listSessions),
     ),
   );
 
-  // DELETE /v1/bots/:bot_id/sessions/:session_id — admin kill, scope=ask.
   unregs.push(
     router.route(
       "DELETE",
       "/v1/bots/:bot_id/sessions/:session_id",
-      authed(deps, "ask", async () => errorResponse("session_not_found")),
+      authed(deps, "ask", deleteSession),
     ),
   );
 
   return unregs;
 }
 
-/**
- * Wrap a handler with the standard authenticate → known-bot → authorize
- * preamble used by `/v1/bots/:bot_id/*` routes. `bot_not_permitted` and
- * `scope_not_permitted` happen *before* we probe the DB / pool so callers
- * can't enumerate bot ids by latency.
- */
 function authed(
   deps: AgentApiDeps,
   scope: Scope,

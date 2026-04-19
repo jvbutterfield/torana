@@ -29,7 +29,7 @@ let db: GatewayDB;
 let server: Server;
 
 function fakeRegistry(botIds: string[], config: Config): {
-  bot(id: string): { botConfig: { id: string; runner: { type: string } } } | undefined;
+  bot(id: string): unknown;
   botIds: string[];
 } {
   const reg = {
@@ -39,6 +39,7 @@ function fakeRegistry(botIds: string[], config: Config): {
       if (!botConfig) return undefined;
       return {
         botConfig: { id, runner: { type: botConfig.runner.type } },
+        runner: { supportsSideSessions: () => true },
       };
     },
     botIds,
@@ -67,8 +68,30 @@ function setup(tokens: ResolvedAgentApiToken[]): string {
     registry: fakeRegistry(["bot1"], config) as never,
     tokens,
     log: logger("agent-api-test"),
+    pool: stubPool() as never,
+    orphans: stubOrphans() as never,
   });
   return `http://127.0.0.1:${server.port}`;
+}
+
+function stubPool(): { listForBot: () => unknown[]; stop: () => Promise<void> } {
+  return {
+    listForBot: () => [],
+    stop: async () => {
+      /* ok */
+    },
+  };
+}
+
+function stubOrphans(): { attach: () => void; shutdown: () => void } {
+  return {
+    attach: () => {
+      /* ok */
+    },
+    shutdown: () => {
+      /* ok */
+    },
+  };
 }
 
 beforeEach(() => {

@@ -12,6 +12,7 @@ export {}; // mark as module so top-level declarations are module-scoped
 //   auth-fail        — write "Error: not logged in" to stderr, exit 1.
 //   stubborn         — ignore SIGTERM; must be SIGKILLed.
 //   slow-start       — delay emitting system init by 400ms.
+//   slow-echo        — like `normal` but waits 500ms before emitting the result.
 //   replay-continue  — emit system init with current argv joined (so tests can
 //                       inspect whether --continue was passed).
 
@@ -84,6 +85,9 @@ async function main(): Promise<void> {
           delta: { type: "text_delta", text: `echo: ${content}` },
         },
       });
+      if (mode === "slow-echo") {
+        await new Promise((r) => setTimeout(r, 500));
+      }
       // result → emits `done`
       emit({
         type: "result",
