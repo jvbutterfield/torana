@@ -108,49 +108,86 @@ describe("db/migrate", () => {
     db.close();
   });
 
-  test("fresh install creates v1 tables + user_version=1", () => {
+  test("fresh install creates current-version tables + matching user_version", () => {
     const dbPath = join(tmpDir, "fresh.db");
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(null);
-    expect(plan.targetVersion).toBe(1);
+    expect(plan.targetVersion).toBe(2);
 
     const db = new Database(dbPath);
     const user = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(user).toBe(1);
+    expect(user).toBe(2);
 
     // inbound_updates has bot_id, not persona
     const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{ name: string }>;
     expect(cols.map((c) => c.name)).toContain("bot_id");
     expect(cols.map((c) => c.name)).not.toContain("persona");
+
+    // agent_api tables created for fresh installs
+    const tables = db
+      .query("SELECT name FROM sqlite_master WHERE type='table'")
+      .all() as Array<{ name: string }>;
+    const names = tables.map((t) => t.name);
+    expect(names).toContain("user_chats");
+    expect(names).toContain("agent_api_idempotency");
+    expect(names).toContain("side_sessions");
+
+    // turns gains agent_api columns
+    const turnsCols = (db.query("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(turnsCols).toContain("source");
+    expect(turnsCols).toContain("agent_api_token_name");
+    expect(turnsCols).toContain("final_text");
+    expect(turnsCols).toContain("idempotency_key");
+    expect(turnsCols).toContain("usage_json");
+    expect(turnsCols).toContain("duration_ms");
     db.close();
   });
 
-  test("v0 → v1 renames column + remaps status values", () => {
+  test("v0 → v2 renames column + applies both 0001 and 0002", () => {
     const dbPath = join(tmpDir, "v0-upgrade.db");
     seedV0Schema(dbPath);
 
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(0);
-    expect(plan.targetVersion).toBe(1);
+    expect(plan.targetVersion).toBe(2);
+    expect(plan.steps.map((s) => s.id)).toEqual(["0001_persona_to_bot_id", "0002_agent_api"]);
 
     const db = new Database(dbPath);
     const user = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(user).toBe(1);
+    expect(user).toBe(2);
 
-    // status remap
-    const rows = db.query("SELECT telegram_update_id, status FROM inbound_updates ORDER BY telegram_update_id").all() as Array<{
-      telegram_update_id: number;
-      status: string;
-    }>;
-    expect(rows.map((r) => r.status)).toEqual(["enqueued", "processed", "processed", "received"]);
+    // status remap (from 0001)
+    const rows = db
+      .query(
+        "SELECT telegram_update_id, status FROM inbound_updates ORDER BY telegram_update_id",
+      )
+      .all() as Array<{ telegram_update_id: number; status: string }>;
+    expect(rows.map((r) => r.status)).toEqual([
+      "enqueued",
+      "processed",
+      "processed",
+      "received",
+    ]);
 
     // bot_id preserved
-    const one = db.query("SELECT bot_id FROM inbound_updates WHERE telegram_update_id = 100").get() as { bot_id: string };
+    const one = db
+      .query("SELECT bot_id FROM inbound_updates WHERE telegram_update_id = 100")
+      .get() as { bot_id: string };
     expect(one.bot_id).toBe("cato");
 
-    // bot_state exists
-    const tbl = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name='bot_state'").get();
+    // bot_state exists (from 0001)
+    const tbl = db
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='bot_state'")
+      .get();
     expect(tbl).not.toBeNull();
+
+    // agent_api tables exist (from 0002)
+    const aa = db
+      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='user_chats'")
+      .get();
+    expect(aa).not.toBeNull();
 
     // idempotent
     const plan2 = planMigration(dbPath);
@@ -159,10 +196,36 @@ describe("db/migrate", () => {
     db.close();
   });
 
-  test("migrate is a no-op on a current v1 DB", () => {
-    const dbPath = join(tmpDir, "v1.db");
+  test("migrate is a no-op on a current DB", () => {
+    const dbPath = join(tmpDir, "v2.db");
     applyMigrations(dbPath);
     const plan = planMigration(dbPath);
     expect(plan.steps.length).toBe(0);
+  });
+
+  test("v1 → v2 applies 0002 only", () => {
+    const dbPath = join(tmpDir, "v1-upgrade.db");
+    // Build a v1 DB by running the 0001 migration on a v0 DB, then
+    // resetting user_version to 1 (simulating a v1-shipped install).
+    seedV0Schema(dbPath);
+    // Apply 0001 manually.
+    const db = new Database(dbPath);
+    const sqlPath = join(__dirname, "..", "..", "src", "db", "migrations", "0001_persona_to_bot_id.sql");
+    const sql = require("node:fs").readFileSync(sqlPath, "utf8");
+    db.exec(sql);
+    db.exec("PRAGMA user_version = 1");
+    db.close();
+
+    const plan = planMigration(dbPath);
+    expect(plan.currentVersion).toBe(1);
+    expect(plan.targetVersion).toBe(2);
+    expect(plan.steps.map((s) => s.id)).toEqual(["0002_agent_api"]);
+
+    applyMigrations(dbPath);
+
+    const db2 = new Database(dbPath);
+    const user = (db2.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    expect(user).toBe(2);
+    db2.close();
   });
 });

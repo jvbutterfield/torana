@@ -285,6 +285,86 @@ export const BotSchema = z
   })
   .strict();
 
+// ---------- agent API ----------
+
+export const AgentApiScopeSchema = z.enum(["ask", "inject"]);
+export type AgentApiScope = z.infer<typeof AgentApiScopeSchema>;
+
+export const AgentApiTokenSchema = z
+  .object({
+    name: z
+      .string()
+      .regex(/^[a-z][a-z0-9_-]{0,63}$/, "name must be lowercase alnum/_-, max 64 chars"),
+    secret_ref: NonEmptyString,
+    bot_ids: z.array(BotIdSchema).min(1),
+    scopes: z.array(AgentApiScopeSchema).min(1),
+  })
+  .strict();
+
+export const AgentApiSideSessionsSchema = z
+  .object({
+    idle_ttl_ms: IntCoerce.min(60_000).default(3_600_000),
+    hard_ttl_ms: IntCoerce.min(60_000).default(86_400_000),
+    max_per_bot: IntCoerce.min(1).max(64).default(8),
+    max_global: IntCoerce.min(1).max(512).default(64),
+  })
+  .strict()
+  .default({
+    idle_ttl_ms: 3_600_000,
+    hard_ttl_ms: 86_400_000,
+    max_per_bot: 8,
+    max_global: 64,
+  });
+
+export const AgentApiInjectSchema = z
+  .object({
+    idempotency_retention_ms: IntCoerce.min(60_000).default(86_400_000),
+  })
+  .strict()
+  .default({ idempotency_retention_ms: 86_400_000 });
+
+export const AgentApiAskSchema = z
+  .object({
+    default_timeout_ms: IntCoerce.min(1_000).max(300_000).default(60_000),
+    max_timeout_ms: IntCoerce.min(1_000).max(300_000).default(300_000),
+    max_body_bytes: IntCoerce.min(4_096).default(100 * 1024 * 1024),
+    max_files_per_request: IntCoerce.min(1).max(50).default(10),
+  })
+  .strict()
+  .default({
+    default_timeout_ms: 60_000,
+    max_timeout_ms: 300_000,
+    max_body_bytes: 100 * 1024 * 1024,
+    max_files_per_request: 10,
+  });
+
+export const AgentApiSchema = z
+  .object({
+    enabled: BoolPermissive.default(false),
+    tokens: z.array(AgentApiTokenSchema).default([]),
+    side_sessions: AgentApiSideSessionsSchema,
+    inject: AgentApiInjectSchema,
+    ask: AgentApiAskSchema,
+  })
+  .strict()
+  .default({
+    enabled: false,
+    tokens: [],
+    side_sessions: {
+      idle_ttl_ms: 3_600_000,
+      hard_ttl_ms: 86_400_000,
+      max_per_bot: 8,
+      max_global: 64,
+    },
+    inject: { idempotency_retention_ms: 86_400_000 },
+    ask: {
+      default_timeout_ms: 60_000,
+      max_timeout_ms: 300_000,
+      max_body_bytes: 100 * 1024 * 1024,
+      max_files_per_request: 10,
+    },
+  });
+
 // ---------- root ----------
 
 export const ConfigSchema = z
@@ -306,6 +386,7 @@ export const ConfigSchema = z
     dashboard: DashboardSchema,
     metrics: MetricsSchema,
     attachments: AttachmentsSchema,
+    agent_api: AgentApiSchema,
     bots: z.array(BotSchema).min(1, "at least one bot is required"),
   })
   .strict()
@@ -397,6 +478,56 @@ export const ConfigSchema = z
     }
 
     // ACL default-deny requires non-empty list; empty is allowed but will generate a warning at load time.
+
+    // Agent API: referenced bot_ids must exist; token names must be unique;
+    // TTL + cap invariants hold.
+    if (cfg.agent_api) {
+      const tokenNames = new Set<string>();
+      for (const [tIdx, tok] of cfg.agent_api.tokens.entries()) {
+        if (tokenNames.has(tok.name)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["agent_api", "tokens", tIdx, "name"],
+            message: `duplicate agent_api token name '${tok.name}'`,
+          });
+        }
+        tokenNames.add(tok.name);
+        for (const [bIdx, botId] of tok.bot_ids.entries()) {
+          if (!ids.has(botId)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["agent_api", "tokens", tIdx, "bot_ids", bIdx],
+              message: `agent_api.tokens[${tIdx}].bot_ids references unknown bot '${botId}'`,
+            });
+          }
+        }
+      }
+
+      const ss = cfg.agent_api.side_sessions;
+      if (ss.idle_ttl_ms > ss.hard_ttl_ms) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["agent_api", "side_sessions", "idle_ttl_ms"],
+          message: "idle_ttl_ms must be <= hard_ttl_ms",
+        });
+      }
+      if (ss.max_per_bot > ss.max_global) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["agent_api", "side_sessions", "max_per_bot"],
+          message: "max_per_bot must be <= max_global",
+        });
+      }
+
+      const ask = cfg.agent_api.ask;
+      if (ask.default_timeout_ms > ask.max_timeout_ms) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["agent_api", "ask", "default_timeout_ms"],
+          message: "default_timeout_ms must be <= max_timeout_ms",
+        });
+      }
+    }
   });
 
 export type BotId = string;
@@ -411,4 +542,8 @@ export type CommandRunnerConfig = z.infer<typeof CommandRunnerSchema>;
 export const SECRET_PATHS = [
   "transport.webhook.secret",
   "bots[].token",
+  "agent_api.tokens[].secret_ref",
 ] as const;
+
+export type AgentApiTokenConfig = z.infer<typeof AgentApiTokenSchema>;
+export type AgentApiConfig = z.infer<typeof AgentApiSchema>;

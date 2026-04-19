@@ -130,15 +130,17 @@ async function main(argv: string[]): Promise<void> {
     }
     case "start": {
       const path = resolveConfigPath(args.configPath);
-      const { config, secrets } = loadConfigFromFile(path);
+      const { config, secrets, agentApiTokens, warnings } = loadConfigFromFile(path);
       setSecrets(secrets);
       setLogLevel(config.gateway.log_level);
       setLogFormat(config.gateway.log_format ?? (process.stdout.isTTY ? "text" : "json"));
+      for (const w of warnings) log.warn(w);
 
       const running = await startGateway({
         config,
         secrets,
         autoMigrate: args.autoMigrate,
+        agentApiTokens,
       });
 
       const onSignal = async (signal: string): Promise<void> => {

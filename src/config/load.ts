@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { isAbsolute, resolve, dirname } from "node:path";
 import yaml from "js-yaml";
 import { ZodError } from "zod";
@@ -144,12 +145,31 @@ export function loadConfigFromFile(filePath: string, opts: LoadOptions = {}): Lo
   return loadConfigFromString(raw, { ...opts, filePath: absPath });
 }
 
+/**
+ * Agent-API token resolved at config-load time. The raw secret is kept in
+ * memory only; a SHA-256 hash is used for constant-time comparison against
+ * presented bearer tokens.
+ */
+export interface ResolvedAgentApiToken {
+  name: string;
+  /** Raw bearer-token string — added to the redaction set. */
+  secret: string;
+  /** SHA-256 of the UTF-8 bytes of `secret`. 32 bytes. */
+  hash: Uint8Array;
+  bot_ids: readonly string[];
+  scopes: readonly ("ask" | "inject")[];
+}
+
 export interface LoadedConfig {
   config: Config;
   /** Absolute path the config was loaded from (empty for string loads). */
   sourcePath: string;
   /** Values pulled from the resolved config whose slots are marked secret — for the log redactor. */
   secrets: string[];
+  /** Resolved agent-api tokens (hashed). Empty when agent_api is disabled or has no tokens. */
+  agentApiTokens: ResolvedAgentApiToken[];
+  /** Warnings emitted during load that are non-fatal. */
+  warnings: string[];
 }
 
 /** Internal: load from a string with interpolation + validation. */
@@ -223,11 +243,75 @@ export function loadConfigFromString(
     }
   }
 
+  const warnings: string[] = [];
+  const agentApiTokens = resolveAgentApiTokens(config, raw, warnings);
+
   return {
     config,
     sourcePath: opts.filePath ?? "",
-    secrets: collectSecrets(config),
+    secrets: collectSecrets(config, agentApiTokens),
+    agentApiTokens,
+    warnings,
   };
+}
+
+function resolveAgentApiTokens(
+  config: Config,
+  rawSource: string,
+  warnings: string[],
+): ResolvedAgentApiToken[] {
+  const out: ResolvedAgentApiToken[] = [];
+  if (!config.agent_api?.tokens?.length) return out;
+
+  if (config.agent_api.enabled === false && config.agent_api.tokens.length > 0) {
+    warnings.push(
+      "agent_api.tokens defined but agent_api.enabled=false — tokens are inert until enabled",
+    );
+  }
+  if (config.agent_api.enabled === true && config.agent_api.tokens.length === 0) {
+    warnings.push(
+      "agent_api.enabled=true but no tokens defined — no callers will be able to authenticate",
+    );
+  }
+
+  for (const tok of config.agent_api.tokens) {
+    const hash = createHash("sha256").update(tok.secret_ref, "utf8").digest();
+    out.push({
+      name: tok.name,
+      secret: tok.secret_ref,
+      hash: new Uint8Array(hash),
+      bot_ids: [...tok.bot_ids],
+      scopes: [...tok.scopes],
+    });
+    // Literal-token nudge: look for a `secret_ref: <not-${...}>` pattern
+    // for this token's name in the raw source. The YAML is already
+    // interpolated; we scan the *raw* text for the unresolved form.
+    if (isLiteralTokenInRaw(rawSource, tok.name)) {
+      warnings.push(
+        `agent_api.tokens[name='${tok.name}'] secret_ref looks like a literal; prefer \${VAR} interpolation`,
+      );
+    }
+  }
+  return out;
+}
+
+function isLiteralTokenInRaw(raw: string, tokenName: string): boolean {
+  // Best-effort: find the line `name: <tokenName>` and then look forward
+  // a few lines for the next `secret_ref:` value.
+  const re = new RegExp(`name:\\s*['\"]?${escapeRegExp(tokenName)}['\"]?`);
+  const match = re.exec(raw);
+  if (!match) return false;
+  const tail = raw.slice(match.index, match.index + 400);
+  const secretMatch = /secret_ref:\s*(.+)/.exec(tail);
+  if (!secretMatch) return false;
+  const value = secretMatch[1]!.trim();
+  if (value.startsWith("${")) return false;
+  if (value.startsWith("'${") || value.startsWith('"${')) return false;
+  return true;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function pathToString(segments: (string | number)[]): string {
@@ -236,11 +320,17 @@ function pathToString(segments: (string | number)[]): string {
     .join("");
 }
 
-function collectSecrets(config: Config): string[] {
+function collectSecrets(
+  config: Config,
+  agentApiTokens: ResolvedAgentApiToken[] = [],
+): string[] {
   const secrets = new Set<string>();
   if (config.transport.webhook?.secret) secrets.add(config.transport.webhook.secret);
   for (const bot of config.bots) {
     if (bot.token) secrets.add(bot.token);
+  }
+  for (const tok of agentApiTokens) {
+    if (tok.secret) secrets.add(tok.secret);
   }
   return [...secrets].filter((s) => s.length >= 6);
 }

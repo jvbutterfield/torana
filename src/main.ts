@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
+import type { ResolvedAgentApiToken } from "./config/load.js";
 import { logger, setLogLevel, setLogFormat, setSecrets, autoFormat } from "./log.js";
 import { GatewayDB } from "./db/gateway-db.js";
 import { applyMigrations } from "./db/migrate.js";
@@ -19,7 +20,11 @@ import { sweepExpiredAttachments } from "./core/attachments.js";
 import { createServer, type Server } from "./server.js";
 import { WebhookTransport } from "./transport/webhook.js";
 import { PollingTransport } from "./transport/polling.js";
-import type { Transport } from "./transport/types.js";
+import type { Transport, Unregister } from "./transport/types.js";
+import {
+  registerAgentApiHealthRoute,
+  registerAgentApiRoutes,
+} from "./agent-api/router.js";
 
 const log = logger("main");
 
@@ -27,6 +32,8 @@ export interface StartOptions {
   config: Config;
   secrets: string[];
   autoMigrate?: boolean;
+  /** Resolved agent-api tokens from load.ts — empty when the feature is disabled. */
+  agentApiTokens?: ResolvedAgentApiToken[];
 }
 
 export interface RunningGateway {
@@ -119,6 +126,28 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   // HTTP server + router.
   const server = createServer({ port: config.gateway.port });
   registerFixedRoutes(server, config, db, metrics, registry);
+
+  // /v1/health is always available — operators need to confirm the binary
+  // has agent-api support even when the feature is disabled.
+  registerAgentApiHealthRoute(server.router, {
+    config,
+    uptimeSecs: () => metrics.uptimeSecs(),
+  });
+
+  const agentApiUnregs: Unregister[] = [];
+  if (config.agent_api?.enabled) {
+    const tokens = opts.agentApiTokens ?? [];
+    agentApiUnregs.push(
+      ...registerAgentApiRoutes(server.router, {
+        config,
+        db,
+        registry,
+        tokens,
+        log: logger("agent-api"),
+      }),
+    );
+    log.info("agent_api routes registered", { tokens: tokens.length });
+  }
 
   // Transports.
   const webhookClients = new Map<string, TelegramClient>();
@@ -216,6 +245,15 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       try {
         clearInterval(backlogTimer);
         clearInterval(attachmentSweeperTimer);
+
+        // Unregister agent-api routes so new calls 404 before we tear down.
+        for (const u of agentApiUnregs) {
+          try {
+            u();
+          } catch {
+            /* best-effort */
+          }
+        }
 
         // 1. Stop accepting new updates.
         await Promise.all(transports.map((t) => t.stop()));

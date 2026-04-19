@@ -81,6 +81,22 @@ class StubRunner implements AgentRunner {
     return this.emitter.on(event, handler);
   }
 
+  supportsSideSessions(): boolean {
+    return false;
+  }
+  async startSideSession(): Promise<void> {
+    throw new Error("not supported");
+  }
+  sendSideTurn(): SendTurnResult {
+    throw new Error("not supported");
+  }
+  async stopSideSession(): Promise<void> {
+    throw new Error("not supported");
+  }
+  onSide(): Unsubscribe {
+    throw new Error("not supported");
+  }
+
   simulateFatal(code: "auth" | "exit" | "spawn" | "protocol", message: string): void {
     this._isReady = false;
     this.emitter.emit({ kind: "fatal", code, message });

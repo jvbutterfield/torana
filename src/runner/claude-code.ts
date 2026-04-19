@@ -10,6 +10,7 @@ import type { BotId, ClaudeCodeRunnerConfig } from "../config/schema.js";
 import { logger, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
+  RunnerDoesNotSupportSideSessions,
   RunnerEventEmitter,
   type AgentRunner,
   type RunnerEvent,
@@ -150,6 +151,37 @@ export class ClaudeCodeRunner implements AgentRunner {
       }
     }
     // watchExit will pick up pendingFreshSession and respawn without --continue.
+  }
+
+  // ---------- Side sessions (stub — full implementation in Phase 2) ----------
+
+  supportsSideSessions(): boolean {
+    return false;
+  }
+
+  async startSideSession(_sessionId: string): Promise<void> {
+    throw new RunnerDoesNotSupportSideSessions();
+  }
+
+  sendSideTurn(
+    _sessionId: string,
+    _turnId: TurnId,
+    _text: string,
+    _attachments: Attachment[],
+  ): SendTurnResult {
+    throw new RunnerDoesNotSupportSideSessions();
+  }
+
+  async stopSideSession(_sessionId: string, _graceMs?: number): Promise<void> {
+    throw new RunnerDoesNotSupportSideSessions();
+  }
+
+  onSide<E extends RunnerEventKind>(
+    _sessionId: string,
+    _event: E,
+    _handler: RunnerEventHandler<E>,
+  ): Unsubscribe {
+    throw new RunnerDoesNotSupportSideSessions();
   }
 
   sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {

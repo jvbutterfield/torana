@@ -47,6 +47,23 @@ export class GatewayDB {
     clearBotDisabled: Statement;
     getExpiredAttachmentTurns: Statement;
     clearTurnAttachments: Statement;
+    // Agent API additions
+    allocateSyntheticInbound: Statement;
+    upsertUserChat: Statement;
+    getLastChatForUser: Statement;
+    listUserChatsByBot: Statement;
+    getIdempotencyTurn: Statement;
+    insertIdempotency: Statement;
+    sweepIdempotency: Statement;
+    upsertSideSession: Statement;
+    markSideSessionState: Statement;
+    deleteSideSession: Statement;
+    listSideSessions: Statement;
+    markAllSideSessionsStopped: Statement;
+    insertAskTurnRow: Statement;
+    insertInjectTurnRow: Statement;
+    setTurnFinalText: Statement;
+    getTurnExtended: Statement;
   };
 
   constructor(dbPath: string) {
@@ -196,12 +213,123 @@ export class GatewayDB {
       clearTurnAttachments: d.prepare(
         "UPDATE turns SET attachment_paths_json = NULL WHERE id = ?",
       ),
+
+      // --- Agent API ---
+
+      allocateSyntheticInbound: d.prepare(`
+        INSERT INTO inbound_updates (bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
+        SELECT
+          $bot_id,
+          COALESCE(MIN(telegram_update_id), 0) - 1,
+          $chat_id,
+          0,
+          $from_user_id,
+          $payload_json,
+          'enqueued'
+        FROM inbound_updates
+        WHERE bot_id = $bot_id AND telegram_update_id < 0
+        RETURNING id
+      `),
+
+      upsertUserChat: d.prepare(`
+        INSERT INTO user_chats (bot_id, telegram_user_id, chat_id, last_inbound_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT (bot_id, telegram_user_id) DO UPDATE SET
+          chat_id = excluded.chat_id,
+          last_inbound_at = excluded.last_inbound_at
+      `),
+      getLastChatForUser: d.prepare(
+        "SELECT chat_id FROM user_chats WHERE bot_id = ? AND telegram_user_id = ?",
+      ),
+      listUserChatsByBot: d.prepare(
+        "SELECT chat_id FROM user_chats WHERE bot_id = ?",
+      ),
+
+      getIdempotencyTurn: d.prepare(
+        "SELECT turn_id FROM agent_api_idempotency WHERE bot_id = ? AND idempotency_key = ?",
+      ),
+      insertIdempotency: d.prepare(
+        "INSERT INTO agent_api_idempotency (bot_id, idempotency_key, turn_id) VALUES (?, ?, ?)",
+      ),
+      sweepIdempotency: d.prepare(
+        "DELETE FROM agent_api_idempotency WHERE CAST(strftime('%s', created_at) AS INTEGER) * 1000 < ?",
+      ),
+
+      upsertSideSession: d.prepare(`
+        INSERT INTO side_sessions (bot_id, session_id, pid, started_at, last_used_at, hard_expires_at, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (bot_id, session_id) DO UPDATE SET
+          pid = excluded.pid,
+          last_used_at = excluded.last_used_at,
+          hard_expires_at = excluded.hard_expires_at,
+          state = excluded.state
+      `),
+      markSideSessionState: d.prepare(
+        "UPDATE side_sessions SET state = ?, last_used_at = datetime('now') WHERE bot_id = ? AND session_id = ?",
+      ),
+      deleteSideSession: d.prepare(
+        "DELETE FROM side_sessions WHERE bot_id = ? AND session_id = ?",
+      ),
+      listSideSessions: d.prepare(
+        "SELECT bot_id, session_id, pid, started_at, last_used_at, hard_expires_at, state FROM side_sessions WHERE bot_id = ?",
+      ),
+      markAllSideSessionsStopped: d.prepare(
+        "UPDATE side_sessions SET state = 'stopped' WHERE state != 'stopped'",
+      ),
+
+      insertAskTurnRow: d.prepare(`
+        INSERT INTO turns (bot_id, chat_id, source_update_id, status, started_at,
+                           attachment_paths_json, source, agent_api_token_name)
+        VALUES (?, 0, ?, 'running', datetime('now'), ?, 'agent_api_ask', ?)
+        RETURNING id
+      `),
+      insertInjectTurnRow: d.prepare(`
+        INSERT INTO turns (bot_id, chat_id, source_update_id, status,
+                           attachment_paths_json, source, agent_api_token_name,
+                           agent_api_source_label, idempotency_key)
+        VALUES (?, ?, ?, 'queued', ?, 'agent_api_inject', ?, ?, ?)
+        RETURNING id
+      `),
+      setTurnFinalText: d.prepare(`
+        UPDATE turns SET
+          status = 'completed',
+          final_text = ?,
+          usage_json = ?,
+          duration_ms = ?,
+          completed_at = datetime('now')
+        WHERE id = ?
+      `),
+      getTurnExtended: d.prepare(`
+        SELECT t.id, t.bot_id, t.chat_id, t.source_update_id, t.status,
+               t.started_at, t.completed_at, t.first_output_at, t.last_output_at,
+               t.error_text, t.source, t.agent_api_token_name,
+               t.agent_api_source_label, t.final_text, t.idempotency_key,
+               t.usage_json, t.duration_ms,
+               iu.payload_json AS inbound_payload_json
+        FROM turns t
+        LEFT JOIN inbound_updates iu ON t.source_update_id = iu.id
+        WHERE t.id = ?
+      `),
     };
   }
 
   transaction<T>(fn: () => T): T {
     const tx = this._db.transaction(fn);
     return tx();
+  }
+
+  /**
+   * Like {@link transaction} but uses `BEGIN IMMEDIATE`, acquiring the write
+   * lock up-front. Prevents two concurrent writers from both reading the same
+   * `MIN(...)` and computing the same next synthetic id. Used by agent-API
+   * insert helpers.
+   */
+  transactionImmediate<T>(fn: () => T): T {
+    const tx = this._db.transaction(fn) as unknown as {
+      (): T;
+      immediate(): T;
+    };
+    return tx.immediate();
   }
 
   // --- Inbound updates ---
@@ -314,6 +442,12 @@ export class GatewayDB {
     if (!row) return null;
     try {
       const payload = JSON.parse(row.payload_json);
+      // Agent-API inject rows store the marker-wrapped prompt on the
+      // synthetic inbound payload — return that verbatim so the dispatch
+      // loop can feed it to the main runner.
+      if (payload?.kind === "inject" && typeof payload.prompt === "string") {
+        return payload.prompt;
+      }
       return payload?.message?.text ?? payload?.message?.caption ?? null;
     } catch {
       return null;
@@ -610,6 +744,239 @@ export class GatewayDB {
 
   clearTurnAttachments(turnId: number): void {
     this.stmts.clearTurnAttachments.run(turnId);
+  }
+
+  // --- Agent API ---
+
+  /**
+   * Record (or refresh) the most recent authorized chat for a (bot, user).
+   * Called from processUpdate so inject calls can look up `chat_id` by
+   * `telegram_user_id` later.
+   */
+  upsertUserChat(botId: BotId, telegramUserId: string, chatId: number): void {
+    this.stmts.upsertUserChat.run(botId, telegramUserId, chatId);
+  }
+
+  getLastChatForUser(
+    botId: BotId,
+    telegramUserId: string,
+  ): { chat_id: number } | null {
+    return this.stmts.getLastChatForUser.get(botId, telegramUserId) as
+      | { chat_id: number }
+      | null;
+  }
+
+  listUserChatsByBot(botId: BotId): Array<{ chat_id: number }> {
+    return this.stmts.listUserChatsByBot.all(botId) as Array<{ chat_id: number }>;
+  }
+
+  getIdempotencyTurn(botId: BotId, key: string): number | null {
+    const row = this.stmts.getIdempotencyTurn.get(botId, key) as
+      | { turn_id: number }
+      | null;
+    return row?.turn_id ?? null;
+  }
+
+  /** Delete idempotency rows created before `thresholdMs` (ms since epoch). */
+  sweepIdempotency(thresholdMs: number): number {
+    const res = this.stmts.sweepIdempotency.run(thresholdMs);
+    return Number(res.changes ?? 0);
+  }
+
+  upsertSideSession(row: {
+    botId: BotId;
+    sessionId: string;
+    pid: number | null;
+    startedAt: string;
+    lastUsedAt: string;
+    hardExpiresAt: string;
+    state: "starting" | "ready" | "busy" | "stopping" | "stopped";
+  }): void {
+    this.stmts.upsertSideSession.run(
+      row.botId,
+      row.sessionId,
+      row.pid,
+      row.startedAt,
+      row.lastUsedAt,
+      row.hardExpiresAt,
+      row.state,
+    );
+  }
+
+  markSideSessionState(
+    botId: BotId,
+    sessionId: string,
+    state: "starting" | "ready" | "busy" | "stopping" | "stopped",
+  ): void {
+    this.stmts.markSideSessionState.run(state, botId, sessionId);
+  }
+
+  deleteSideSession(botId: BotId, sessionId: string): void {
+    this.stmts.deleteSideSession.run(botId, sessionId);
+  }
+
+  listSideSessions(botId: BotId): Array<{
+    bot_id: string;
+    session_id: string;
+    pid: number | null;
+    started_at: string;
+    last_used_at: string;
+    hard_expires_at: string;
+    state: string;
+  }> {
+    return this.stmts.listSideSessions.all(botId) as Array<{
+      bot_id: string;
+      session_id: string;
+      pid: number | null;
+      started_at: string;
+      last_used_at: string;
+      hard_expires_at: string;
+      state: string;
+    }>;
+  }
+
+  markAllSideSessionsStopped(): void {
+    this.stmts.markAllSideSessionsStopped.run();
+  }
+
+  /**
+   * Insert an agent-API `ask` turn. Creates a synthetic inbound row + a
+   * `turns` row with status='running' (never 'queued' — the ask handler
+   * drives the turn directly). Uses BEGIN IMMEDIATE.
+   */
+  insertAskTurn(args: {
+    botId: BotId;
+    tokenName: string;
+    sessionId: string;
+    textPreview: string;
+    attachmentPaths: string[];
+  }): number {
+    return this.transactionImmediate(() => {
+      const inboundId = this.allocateSyntheticInbound({
+        botId: args.botId,
+        chatId: 0,
+        fromUserId: `agent_api:${args.tokenName}`,
+        payloadJson: JSON.stringify({
+          kind: "ask",
+          session_id: args.sessionId,
+          text_preview: args.textPreview.slice(0, 200),
+        }),
+      });
+      const row = this.stmts.insertAskTurnRow.get(
+        args.botId,
+        inboundId,
+        args.attachmentPaths.length ? JSON.stringify(args.attachmentPaths) : null,
+        args.tokenName,
+      ) as { id: number };
+      return row.id;
+    });
+  }
+
+  /**
+   * Insert an agent-API `inject` turn. Idempotency lookup runs inside the
+   * same transaction; if the key was already used, returns the prior turn id
+   * with `replay: true` and does not touch `turns`/`inbound_updates`.
+   */
+  insertInjectTurn(args: {
+    botId: BotId;
+    tokenName: string;
+    chatId: number;
+    markerWrappedText: string;
+    idempotencyKey: string;
+    sourceLabel: string;
+    attachmentPaths: string[];
+  }): { replay: boolean; turnId: number } {
+    return this.transactionImmediate(() => {
+      const existing = this.stmts.getIdempotencyTurn.get(
+        args.botId,
+        args.idempotencyKey,
+      ) as { turn_id: number } | null;
+      if (existing) return { replay: true, turnId: existing.turn_id };
+
+      const inboundId = this.allocateSyntheticInbound({
+        botId: args.botId,
+        chatId: args.chatId,
+        fromUserId: `agent_api:${args.tokenName}`,
+        payloadJson: JSON.stringify({
+          kind: "inject",
+          source: args.sourceLabel,
+          idempotency_key: args.idempotencyKey,
+          prompt: args.markerWrappedText,
+        }),
+      });
+
+      const turnRow = this.stmts.insertInjectTurnRow.get(
+        args.botId,
+        args.chatId,
+        inboundId,
+        args.attachmentPaths.length ? JSON.stringify(args.attachmentPaths) : null,
+        args.tokenName,
+        args.sourceLabel,
+        args.idempotencyKey,
+      ) as { id: number };
+
+      this.stmts.insertIdempotency.run(
+        args.botId,
+        args.idempotencyKey,
+        turnRow.id,
+      );
+
+      return { replay: false, turnId: turnRow.id };
+    });
+  }
+
+  setTurnFinalText(
+    turnId: number,
+    finalText: string,
+    usageJson: string | null,
+    durationMs: number | null,
+  ): void {
+    this.stmts.setTurnFinalText.run(finalText, usageJson, durationMs, turnId);
+  }
+
+  getTurnExtended(turnId: number): {
+    id: number;
+    bot_id: string;
+    chat_id: number;
+    source_update_id: number;
+    status: string;
+    started_at: string | null;
+    completed_at: string | null;
+    first_output_at: string | null;
+    last_output_at: string | null;
+    error_text: string | null;
+    source: string | null;
+    agent_api_token_name: string | null;
+    agent_api_source_label: string | null;
+    final_text: string | null;
+    idempotency_key: string | null;
+    usage_json: string | null;
+    duration_ms: number | null;
+    inbound_payload_json: string | null;
+  } | null {
+    return this.stmts.getTurnExtended.get(turnId) as ReturnType<
+      GatewayDB["getTurnExtended"]
+    >;
+  }
+
+  private allocateSyntheticInbound(args: {
+    botId: BotId;
+    chatId: number;
+    fromUserId: string;
+    payloadJson: string;
+  }): number {
+    const row = this.stmts.allocateSyntheticInbound.get({
+      $bot_id: args.botId,
+      $chat_id: args.chatId,
+      $from_user_id: args.fromUserId,
+      $payload_json: args.payloadJson,
+    }) as { id: number } | null;
+    if (!row) {
+      throw new Error(
+        "allocateSyntheticInbound returned no row — DB in unexpected state",
+      );
+    }
+    return row.id;
   }
 
   close(): void {

@@ -79,6 +79,23 @@ export function makeTestConfig(
       retention_secs: 86_400,
       disk_usage_cap_bytes: 1024 * 1024 * 1024,
     },
+    agent_api: {
+      enabled: false,
+      tokens: [],
+      side_sessions: {
+        idle_ttl_ms: 3_600_000,
+        hard_ttl_ms: 86_400_000,
+        max_per_bot: 8,
+        max_global: 64,
+      },
+      inject: { idempotency_retention_ms: 86_400_000 },
+      ask: {
+        default_timeout_ms: 60_000,
+        max_timeout_ms: 300_000,
+        max_body_bytes: 100 * 1024 * 1024,
+        max_files_per_request: 10,
+      },
+    },
     bots,
   };
   return { ...base, ...overrides };

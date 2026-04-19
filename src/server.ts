@@ -5,6 +5,7 @@
 
 import { logger } from "./log.js";
 import type {
+  HttpMethod,
   HttpRouter,
   RouteHandler,
   Unregister,
@@ -13,19 +14,19 @@ import type {
 const log = logger("server");
 
 interface ExactKey {
-  method: "GET" | "POST";
+  method: HttpMethod;
   path: string;
 }
 
 interface ParamRoute {
-  method: "GET" | "POST";
+  method: HttpMethod;
   pattern: RegExp;
   paramNames: string[];
   handler: RouteHandler;
 }
 
 interface PrefixRoute {
-  method: "GET" | "POST";
+  method: HttpMethod;
   prefix: string;
   handler: RouteHandler;
 }
@@ -131,7 +132,10 @@ export function createServer(opts: ServerOptions): Server {
     async fetch(req) {
       try {
         const url = new URL(req.url);
-        const method = req.method === "POST" || req.method === "GET" ? req.method : null;
+        const method: HttpMethod | null =
+          req.method === "GET" || req.method === "POST" || req.method === "DELETE"
+            ? (req.method as HttpMethod)
+            : null;
         if (!method) {
           return new Response("Method Not Allowed", { status: 405 });
         }

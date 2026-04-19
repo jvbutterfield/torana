@@ -22,6 +22,11 @@ function stubRunner(overrides: Partial<AgentRunner> = {}): AgentRunner {
     supportsReset: () => true,
     isReady: () => true,
     on: () => () => { /* */ },
+    supportsSideSessions: () => false,
+    async startSideSession() { throw new Error("unsupported"); },
+    sendSideTurn: () => { throw new Error("unsupported"); },
+    async stopSideSession() { throw new Error("unsupported"); },
+    onSide: () => { throw new Error("unsupported"); },
     ...overrides,
   };
 }
