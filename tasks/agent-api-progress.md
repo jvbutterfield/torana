@@ -25,14 +25,14 @@ implementation.
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `3830f97` (Phase 10 tip self-ref);
+   `15be4a9` (tracker polish / next-session handoff);
    last pin commit `4dd31a7` (Phase 10 pin);
    last implementation commit `fe3facf` (Phase 10 — Claude UUID
    fix in `src/runner/claude-code.ts` + E2E matrix + UUID regression
    test);
    last test commit `fe3facf` (Phase 10 added 15 tests: 10 E2E +
    3 manifest guards + 1 UUID regression + 1 existing count delta).
-   49 commits ahead of `main`.
+   50 commits ahead of `main`.
 2. Sanity-check before touching anything:
    - `bun test` — expect **1142 pass / 12 skip / 0 fail**. The 12
      skips are all E2E-gated (4 `CODEX_E2E=1` runner tests + 8 `AGENT_API_E2E=1`
@@ -181,11 +181,12 @@ implementation.
 
 ---
 
-## What's done — feat/agent-api branch (49 commits)
+## What's done — feat/agent-api branch (50 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+15be4a9 agent-api: polish progress tracker for next-session handoff
 3830f97 agent-api: replace tip-commit placeholder with 4dd31a7
 4dd31a7 agent-api: pin Phase 10 commit hash in progress tracker
 fe3facf agent-api phase 10: §12.4 E2E matrix + Claude CLI 2.1 UUID fix (US-015)
