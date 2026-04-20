@@ -7,6 +7,7 @@ import type { AgentApiDeps, AuthedHandler, Scope } from "./types.js";
 import type { SideSessionPool } from "./pool.js";
 import type { OrphanListenerManager } from "./orphan-listeners.js";
 import { handleAsk } from "./handlers/ask.js";
+import { handleInject } from "./handlers/inject.js";
 import { handleGetTurn } from "./handlers/turns.js";
 import {
   handleListSessions,
@@ -51,6 +52,7 @@ export function registerAgentApiRoutes(
   const unregs: Unregister[] = [];
 
   const askHandler = handleAsk(deps);
+  const injectHandler = handleInject(deps);
   const listSessions = handleListSessions(deps);
   const deleteSession = handleDeleteSession(deps);
 
@@ -62,15 +64,11 @@ export function registerAgentApiRoutes(
     ),
   );
 
-  // Phase 4b implements a real inject handler. For now return 501 with a
-  // typed code so the route surface stays complete.
   unregs.push(
     router.route(
       "POST",
       "/v1/bots/:bot_id/inject",
-      authed(deps, "inject", async () =>
-        errorResponse("internal_error", "inject handler not yet implemented"),
-      ),
+      authed(deps, "inject", injectHandler),
     ),
   );
 

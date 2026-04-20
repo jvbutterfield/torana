@@ -2,17 +2,18 @@
 
 Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
-Approach: **thin end-to-end first** — Claude-ask round-trip is working and
-tested. Remaining work is breadth-wise: inject, Codex/Command runners,
-CLI, skills, docs.
+Approach: **thin end-to-end first** — Claude-ask + inject round-trips are
+working and tested. Remaining work is breadth-wise: multipart, Codex/
+Command runners, CLI, skills, docs.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (6 commits ahead of `main`).
-2. `bun test` — expect 323 pass / 4 skip / 0 fail.
-3. Read the "What's left" section below. Next is **Phase 4b — Inject
-   path**; the immediate-next-chunk checklist gives a concrete task
-   ordering and the test files to write.
+1. `git checkout feat/agent-api` (7 commits ahead of `main`).
+2. `bun test` — expect 346 pass / 4 skip / 0 fail.
+3. Read the "What's left" section below. Next is **Phase 5 — Multipart
+   + idempotency full** (the idempotency-in-transaction path is already
+   live from Phase 4b; Phase 5 adds file uploads + a formalized sweeper
+   timer). After that: **Phase 2b — CodexRunner side-sessions**.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
@@ -39,8 +40,8 @@ Conventions in use on this branch:
 | 3 — Side-session pool | ✅ Complete (`24aec5b`) | US-008 | LRU + idle/hard TTL + orphan listeners |
 | 4a — Ask + turns handlers | ✅ Complete (`94445a1`) | US-009 US-010 | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints |
 | — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
-| 4b — Inject path | ⏳ Next (recommended) | US-011 US-012 | Requires process-update writes to user_chats, marker wrapping |
-| 5 — Cross-cutting (full) | ⏳ Pending | US-013 US-014 | Multipart attachments + idempotency + orphan-file sweep |
+| 4b — Inject path | ✅ Complete | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
+| 5 — Cross-cutting (full) | ⏳ Next (recommended) | US-013 US-014 | Multipart attachments + formalize idempotency sweeper + orphan-file sweep |
 | 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
 | 6 — CLI + skills | ⏳ Pending | US-018 US-019 US-020 | `torana ask/inject/turns/bots/config/skills install` + Claude + Codex skill packages |
@@ -48,11 +49,12 @@ Conventions in use on this branch:
 
 ---
 
-## What's done — feat/agent-api branch (6 commits)
+## What's done — feat/agent-api branch (7 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`):
 
 ```
+<tip>   agent-api phase 4b: inject path (US-011, US-012)
 9c4a7e1 agent-api: update progress tracker — Phase 1–4a complete
 94445a1 agent-api phase 4a: ask + turns handlers (US-009, US-010)
 24aec5b agent-api phase 3: SideSessionPool (US-008)
@@ -61,10 +63,13 @@ Commits (`git log --oneline feat/agent-api ^main`):
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 323 pass / 4 skip / 0 fail.** End-to-end round-trip
-through real HTTP → bearer auth → SideSessionPool → ClaudeCodeRunner
-(mock binary) → response body is live and green in
-[test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts).
+**Full test suite: 346 pass / 4 skip / 0 fail.** End-to-end round-trips
+both live: ask through real HTTP → bearer auth → SideSessionPool →
+ClaudeCodeRunner (mock binary) → response body in
+[test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts); inject
+through real HTTP → bearer auth → chat resolve → `insertInjectTurn` →
+queued row persisted with marker-wrapped prompt in
+[test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts).
 
 ---
 
@@ -265,102 +270,89 @@ through real HTTP → bearer auth → SideSessionPool → ClaudeCodeRunner
 
 ---
 
+### Phase 4b: Inject path (US-011, US-012)
+
+- [src/core/process-update.ts](../src/core/process-update.ts) — after
+  `insertUpdate` succeeds on an authorized message, call
+  `db.upsertUserChat(botId, String(fromUserId), chatId)` inside the
+  same transaction. Unauthorized senders are not recorded.
+- [src/agent-api/chat-resolve.ts](../src/agent-api/chat-resolve.ts) —
+  `resolveChatId(db, botId, {user_id?, chat_id?})`. Errors: `missing_target`,
+  `user_not_opened_bot`, `chat_not_permitted`. `chat_id` is checked
+  first against `listUserChatsByBot(botId)` so caller-supplied chats
+  must be known to this bot.
+- [src/agent-api/marker.ts](../src/agent-api/marker.ts) —
+  `wrapInjected(text, source)` → `[system-injected from "<source>"]\n\n<text>`.
+  Framing only — no sanitization (inject callers are trusted via bearer token).
+- [src/agent-api/handlers/inject.ts](../src/agent-api/handlers/inject.ts)
+  — full handler. Ordering: key validate → idempotency replay (early
+  return before body parse — spec §6.4 says the body is ignored on
+  replay) → zod body parse (refine message mapped to typed
+  `missing_target`) → chat resolve → ACL re-check (`isAuthorized`) →
+  `marker.wrap` → `db.insertInjectTurn` (handles in-txn dedup; returns
+  `{replay, turnId}`) → `registry.dispatchFor(botId)` → 202 with
+  `status: queued | in_progress` (re-reads row after dispatch). When
+  the caller passes `chat_id` only, ACL lookup walks `user_chats`
+  backwards to find the user associated with that chat.
+- [src/agent-api/router.ts](../src/agent-api/router.ts) — inject route
+  wired to real handler (replacing the 501 stub).
+- [test/core/process-update.user-chats.test.ts](../test/core/process-update.user-chats.test.ts)
+  — 3 tests (first DM, chat-id migration, unauthorized sender not
+  recorded).
+- [test/agent-api/chat-resolve.test.ts](../test/agent-api/chat-resolve.test.ts)
+  — 7 unit tests covering all err codes + both resolution modes.
+- [test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts)
+  — 13 HTTP integration tests. Happy paths: `user_id` + `chat_id`
+  pass-through. Validation: missing/malformed Idempotency-Key,
+  missing_target, bad source regex, malformed JSON. Resolution:
+  user_not_opened_bot, chat_forgery (403 chat_not_permitted),
+  acl_bypass (403 target_not_authorized). Idempotency: body-ignored
+  replay returns same turn_id, different key creates new turn.
+  Scope enforcement: ask-only token → 403 scope_not_permitted.
+
+---
+
 ## What's left
 
-### Immediate next chunk — Phase 4b: Inject path (US-011, US-012)
+### Immediate next chunk — Phase 5: Multipart + idempotency full (US-013, US-014)
 
-Tasked up but not started. Cleanest ordering is probably: writer first,
-resolver, handler, registry plumbing. See
-[impl plan §6.3 §6.4](impl-agent-api.md) for full detail.
+Phase 4b landed the JSON-body inject path + idempotency-in-transaction.
+Phase 5 widens to multipart request handling + formalizes the
+idempotency sweeper + adds an orphan-file sweep. See
+[impl plan §7](impl-agent-api.md) for full detail.
 
-1. **user_chats writer** in [src/core/process-update.ts](../src/core/process-update.ts)
-   — after `db.insertUpdate(...)` succeeds (authorized inbound), call
-   `db.upsertUserChat(botId, String(fromUserId), chatId)`. Same
-   transaction path. Acceptance test in
-   `test/core/process-update.user-chats.test.ts` covering first DM + a
-   later DM that moves the chat_id.
-
-2. **chat resolver** in [src/agent-api/chat-resolve.ts](../src/agent-api/chat-resolve.ts)
-   — `resolveChatId(db, botId, {user_id?, chat_id?})` returns
-   `{ok, chatId}` or typed errors `missing_target |
-   user_not_opened_bot | chat_not_permitted`. When caller passes
-   `chat_id`, it must appear in `listUserChatsByBot(botId)`.
-
-3. **marker wrap** in [src/agent-api/marker.ts](../src/agent-api/marker.ts)
-   — `wrap(text, source)` → `[system-injected from "<source>"]\n\n<text>`.
-   Strip the wrapper? No — we don't re-emit to callers; it's a prompt
-   prefix only. Trivial helper.
-
-4. **handleInject** in [src/agent-api/handlers/inject.ts](../src/agent-api/handlers/inject.ts).
-   Flow:
-   - Parse body (reuse `InjectBodySchema` — already in
-     [src/agent-api/schemas.ts](../src/agent-api/schemas.ts)).
-   - Validate `Idempotency-Key` header (use `validateIdempotencyKey`).
-   - `db.getIdempotencyTurn(botId, key)` — if hit, re-fetch the turn
-     and return `202 {turn_id, status: <current>}`. Do NOT touch the
-     request body further.
-   - Resolve chat → ACL re-check via `isAuthorized(config, botConfig,
-     userId)` from [src/core/acl.ts](../src/core/acl.ts).
-   - `marker.wrap(body.text, body.source)`.
-   - `db.insertInjectTurn({...})` (already written, handles in-txn
-     idempotency write; returns `{replay, turnId}`; ignore replay
-     here — key collision was handled above).
-   - Call `registry.dispatchFor(botId)` (see step 5).
-   - Return `202 {turn_id, status: "queued"}`.
-
-5. **Registry + Bot plumbing.** Registry already has a private
-   dispatch loop. Expose a public `dispatchFor(botId)` that wakes the
-   loop for one bot (or just sets a flag it polls immediately). Bot
-   gains `enqueueProgrammaticTurn(text, chatId, attachments, source)`
-   only if tests need it — otherwise skip, since the handler writes
-   the turn directly.
-
-6. **Wire handleInject into the router** — replace the stub in
-   [src/agent-api/router.ts:71](../src/agent-api/router.ts:71) with
-   the real handler.
-
-7. **Tests** in `test/agent-api/`:
-   - `inject.happy.test.ts` — user_id resolves via user_chats, turn
-     enters queued state, marker prefix visible in `getTurnText`.
-   - `inject.idempotent.test.ts` — duplicate key returns same turn_id;
-     body ignored on replay.
-   - `inject.missing-key.test.ts` → 400 missing_idempotency_key.
-   - `inject.no-open-bot.test.ts` → 409 user_not_opened_bot.
-   - `inject.chat-forgery.test.ts` → 403 chat_not_permitted (chat_id
-     from a different user).
-   - `inject.acl-bypass.test.ts` → 403 target_not_authorized (user in
-     user_chats but removed from ACL).
-
-8. **End-to-end for inject** — harder than ask because it runs through
+1. [src/agent-api/attachments.ts](../src/agent-api/attachments.ts) — `parseMultipartRequest` with
+   per-file + aggregate + count caps + MIME allowlist + disk-usage cap;
+   gateway-controlled on-disk filenames under
+   `<data_dir>/attachments/<botId>/agentapi-<uuid>-<idx><ext>`; rollback on
+   DB failure OR idempotent replay (files were written optimistically);
+   orphan-file sweep (unreferenced >24h).
+2. [src/agent-api/idempotency.ts](../src/agent-api/idempotency.ts) — key format validator; the actual
+   dedup write is already in-transaction in `insertInjectTurn`; sweeper
+   timer wired into `main.ts` (already live for inject — just formalize).
+3. Wire multipart path through both `handleAsk` and `handleInject` —
+   current handlers only accept JSON bodies. On multipart, write files
+   to disk BEFORE opening the DB transaction; clean up on error or
+   idempotent replay (see §7.1 ordering discipline).
+4. **End-to-end for inject** — harder than ask because it runs through
    the main runner + outbox + FakeTelegram. Either use the existing
    integration harness in `test/integration/round-trip.test.ts` as a
-   template, or defer a full e2e until after Phase 6 (CLI) so we can
-   use `torana inject` against a real gateway.
+   template, or defer until Phase 6 (CLI) so we can use `torana inject`
+   against a real gateway.
 
-### After inject lands (widen)
+### After Phase 5 lands (widen)
 
-1. **Phase 5 — Multipart + idempotency full** ([impl plan §7](impl-agent-api.md))
-   - [src/agent-api/attachments.ts](../src/agent-api/attachments.ts) — `parseMultipartRequest` with
-     per-file + aggregate + count caps + MIME allowlist + disk-usage cap;
-     gateway-controlled on-disk filenames under
-     `<data_dir>/attachments/<botId>/agentapi-<uuid>-<idx><ext>`; rollback on
-     DB failure OR idempotent replay (files were written optimistically);
-     orphan-file sweep (unreferenced >24h).
-   - [src/agent-api/idempotency.ts](../src/agent-api/idempotency.ts) — key format validator; the actual
-     dedup write is already in-transaction in `insertInjectTurn`; sweeper
-     timer wired into `main.ts` (already live for inject — just formalize).
-
-2. **Phase 2b — CodexRunner side-sessions** ([impl plan §4.2](impl-agent-api.md))
+1. **Phase 2b — CodexRunner side-sessions** ([impl plan §4.2](impl-agent-api.md))
    - Per-turn spawn of `codex exec [resume <threadId>] --json`; capture
      `thread.started` event; reuse `threadId` on subsequent turns.
 
-3. **Phase 2c — CommandRunner side-sessions** ([impl plan §4.3](impl-agent-api.md))
+2. **Phase 2c — CommandRunner side-sessions** ([impl plan §4.3](impl-agent-api.md))
    - Protocol capability descriptors; `claude-ndjson` → long-lived side session
      with `session` envelope field; `codex-jsonl` → per-turn spawn; `jsonl-text`
      → unsupported. Wire envelope tagging through the parser.
    - Example runner at `examples/side-session-runner/`.
 
-4. **Phase 6 — CLI + skills** ([impl plan §8](impl-agent-api.md))
+3. **Phase 6 — CLI + skills** ([impl plan §8](impl-agent-api.md))
    - Rewrite `src/cli.ts` as a dispatcher; split subcommands into `src/cli/`:
      `ask.ts`, `inject.ts`, `turns.ts`, `bots.ts`, `config.ts`, `skills.ts`,
      plus `shared/{args,output,exit}.ts`.
@@ -374,7 +366,7 @@ resolver, handler, registry plumbing. See
    - [codex-plugin/](../codex-plugin/) layout + `marketplace.json`; [scripts/install-skills.ts](../scripts/install-skills.ts);
      [scripts/check-skill-parity.ts](../scripts/check-skill-parity.ts) enforced in CI.
 
-5. **Phase 7 — Observability + doctor + docs** ([impl plan §9](impl-agent-api.md))
+4. **Phase 7 — Observability + doctor + docs** ([impl plan §9](impl-agent-api.md))
     - [src/metrics.ts](../src/metrics.ts) — `AgentApiCounters` + `AgentApiGauges` + minimal
       `HistogramState` primitive; `incAgentApi`, `setAgentApiGauge`,
       `observeAgentApiRequestDuration`, `observeAgentApiAcquireDuration`.
