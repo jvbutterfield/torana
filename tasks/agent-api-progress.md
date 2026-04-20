@@ -11,8 +11,8 @@ core. Remaining work is breadth-wise: Codex/Command runners, Phase 6b
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (tip: `f7aa077`, 11 commits ahead of `main`).
-2. `bun test` — expect **530 pass / 4 skip / 0 fail**.
+1. `git checkout feat/agent-api` (tip: `d2c99b0`, 13 commits ahead of `main`).
+2. `bun test` — expect **536 pass / 4 skip / 0 fail**.
 3. **Decision for next session:** pick from the three remaining branches.
    Phase 2b (Codex side-sessions, US-006) unblocks `torana ask` against
    non-Claude bots and is the clearest unblock. Phase 6b adds the
@@ -50,6 +50,7 @@ Conventions in use on this branch:
 | 4a — Ask + turns handlers | ✅ Complete (`94445a1`) | US-009 US-010 | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints |
 | — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
 | 4b — Inject path | ✅ Complete (`b09f746`) | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
+| 4b e2e — Inject delivery round-trip | ✅ Complete (`d2c99b0`) | US-011 US-012 | FakeTelegram round-trip: HTTP user_id/chat_id, idempotency replay (no double-send), ACL re-check, scope check, CLI subprocess (6 tests) |
 | 5 — Cross-cutting (full) | ✅ Complete (`35b355d`) | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
@@ -59,11 +60,13 @@ Conventions in use on this branch:
 
 ---
 
-## What's done — feat/agent-api branch (11 commits)
+## What's done — feat/agent-api branch (13 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`):
 
 ```
+d2c99b0 agent-api: close inject e2e gap with FakeTelegram round-trip (US-011, US-012)
+1ca3cc4 agent-api: pin Phase 6 core commit hash in progress tracker
 f7aa077 agent-api phase 6 (core): CLI ask/inject/turns/bots + AgentApiClient (US-018)
 092046e agent-api: record Phase 6 scoping decision in progress tracker
 dae65ea agent-api: pin Phase 5 commit hash in progress tracker
@@ -79,7 +82,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 530 pass / 4 skip / 0 fail.** End-to-end round-trips:
+**Full test suite: 536 pass / 4 skip / 0 fail.** End-to-end round-trips:
 ask (JSON + multipart) through real HTTP → bearer auth →
 SideSessionPool → ClaudeCodeRunner (mock binary) → response body in
 [test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts) +
@@ -452,19 +455,26 @@ calls these out so the next session can pick up cleanly.
 
 ## What's left
 
-### Immediate next chunk — two options
+### Immediate next chunk — three open branches
 
-**Option A — close the inject e2e gap** (~1 day)
-Add `test/integration/agent-api/inject.round-trip.test.ts` modeled on
-`test/integration/round-trip.test.ts`: seed user_chats, issue inject,
-verify main-runner dispatch → streaming → outbox → FakeTelegram
-delivery. Raises confidence on inject delivery from ~40% to ~80%
-without waiting for the CLI.
+Inject e2e gap closed in `d2c99b0`. Pick from:
 
-**Option B — keep breadth momentum** (Phase 2b or Phase 6)
-Phase 2b (Codex side-sessions) unblocks `torana ask` against non-
-claude bots. Phase 6 (CLI + skills) is what most users interact with
-and also provides a natural e2e harness.
+**Phase 2b — Codex side-sessions (US-006)**
+Per-turn `codex exec [resume <threadId>] --json` spawn; capture
+`thread.started` event; reuse `threadId` on subsequent turns. Unblocks
+`torana ask` against non-Claude bots. Natural extension of the Phase
+2a work; reuses the `SideSessionPool` machinery unchanged.
+
+**Phase 6b — CLI follow-ups + skills**
+Profile store (`~/.config/torana/config.toml`), `--file @-` stdin,
+`torana skills install --host=claude|codex`, codex plugin layout,
+`torana doctor --profile X`. Pure user-experience polish; no
+gateway-side risk.
+
+**Phase 7 — Observability + docs**
+`AgentApiCounters` + histograms, doctor checks C009-C014 + R001-R003,
+`docs/agent-api.md` + `docs/cli.md` + README updates. The gating
+items for a release.
 
 ### Remaining phases
 
