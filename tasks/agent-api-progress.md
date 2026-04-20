@@ -25,13 +25,14 @@ implementation.
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `4dd31a7` (Phase 10 pin);
+   `3830f97` (Phase 10 tip self-ref);
+   last pin commit `4dd31a7` (Phase 10 pin);
    last implementation commit `fe3facf` (Phase 10 — Claude UUID
    fix in `src/runner/claude-code.ts` + E2E matrix + UUID regression
    test);
    last test commit `fe3facf` (Phase 10 added 15 tests: 10 E2E +
    3 manifest guards + 1 UUID regression + 1 existing count delta).
-   46 commits ahead of `main`.
+   49 commits ahead of `main`.
 2. Sanity-check before touching anything:
    - `bun test` — expect **1142 pass / 12 skip / 0 fail**. The 12
      skips are all E2E-gated (4 `CODEX_E2E=1` runner tests + 8 `AGENT_API_E2E=1`
@@ -180,11 +181,21 @@ implementation.
 
 ---
 
-## What's done — feat/agent-api branch (39 commits)
+## What's done — feat/agent-api branch (49 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+3830f97 agent-api: replace tip-commit placeholder with 4dd31a7
+4dd31a7 agent-api: pin Phase 10 commit hash in progress tracker
+fe3facf agent-api phase 10: §12.4 E2E matrix + Claude CLI 2.1 UUID fix (US-015)
+7879b99 agent-api: replace tip-commit placeholder with 54b2261
+54b2261 agent-api: pin Phase 9 commit hash in progress tracker
+4ec673f agent-api phase 9: §12.5 security matrix (US-015)
+9dd242d agent-api: replace tip-commit placeholder with 85ff9b8
+85ff9b8 agent-api: pin Phase 8 commit hash in progress tracker
+799caad agent-api phase 8: §12.10 error-path coverage matrix (US-015)
+07f5d0e agent-api: polish progress tracker for next-session handoff
 ffa709f agent-api: pin Phase 2c gap-fill commit hash
 c2d96af agent-api phase 2c gap-fill: end-to-end ask + startup/stop/attachment edges (US-007)
 e47d210 agent-api: replace count-fix placeholder with 65550f6
