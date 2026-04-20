@@ -178,6 +178,20 @@ export class CodexRunner implements AgentRunner {
     }
     await this.ensureLogDir(this.logDir);
 
+    const logStream = createWriteStream(
+      resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
+      { flags: "a" },
+    );
+    // Error handler prevents ENOENT (data dir removed) or EACCES
+    // (permissions change) from surfacing as an unhandled stream error
+    // and crashing the process — demote to a warn log instead.
+    logStream.on("error", (err: Error) => {
+      this.log.warn("side-session logStream error", {
+        bot_id: this.botId,
+        session_id: sessionId,
+        error: err.message,
+      });
+    });
     const entry: CodexSideSession = {
       id: sessionId,
       emitter: new RunnerEventEmitter(),
@@ -185,10 +199,7 @@ export class CodexRunner implements AgentRunner {
       status: "ready",
       activeTurn: null,
       currentProc: null,
-      logStream: createWriteStream(
-        resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
-        { flags: "a" },
-      ),
+      logStream,
       stopping: false,
       stopPromise: null,
       doneEmittedForCurrentTurn: false,

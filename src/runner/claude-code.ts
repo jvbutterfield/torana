@@ -247,6 +247,13 @@ export class ClaudeCodeRunner implements AgentRunner {
         resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
         { flags: "a" },
       );
+      entry.logStream.on("error", (err: Error) => {
+        this.log.warn("side-session logStream error", {
+          bot_id: this.botId,
+          session_id: sessionId,
+          error: err.message,
+        });
+      });
 
       void this.pumpSideStdout(entry);
       void this.pumpSideStderr(entry);
@@ -501,6 +508,12 @@ export class ClaudeCodeRunner implements AgentRunner {
     const logPath = resolve(this.logDir, `${this.botId}.log`);
     await this.ensureLogDir(dirname(logPath));
     this.logStream = createWriteStream(logPath, { flags: "a" });
+    this.logStream.on("error", (err: Error) => {
+      this.log.warn("runner logStream error", {
+        bot_id: this.botId,
+        error: err.message,
+      });
+    });
 
     const fresh = this.pendingFreshSession;
     this.pendingFreshSession = false;
