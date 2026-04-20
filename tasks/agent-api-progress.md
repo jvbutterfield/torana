@@ -18,7 +18,7 @@ implementation.
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `<PIN>` (Phase 8 pin);
+   `85ff9b8` (Phase 8 pin);
    last implementation commit `799caad` (Phase 8 — `src/server.ts`
    canonical 405 body for `/v1/*`);
    last test commit `799caad` (Phase 8 added 93 tests).
