@@ -5,6 +5,7 @@ import type { GatewayDB } from "../db/gateway-db.js";
 import type { BotRegistry } from "../core/registry.js";
 import type { Logger } from "../log.js";
 import type { ResolvedAgentApiToken } from "../config/load.js";
+import type { Metrics } from "../metrics.js";
 
 export type Scope = "ask" | "inject";
 
@@ -30,6 +31,8 @@ export interface AgentApiDeps {
   tokens: readonly ResolvedAgentApiToken[];
   log: Logger;
   clock?: () => number;
+  /** Optional — counter/histogram recorder. Handlers no-op if absent. */
+  metrics?: Metrics;
 }
 
 export interface AuthedParams {

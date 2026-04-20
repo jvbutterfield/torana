@@ -143,7 +143,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   let agentApiIdempotencySweep: ReturnType<typeof setInterval> | null = null;
   if (config.agent_api?.enabled) {
     const tokens = opts.agentApiTokens ?? [];
-    agentApiPool = new SideSessionPool({ config, db, registry });
+    agentApiPool = new SideSessionPool({ config, db, registry, metrics });
     agentApiOrphans = new OrphanListenerManager(db, agentApiPool);
     agentApiPool.startSweeper();
     agentApiUnregs.push(
@@ -153,6 +153,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
         registry,
         tokens,
         log: logger("agent-api"),
+        metrics,
         pool: agentApiPool,
         orphans: agentApiOrphans,
       }),

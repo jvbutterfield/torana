@@ -22,7 +22,13 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { BotRegistry } from "../core/registry.js";
+import type { Metrics } from "../metrics.js";
 import { logger, type Logger } from "../log.js";
+import {
+  recordAcquire,
+  recordEviction,
+  setSideSessionsLive,
+} from "./metrics.js";
 
 export interface SideSessionPoolOptions {
   config: Config;
@@ -31,6 +37,8 @@ export interface SideSessionPoolOptions {
   clock?: () => number;
   /** Sweep cadence (ms). Default 60_000. Overridable for tests. */
   sweepIntervalMs?: number;
+  /** Optional metrics emitter — omitted in tests that don't assert metrics. */
+  metrics?: Metrics;
 }
 
 export type AcquireResult =
@@ -71,6 +79,7 @@ export class SideSessionPool {
   private config: Config;
   private db: GatewayDB;
   private registry: BotRegistry;
+  private metrics?: Metrics;
   private clock: () => number;
   private log: Logger = logger("agent-api.pool");
   private entries = new Map<string, PoolEntry>();
@@ -88,11 +97,28 @@ export class SideSessionPool {
     this.config = opts.config;
     this.db = opts.db;
     this.registry = opts.registry;
+    this.metrics = opts.metrics;
     this.clock = opts.clock ?? Date.now;
     this.sweepIntervalMs = opts.sweepIntervalMs ?? 60_000;
 
     // Startup reconciliation: any rows the prior process left are orphans.
     this.db.markAllSideSessionsStopped();
+  }
+
+  /**
+   * Recompute and publish the side_sessions_live gauge for a bot. Called
+   * after any state transition that might change the live count: successful
+   * spawn, explicit release, eviction completion.
+   */
+  private publishLiveGauge(botId: string): void {
+    if (!this.metrics) return;
+    let live = 0;
+    for (const e of this.entries.values()) {
+      if (e.botId !== botId) continue;
+      if (e.state === "stopping") continue;
+      live += 1;
+    }
+    setSideSessionsLive(this.metrics, botId, live);
   }
 
   startSweeper(): void {
@@ -113,6 +139,11 @@ export class SideSessionPool {
    * typically in a finally block.
    */
   async acquire(botId: string, sessionId: string | null): Promise<AcquireResult> {
+    const startMs = this.clock();
+    const recordOutcome = (outcome: "reuse" | "spawn" | "capacity" | "busy"): void => {
+      recordAcquire(this.metrics, botId, outcome, this.clock() - startMs);
+    };
+
     if (this.shuttingDown) return { kind: "gateway_shutting_down" };
 
     const bot = this.registry.bot(botId);
@@ -124,7 +155,9 @@ export class SideSessionPool {
     // Ephemeral path — mint a UUID and take the fresh-spawn branch.
     if (sessionId === null) {
       const minted = `eph-${randomUUID()}`;
-      return this.spawnAndRegister(botId, minted, true);
+      const res = await this.spawnAndRegister(botId, minted, true);
+      if (res.kind === "ok") recordOutcome("spawn");
+      return res;
     }
 
     const key = entryKey(botId, sessionId);
@@ -135,20 +168,27 @@ export class SideSessionPool {
         this.entries.delete(key);
       } else {
         if (existing.inflight > 0) {
+          recordOutcome("busy");
           return { kind: "busy" };
         }
         existing.inflight = 1;
         existing.lastUsedAtMs = this.clock();
         existing.state = "busy";
         this.db.markSideSessionState(botId, sessionId, "busy");
+        recordOutcome("reuse");
         return { kind: "ok", sessionId, ephemeral: existing.ephemeral };
       }
     }
 
     // Miss — check caps, evict if needed, then spawn.
     const capResult = this.ensureCapacity(botId);
-    if (capResult.kind === "err") return { kind: "capacity" };
-    return this.spawnAndRegister(botId, sessionId, false);
+    if (capResult.kind === "err") {
+      recordOutcome("capacity");
+      return { kind: "capacity" };
+    }
+    const res = await this.spawnAndRegister(botId, sessionId, false);
+    if (res.kind === "ok") recordOutcome("spawn");
+    return res;
   }
 
   /**
@@ -277,6 +317,7 @@ export class SideSessionPool {
 
     entry.state = "busy";
     this.db.markSideSessionState(botId, sessionId, "busy");
+    this.publishLiveGauge(botId);
     return { kind: "ok", sessionId, ephemeral };
   }
 
@@ -323,6 +364,7 @@ export class SideSessionPool {
       session_id: entry.sessionId,
       reason,
     });
+    recordEviction(this.metrics, entry.botId, reason);
     this.scheduleStop(entry, this.config.shutdown.runner_grace_secs * 1000);
   }
 
@@ -330,6 +372,10 @@ export class SideSessionPool {
     if (entry.stopPromise) return;
     entry.state = "stopping";
     this.db.markSideSessionState(entry.botId, entry.sessionId, "stopping");
+    // An entry in `stopping` no longer counts as live — republish now so
+    // operators see the drop even if the actual subprocess stop takes a
+    // few hundred ms to return.
+    this.publishLiveGauge(entry.botId);
     const key = entryKey(entry.botId, entry.sessionId);
     const p = (async () => {
       const bot = this.registry.bot(entry.botId);
@@ -346,6 +392,7 @@ export class SideSessionPool {
       }
       this.entries.delete(key);
       this.db.deleteSideSession(entry.botId, entry.sessionId);
+      this.publishLiveGauge(entry.botId);
     })();
     entry.stopPromise = p;
     this.pendingBackgroundStops.add(p);
@@ -365,8 +412,10 @@ export class SideSessionPool {
           this.evict(entry, "hard");
         } else {
           // Block new acquires; release() drops inflight → scheduleStop.
+          recordEviction(this.metrics, entry.botId, "hard");
           entry.state = "stopping";
           this.db.markSideSessionState(entry.botId, entry.sessionId, "stopping");
+          this.publishLiveGauge(entry.botId);
         }
         continue;
       }

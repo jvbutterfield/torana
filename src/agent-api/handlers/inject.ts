@@ -28,13 +28,35 @@ import { resolveChatId } from "../chat-resolve.js";
 import { wrapInjected } from "../marker.js";
 import { isAuthorized } from "../../core/acl.js";
 import { cleanupFiles, parseMultipartRequest } from "../attachments.js";
+import { recordInject } from "../metrics.js";
 
 export interface InjectDeps extends AgentApiDeps {
   registry: BotRegistry;
 }
 
 export function handleInject(deps: InjectDeps): AuthedHandler {
-  return async (req, { botId, token }) => {
+  const inner = handleInjectInner(deps);
+  return async (req, params) => {
+    const startMs = Date.now();
+    const outcome: { replay: boolean } = { replay: false };
+    const resp = await inner(req, params, outcome);
+    recordInject(deps.metrics, params.botId, {
+      status: resp.status as 202 | 400 | 401 | 403 | 404 | 429 | 500 | 501 | 503,
+      replay: outcome.replay,
+      durationMs: Date.now() - startMs,
+    } as Parameters<typeof recordInject>[2]);
+    return resp;
+  };
+}
+
+function handleInjectInner(
+  deps: InjectDeps,
+): (
+  req: Request,
+  params: Parameters<AuthedHandler>[1],
+  outcome: { replay: boolean },
+) => Promise<Response> {
+  return async (req, { botId, token }, outcome) => {
     // 1. Idempotency-Key header — mandatory, format-validated.
     const keyCheck = validateIdempotencyKey(req.headers.get("Idempotency-Key"));
     if (!keyCheck.ok) return errorResponse(keyCheck.code);
@@ -46,6 +68,7 @@ export function handleInject(deps: InjectDeps): AuthedHandler {
     if (priorTurnId !== null) {
       const prior = deps.db.getTurnExtended(priorTurnId);
       if (prior) {
+        outcome.replay = true;
         return jsonResponse(202, {
           turn_id: priorTurnId,
           status: statusForClient(prior.status),
@@ -164,6 +187,7 @@ export function handleInject(deps: InjectDeps): AuthedHandler {
     }
 
     if (insertResult.replay) {
+      outcome.replay = true;
       await cleanupFiles(attachmentPaths);
       const prior = deps.db.getTurnExtended(insertResult.turnId);
       return jsonResponse(202, {

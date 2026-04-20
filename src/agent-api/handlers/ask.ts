@@ -30,6 +30,7 @@ import type { SideSessionPool } from "../pool.js";
 import { AskBodySchema } from "../schemas.js";
 import { errorResponse, jsonResponse } from "../errors.js";
 import { cleanupFiles, parseMultipartRequest } from "../attachments.js";
+import { recordAsk } from "../metrics.js";
 
 export interface AskDeps extends AgentApiDeps {
   pool: SideSessionPool;
@@ -37,6 +38,20 @@ export interface AskDeps extends AgentApiDeps {
 }
 
 export function handleAsk(deps: AskDeps): AuthedHandler {
+  const inner = handleAskInner(deps);
+  return async (req, params) => {
+    const startMs = Date.now();
+    const resp = await inner(req, params);
+    recordAsk(deps.metrics, params.botId, {
+      // narrow: every exit path is one of the documented ask statuses.
+      status: resp.status as 200 | 202 | 400 | 401 | 403 | 404 | 429 | 500 | 501 | 503,
+      durationMs: Date.now() - startMs,
+    });
+    return resp;
+  };
+}
+
+function handleAskInner(deps: AskDeps): AuthedHandler {
   return async (req, { botId, token }) => {
     // 1. Parse body — JSON or multipart. Multipart writes files to disk
     //    up-front; on any failure before the turn row lands, we unlink them.

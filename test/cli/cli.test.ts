@@ -105,6 +105,33 @@ describe("CLI parseArgs", () => {
     const a = parseArgs(["--help"]);
     expect(a.help).toBe(true);
   });
+
+  test("parses --server + --token for doctor remote mode", () => {
+    const a = parseArgs([
+      "doctor",
+      "--server",
+      "https://gw.example.com",
+      "--token",
+      "tok",
+    ]);
+    expect(a.server).toBe("https://gw.example.com");
+    expect(a.token).toBe("tok");
+  });
+
+  test("parses --server=URL and --token=TOK (equals form)", () => {
+    const a = parseArgs([
+      "doctor",
+      "--server=https://gw.example.com",
+      "--token=tok",
+    ]);
+    expect(a.server).toBe("https://gw.example.com");
+    expect(a.token).toBe("tok");
+  });
+
+  test("parses --profile (reserved for Phase 6b)", () => {
+    const a = parseArgs(["doctor", "--profile", "prod"]);
+    expect(a.profile).toBe("prod");
+  });
 });
 
 // --- CLI invocation (subprocess) ---
@@ -380,4 +407,20 @@ describe("CLI doctor (subprocess)", () => {
     // The getMe call will fail for the fake bot token → exit 1.
     expect(exitCode).not.toBe(0);
   }, 20_000);
+
+  test("--profile exits 2 until Phase 6b profile store ships", async () => {
+    const { exitCode, stderr } = await runCli(["doctor", "--profile", "prod"]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("Phase 6b");
+  }, 15_000);
+
+  test("--server without --token exits 2", async () => {
+    const { exitCode, stderr } = await runCli([
+      "doctor",
+      "--server",
+      "http://127.0.0.1:0",
+    ]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("token");
+  }, 15_000);
 });

@@ -17,7 +17,7 @@ import { loadConfigFromFile, ConfigLoadError } from "./config/load.js";
 import { logger, setLogFormat, setLogLevel, setSecrets } from "./log.js";
 import { applyMigrations, planMigration } from "./db/migrate.js";
 import { startGateway } from "./main.js";
-import { runDoctor } from "./doctor.js";
+import { runDoctor, runRemoteDoctor, type DoctorCheck } from "./doctor.js";
 import {
   AgentApiClient,
   type AgentApiClientOptions,
@@ -47,6 +47,9 @@ interface ParsedArgs {
   dryRun: boolean;
   format: "text" | "json";
   help: boolean;
+  server: string | null;
+  token: string | null;
+  profile: string | null;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -59,6 +62,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     dryRun: false,
     format: "text",
     help: isHelpFlag,
+    server: null,
+    token: null,
+    profile: null,
   };
 
   for (let i = isHelpFlag ? 0 : 1; i < argv.length; i += 1) {
@@ -77,6 +83,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         throw new Error(`--format must be 'text' or 'json' (got '${next}')`);
       }
       args.format = next;
+    } else if (a === "--server") {
+      args.server = argv[++i] ?? null;
+    } else if (a === "--token") {
+      args.token = argv[++i] ?? null;
+    } else if (a === "--profile") {
+      args.profile = argv[++i] ?? null;
     } else if (a.startsWith("--config=")) {
       args.configPath = a.slice("--config=".length);
     } else if (a.startsWith("--format=")) {
@@ -85,6 +97,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         throw new Error(`--format must be 'text' or 'json' (got '${val}')`);
       }
       args.format = val;
+    } else if (a.startsWith("--server=")) {
+      args.server = a.slice("--server=".length);
+    } else if (a.startsWith("--token=")) {
+      args.token = a.slice("--token=".length);
+    } else if (a.startsWith("--profile=")) {
+      args.profile = a.slice("--profile=".length);
     } else if (a.startsWith("-")) {
       throw new Error(`unknown flag: ${a}`);
     }
@@ -137,15 +155,45 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "doctor": {
-      const path = resolveConfigPath(args.configPath);
-      const { config, secrets } = loadConfigFromFile(path);
-      setSecrets(secrets);
-      const result = await runDoctor({ config, configPath: path });
+      // Remote mode: `--server URL --token TOK` runs R001..R003 without
+      // touching the local config. Phase 6b will add `--profile NAME` as
+      // sugar that resolves to the same --server/--token pair from the
+      // profile store. Until then, we accept --profile but treat its
+      // absence of a store as a fatal "not implemented yet".
+      const remote = args.server ?? process.env.TORANA_SERVER ?? null;
+      const remoteToken = args.token ?? process.env.TORANA_TOKEN ?? null;
+      if (args.profile) {
+        // Profile store isn't shipped yet — Phase 6b will wire it in.
+        console.error(
+          `doctor: --profile is reserved for the upcoming profile store (Phase 6b); for now pass --server URL --token TOKEN`,
+        );
+        process.exit(2);
+      }
+      let result: { checks: DoctorCheck[] };
+      if (remote) {
+        if (!remoteToken) {
+          console.error("doctor: --server supplied without --token (or TORANA_TOKEN)");
+          process.exit(2);
+        }
+        result = await runRemoteDoctor({ server: remote, token: remoteToken });
+      } else {
+        const path = resolveConfigPath(args.configPath);
+        const { config, secrets } = loadConfigFromFile(path);
+        setSecrets(secrets);
+        result = await runDoctor({ config, configPath: path });
+      }
       if (args.format === "json") {
         console.log(JSON.stringify(result, null, 2));
       } else {
         for (const check of result.checks) {
-          const badge = check.status === "ok" ? "[ ok ]" : check.status === "skip" ? "[skip]" : "[fail]";
+          const badge =
+            check.status === "ok"
+              ? "[ ok ]"
+              : check.status === "skip"
+                ? "[skip]"
+                : check.status === "warn"
+                  ? "[warn]"
+                  : "[fail]";
           console.log(`${badge} ${check.id}: ${check.detail}`);
         }
       }
@@ -215,6 +263,9 @@ Gateway options:
   --auto-migrate        (start) Apply DB migrations automatically if stale
   --dry-run             (migrate) Print planned SQL without applying
   --format <text|json>  (doctor) Output format (default: text)
+  --server <url>        (doctor) Run remote R001..R003 probes against <url>
+  --token <tok>         (doctor) Bearer token for remote probe
+  --profile <name>      (doctor) [Phase 6b] Resolve --server + --token from profile store
 
 Run \`torana <client-cmd> --help\` for per-subcommand options + exit codes.
 

@@ -14,8 +14,32 @@ interface AgentRunner {
   supportsReset(): boolean;
   isReady(): boolean;
   on<E>(event: E, handler: (e: Event<E>) => void): Unsubscribe;
+
+  // Side-session API (added in v1 for the Agent API). A runner that returns
+  // false from supportsSideSessions() stubs the rest — calls return typed
+  // "not supported" errors.
+  supportsSideSessions(): boolean;
+  startSideSession(sessionId: string): Promise<void>;
+  sendSideTurn(sessionId: string, turnId: string, text: string, attachments: Attachment[]): SendTurnResult;
+  stopSideSession(sessionId: string, graceMs?: number): Promise<void>;
+  onSide<E>(sessionId: string, event: E, handler: (e: Event<E>) => void): Unsubscribe;
 }
 ```
+
+**Side-sessions** (`src/runner/types.ts` — `AgentRunner`) are the per-`session_id`
+subprocess pool the Agent API uses for synchronous `ask` requests. Each
+side-session is event-isolated — events dispatched to
+`onSide(sessionId, ...)` never reach the main `on(...)` emitter and vice
+versa. Built-ins that support them:
+
+- `ClaudeCodeRunner` — long-lived subprocess per session with its own
+  `--session-id` argv.
+- `CodexRunner` — per-turn spawn using `codex exec resume <threadId>`.
+- `CommandRunner` — **not** in v1 (protocol capability descriptors land in
+  Phase 2c).
+
+`session_id` format: `^[A-Za-z0-9_-]{1,64}$`. The pool mints ephemeral
+`eph-<uuid>` ids when the caller omits one.
 
 ## Event contract
 

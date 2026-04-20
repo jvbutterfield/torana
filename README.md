@@ -9,7 +9,7 @@ Drop a YAML config, point it at Claude Code, Codex, or any subprocess — get a 
 [![CI](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml/badge.svg)](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Bun ≥ 1.3](https://img.shields.io/badge/bun-%E2%89%A5%201.3-black)](https://bun.sh)
-[![Tests: 255](https://img.shields.io/badge/tests-255%20passing-brightgreen)](#testing)
+[![Tests: 675](https://img.shields.io/badge/tests-675%20passing-brightgreen)](#testing)
 
 **torana** (Sanskrit: तोरण, *ceremonial gateway*) — the doorway between Telegram and your agents.
 
@@ -99,32 +99,70 @@ Full details: [`docs/runners.md`](docs/runners.md).
 
 ---
 
+## Agent API (opt-in)
+
+torana ships a bearer-authenticated HTTP surface that lets *other* processes — other agents, scripts, cron jobs, CI — drive the bots that torana owns. Two modes:
+
+- **`ask`** — synchronous request/response against a bot's runner in a **side-session** (an isolated subprocess with its own conversation context, separate from Telegram traffic). The gateway pools side-sessions with idle + hard TTLs, per-bot + global caps, and automatic LRU eviction.
+- **`inject`** — post a `[system-injected from "<source>"]`-marker-wrapped message into an existing Telegram chat so the runner responds as if the user had typed it. Idempotent, ACL-re-checked.
+
+Enable it per-config:
+
+```yaml
+agent_api:
+  enabled: true
+  tokens:
+    - name: ci-reviewer
+      secret_ref: ${TORANA_CI_TOKEN}
+      bot_ids: ["reviewer"]
+      scopes: ["ask", "inject"]
+```
+
+Then call it from anywhere:
+
+```sh
+torana ask reviewer "what's wrong with this PR?" --server https://gw --token $TOK
+torana inject reviewer --user-id 111222333 "heads up: CI failed" --source ci
+```
+
+See [`docs/agent-api.md`](docs/agent-api.md) for the full protocol + [`docs/cli.md`](docs/cli.md) for every flag. Protected by SHA-256 hashed bearer tokens, `C009..C014` doctor checks, and the `R001..R003` remote-probe subset of `torana doctor --server URL --token TOK`.
+
+---
+
 ## Architecture
 
 ```mermaid
 flowchart LR
     TG[Telegram]
+    AG[Other agents<br/>/ scripts / CI]
     subgraph torana[torana process]
       direction LR
       T[Transport<br/>webhook or polling]
+      A[Agent API<br/>/v1/bots/:id/ask<br/>/v1/bots/:id/inject]
       D[Dispatcher<br/>+ dedup + ACL]
+      P[Side-session pool<br/>LRU + TTL]
       B1[Bot: reviewer]
       B2[Bot: drafter]
       R1[claude-code<br/>runner]
       R2[codex<br/>runner]
       DB[(SQLite<br/>WAL + outbox)]
       T --> D
+      A --> D
+      A --> P
+      P --> R1
+      P --> R2
       D --> B1 --> R1
       D --> B2 --> R2
       B1 -.state.-> DB
       B2 -.state.-> DB
     end
     TG <--> T
+    AG -. bearer auth .-> A
     R1 <--> CC[claude CLI]
     R2 <--> CX[codex CLI]
 ```
 
-One process. One SQLite database. Per-bot isolated runners. Crashes in one bot don't take down the others.
+One process. One SQLite database. Per-bot isolated runners. Crashes in one bot don't take down the others. Agent-API callers live beside Telegram traffic; the pool keeps their side-sessions off the main runner so a long ask from CI never blocks a Telegram reply.
 
 ---
 
@@ -149,8 +187,8 @@ One process. One SQLite database. Per-bot isolated runners. Crashes in one bot d
 
 **Observability.**
 - Structured JSON logs, per-bot log files tailable at `<data_dir>/logs/<bot_id>.log`.
-- `GET /health` with per-bot readiness, mailbox depth, last turn time.
-- Optional Prometheus metrics.
+- `GET /health` with per-bot readiness, mailbox depth, last turn time. When the Agent API is enabled, `GET /v1/health` is also available.
+- Optional Prometheus metrics. Agent-API counters, gauges, and request/acquire duration histograms are exported under `torana_agent_api_*` when `agent_api.enabled=true`.
 
 ---
 
@@ -203,10 +241,11 @@ The dispatcher routes each update to its bot's runner independently. No special 
 | Command | What it does |
 | --- | --- |
 | `torana start` | Run the gateway |
-| `torana doctor` | Validate config + check Telegram reachability + runner binary + DB state |
+| `torana doctor` | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003) |
 | `torana validate` | Offline schema check — no Telegram, no DB |
 | `torana migrate` | Apply pending DB migrations (`--dry-run` to preview) |
 | `torana version` | Print package version + Bun runtime |
+| `torana ask` / `torana inject` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token` or `TORANA_SERVER`/`TORANA_TOKEN`). See [`docs/cli.md`](docs/cli.md) |
 
 ---
 
@@ -232,7 +271,6 @@ Explicit scope. torana does **not**:
 - Handle group chats, voice, video, or inline mode.
 - Implement its own agent logic — runners do that.
 - Pluggable storage backends. SQLite only. WAL-mode, durable, operationally simple.
-- Agent-to-agent messaging. Each bot is independent.
 
 If you need any of those, torana is the wrong tool and that's fine.
 
@@ -240,7 +278,7 @@ If you need any of those, torana is the wrong tool and that's fine.
 
 ## Status
 
-**v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 255 tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
+**v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 675+ tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
 
 Recent:
 - **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
@@ -254,7 +292,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 ## Testing
 
 ```sh
-bun test                           # unit + integration: 255 tests, ~25s
+bun test                           # unit + integration: 675+ tests, ~50s
 CODEX_E2E=1 bun test               # includes end-to-end tests against the live codex CLI
 ```
 
@@ -270,6 +308,8 @@ The e2e tests require an authenticated `codex` binary and burn API quota, so the
 - [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own runner
 - [`docs/security.md`](docs/security.md) — threat model, ACL, secrets
 - [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
+- [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, inject, side-sessions, tokens)
+- [`docs/cli.md`](docs/cli.md) — CLI reference, flag-by-flag
 
 ---
 

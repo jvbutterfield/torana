@@ -4,9 +4,17 @@ A **runner** is the process that turns incoming messages into responses. torana 
 
 Three built-in runners ship with v1:
 
-- **`claude-code`** — wraps the Claude Code CLI.
-- **`codex`** — wraps the OpenAI Codex CLI.
+- **`claude-code`** — wraps the Claude Code CLI. Side-sessions: **yes**.
+- **`codex`** — wraps the OpenAI Codex CLI. Side-sessions: **yes**
+  (per-turn `codex exec resume`).
 - **`command`** — wraps any subprocess that speaks a simple line protocol.
+  Side-sessions: **no** in v1 (capability descriptors land in Phase 2c).
+
+Side-sessions are a distinct subprocess-per-(bot, session_id) pool that the
+[Agent API](agent-api.md) uses for synchronous `ask` requests. An `ask`
+against a runner that doesn't support them returns
+`501 runner_does_not_support_side_sessions`. `inject` works against every
+runner.
 
 Pick one per bot in your YAML. Different bots in the same gateway can use different runners — see [Hybrid configurations](#hybrid-configurations) below.
 

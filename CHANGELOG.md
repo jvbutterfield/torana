@@ -6,6 +6,49 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **Agent API (`/v1/*`).** Opt-in bearer-authenticated HTTP surface that lets
+  external processes drive torana-owned bots. `POST /v1/bots/:id/ask` runs a
+  synchronous turn in an isolated side-session pool (per-bot + global LRU,
+  idle + hard TTL, auto-eviction) with optional multipart attachments; on
+  timeout returns `202 + turn_id` and hands off to an orphan listener that
+  persists the eventual terminal event. `POST /v1/bots/:id/inject` pushes a
+  `[system-injected from "<source>"]`-marker-wrapped message into an existing
+  Telegram chat with idempotency-key dedup, ACL re-check, and user/chat
+  resolution. `GET /v1/turns/:id`, `/v1/bots`, `/v1/bots/:id/sessions`, and
+  `DELETE /v1/bots/:id/sessions/:id` round out the surface. Disabled by
+  default — enable via the new `agent_api` config block. See
+  [docs/agent-api.md](docs/agent-api.md).
+- **Side-session support in `ClaudeCodeRunner` and `CodexRunner`.** The
+  `AgentRunner` interface gains `startSideSession` / `sendSideTurn` /
+  `stopSideSession` / `onSide` / `supportsSideSessions`. Claude runs a
+  long-lived subprocess per session with its own `--session-id`; Codex spawns
+  per-turn with `codex exec resume <threadId>`. Events are emitter-isolated
+  per session — no cross-contamination with the main Telegram runner.
+  `CommandRunner` side-sessions land in Phase 2c.
+- **CLI agent-api client.** `torana ask`, `torana inject`, `torana turns get`,
+  `torana bots list` — all require `--server` / `--token` (or
+  `TORANA_SERVER` / `TORANA_TOKEN`). Stable exit codes (0/1/2/3/4/5/6/7) for
+  scripting. See [docs/cli.md](docs/cli.md).
+- **Prometheus metrics for Agent API.** Counters (`torana_agent_api_requests_total`,
+  `…_inject_idempotent_replays_total`, `…_side_sessions_started_total`,
+  `…_side_session_evictions_total`, `…_side_session_capacity_rejected_total`),
+  a gauge (`…_side_sessions_live`), and two histograms
+  (`…_request_duration_ms{route=ask|inject}`,
+  `…_side_session_acquire_duration_ms{outcome=reuse|spawn|capacity|busy}`).
+- **Doctor checks C009..C014 + R001..R003.** `torana doctor` adds six
+  local checks (enabled-without-tokens, unknown bot_ids, ask-scope on
+  non-side-session runner, empty secret_ref, TTL/cap invariants,
+  deployment-posture reminder). `torana doctor --server URL --token TOK`
+  runs three remote probes against a running gateway (`GET /v1/health`,
+  `GET /v1/bots` with caller auth, TLS validation on `https://`).
+  `--profile NAME` lands in Phase 6b.
+- **SQLite schema v2.** New tables `user_chats`, `agent_api_idempotency`,
+  `side_sessions` plus seven nullable columns on `turns`. Migration v1→v2
+  is automatic with `torana start --auto-migrate` (snapshot taken at
+  `<db>.pre-v2` before upgrade).
+
 ## [1.0.0-rc.4] - 2026-04-19
 
 ### Added
