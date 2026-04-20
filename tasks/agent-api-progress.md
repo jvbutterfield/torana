@@ -8,16 +8,32 @@ breadth-wise: Codex/Command runners, CLI, skills, docs.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (8+ commits ahead of `main`).
-2. `bun test` — expect 388 pass / 4 skip / 0 fail.
-3. Read the "What's left" section below. Next is **Phase 2b —
-   CodexRunner side-sessions** OR **Phase 6 — CLI + skills**, depending
-   on priority. The acknowledged gap across Phases 4b+5 is a full
-   inject end-to-end test (main runner → outbox → FakeTelegram); that
-   lands naturally with the CLI in Phase 6 or can be done sooner.
-4. Every commit on this branch is self-contained — you can run tests
+1. `git checkout feat/agent-api` (tip: `dae65ea`, 10 commits ahead of `main`).
+2. `bun test` — expect **388 pass / 4 skip / 0 fail**.
+3. **Decision reached at end of last session: do Phase 6 next, scoped
+   to the CLI core.** The CLI is the user surface, it unblocks the
+   skill packages, and it makes the inject e2e gap fall out naturally
+   (shelling `torana inject` against a FakeTelegram gateway is simpler
+   than a direct HTTP-based integration test). Phase 2b (Codex side-
+   sessions) is deferred until after; Phase 7 (docs + observability)
+   after that.
+4. Recommended scope for the next session — **Phase 6 core only**:
+   - `src/agent-api/client.ts` — typed `AgentApiClient`.
+   - `src/cli/shared/{args,output,exit}.ts` — flag parser (two-pass for
+     subcommand chains), JSON/human formatter, exit-code enum.
+   - `src/cli/ask.ts`, `src/cli/inject.ts`, `src/cli/turns.ts`,
+     `src/cli/bots.ts` — the four core subcommands.
+   - `src/cli.ts` → dispatcher (keep existing `start`/`doctor`/`migrate`/
+     `validate`/`version` subcommands intact; add the new ones alongside).
+   - Profile store (`~/.config/torana/config.toml`), `@-` stdin
+     support, `skills install`, and the Codex plugin can all land in
+     a Phase 6b follow-up.
+5. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
+6. Commit cadence (durable — see memory): one phase commit, then a
+   small follow-up that pins the hash into this tracker. Do not
+   `--amend`.
 
 Conventions in use on this branch:
 - One commit per phase, with the exact US-xxx tag in the subject line.
