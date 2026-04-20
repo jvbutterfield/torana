@@ -1,72 +1,83 @@
 # Agent API — implementation progress
 
-Branch: `feat/agent-api` (off `main`)
+Branch: **shipped to `main`** — `feat/agent-api` was squash-merged
+via PR #6 as commit `2144b33` on 2026-04-20 and the branch has been
+deleted locally + remotely.
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
 PRD: [prd-agent-api.md](prd-agent-api.md)
 
-**Status:** **1.0.0-rc.5 staged** for publish. All implementation phases
-landed — Phases 1 → 10 complete (see full list below), plus **Phase 11**
-(§12.7 soak harness — a real-gateway driver that fires ask + inject at
-configurable cadence, samples RSS / FDs / pool-live / idempotency rows
-on a timer, and asserts the PRD §8 reliability invariants). Release
-prep done: version bump (rc.4 → rc.5), CHANGELOG cut with upgrade
-notes, `files` + `verify-pack.ts` extended, docker-install-smoke
-extended, every doc + README updated. Default suite: **1142 pass /
-13 skip / 0 fail** (+1 skip from the gated soak test). E2E suite
-(`AGENT_API_E2E=1`): **10 pass / 1 skip / 0 fail** in ~30s; the skip
-is `inject-claude` which needs Telegram sandbox creds. 65-min short
-soak (`AGENT_API_SOAK=1` at 12×-PRD rate) passed every invariant.
-Remaining work before cutting 1.0.0 stable: publish rc.5, run full
-24h soak at PRD rate, then promote.
+**Status:** **1.0.0-rc.5 tagged + release workflow dispatched.** All
+implementation phases landed, all 11 phases complete (see table below),
+every doc refreshed, release mechanics done. Tag `v1.0.0-rc.5` pushed
+and triggered the Release workflow → `npm publish --tag rc`. Default
+suite on the merged commit: **1142 pass / 13 skip / 0 fail**. 65-min
+short soak at 12×-PRD rate passed every invariant. Only the full 24h
+soak at PRD rate and the subsequent 1.0.0 cut remain.
 
-## How to resume
+## How to resume (post-merge handoff)
 
-1. `git checkout feat/agent-api` — tip commit
-   `873d23c` (this tracker update);
-   last pin commit `4dd31a7` (Phase 10 pin);
-   last Phase-11 commit `36255f0` (§12.7 soak harness);
-   last release-prep commit `952b0d8` (1.0.0-rc.5 release prep).
-   53 commits ahead of `main`.
-2. Sanity-check before touching anything:
+The branch is gone — resume on `main`.
+
+1. `git checkout main && git pull` — tip commit `2144b33` (the squash
+   merge; title `rc.5: Agent API v1 — /v1/* + side-session pool +
+   CLI + skills`). Tag `v1.0.0-rc.5` points here.
+2. Sanity-check:
    - `bun test` — expect **1142 pass / 13 skip / 0 fail**. The 13
-     skips are all gated (4 `CODEX_E2E=1` runner tests + 8 `AGENT_API_E2E=1`
-     agent-api tests + 1 `AGENT_API_SOAK=1` soak). Two tests (`CodexRunner
-     side-sessions > after startSideSession resolves...` and `threadId
-     resume continuity > first turn has no resume...`) are mildly flaky
-     under full suite runs due to `queueMicrotask` timing; re-run if
-     they trip.
-   - `bun x tsc --noEmit` — expect clean (no output).
-   - `AGENT_API_E2E=1 bun test test/e2e/agent-api/` — expect
-     **10 pass / 1 skip / 0 fail** in ~30s. The skip is
-     `inject-claude` (needs `TELEGRAM_TEST_BOT_TOKEN` +
-     `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`).
+     skips are all env-gated (4 `CODEX_E2E=1` + 8 `AGENT_API_E2E=1` +
+     1 `AGENT_API_SOAK=1`).
+   - `bun x tsc --noEmit` — clean.
+   - `AGENT_API_E2E=1 bun test test/e2e/agent-api/` — **10 pass /
+     1 skip / 0 fail** in ~30s; `inject-claude` skip needs
+     `TELEGRAM_TEST_BOT_TOKEN` + `TELEGRAM_TEST_CHAT_ID` +
+     `TELEGRAM_TEST_USER_ID`.
    - `bun run build && bun run scripts/verify-pack.ts` — expect
      `tarball contains all 12 required SQL files`.
-3. **Remaining work** — only publish + final soak is left:
-   - ~~`AGENT_API_E2E=1` against real binaries~~ ✅ done in Phase 10.
-   - ~~Soak harness (§12.7)~~ ✅ done in Phase 11.
-   - ~~Impl-plan §12.5 security matrix~~ ✅ done in Phase 9.
-   - ~~Impl-plan §12.10 error-path coverage matrix~~ ✅ done in Phase 8.
-   - ~~Release mechanics~~ ✅ done in the rc.5 release-prep commit
-     (`952b0d8`): CHANGELOG cut + upgrade notes, `package.json`
-     version bump + `files` extension, `verify-pack.ts` REQUIRED
-     extension, docker-install-smoke extension, docs + README
-     refresh.
-   - **Publish rc.5** — tag `v1.0.0-rc.5` from this branch; release
-     workflow auto-triggers → npm publish under `rc` dist-tag.
-   - **Run the full 24h `AGENT_API_SOAK=1` at PRD rate** (1 ask/min
-     + 1 inject/min) against rc.5. Short 65-min validation at
-     12×-rate already green: see commit `36255f0` body.
-   - **Promote to 1.0.0 stable** once soak passes + no real-world
-     regressions: strip `-rc.5`, publish on `latest`.
-4. Every commit on this branch is self-contained — you can run tests
-   at any point. If something's red, revert the tip commit; no rebase
-   needed.
-5. **Commit cadence** (durable — also in auto-memory):
-   one phase commit with the `US-xxx` tag in the subject, then a small
-   follow-up that pins the new hash into this tracker. **Do not
-   `--amend`** — pre-commit hooks may fail and amending would clobber
-   prior work.
+3. **Open items before cutting 1.0.0 stable:**
+   - **Monitor release workflow** at
+     https://github.com/jvbutterfield/torana/actions/workflows/release.yml
+     for run on `v1.0.0-rc.5`. It runs typecheck/test/audit/build/
+     verify-pack → `npm publish --provenance --access public --tag rc`
+     via OIDC trusted publishing (no NPM_TOKEN). Compare to prior rc
+     timings (~1m11s for rc.4).
+   - **Verify rc.5 on npm:** `npm view torana@1.0.0-rc.5` should list
+     on the `rc` dist-tag; `latest` should still point at `1.0.0-rc.4`.
+   - **Run full 24h `AGENT_API_SOAK=1`** at PRD rate (1 ask/min + 1
+     inject/min) against the published rc.5. Artifacts go to a
+     configurable dir (default `/tmp/torana-soak-*`). The harness
+     already proved out at 12×-rate for 65 min; the 24h run just
+     validates the PRD §8 claim at the stated rate.
+   - **Cut 1.0.0 stable:** bump `package.json` rc.5 → 1.0.0, cut
+     `[1.0.0]` section in CHANGELOG (collapse the rc.5 section or
+     reference it), tag `v1.0.0`, push. Publishes on `latest` dist-tag.
+4. **Commit convention (still applies for the 1.0.0 cut + future
+   post-release work):** see `feedback_commit_cadence.md` in
+   auto-memory — one commit per phase with a US-xxx tag in the
+   subject, then a tracker-pin follow-up. Never `--amend`.
+
+## Flake + hygiene notes from rc.5 PR cycle
+
+Useful if a future session tries to land a large branch through the
+same CI:
+
+- **gitleaks push-event vs pull_request-event scope differs.** Push
+  events scan only the diff of the newly-pushed commits; PR events
+  scan the full branch-vs-main diff. Test-fixture tokens that were
+  fine across per-phase pushes tripped on the PR. Fixed in
+  [`.gitleaks.toml`](../.gitleaks.toml) with a narrow
+  `test/.*\.test\.ts$` allowlist.
+- **`torana turns --help` (and peers) exit 2** — parent-only CLI
+  commands require a subcommand. Docker-install-smoke now calls
+  `torana turns get --help`, `bots list --help`, etc. (see
+  [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)).
+- **Runner logStreams now have `error` handlers** across all three
+  runners (codex, claude-code, command). An ENOENT on the data dir
+  previously surfaced as unhandled and crashed the process; now
+  demotes to a warn. Caught chasing a macos-smoke flake that turned
+  out to be a real robustness bug.
+- **Idempotency sweep works in production.** Mid-run during the
+  short soak we observed 455 rows → 168 rows when the 1h sweep
+  interval fired; the PRD-spec behavior of the retention window is
+  real and verified.
 
 ### Conventions in use on this branch
 - One commit per phase, with the exact `US-xxx` tag in the subject line.
