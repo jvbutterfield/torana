@@ -63,6 +63,19 @@ export interface CodexRunnerOptions {
    * so a mock binary doesn't see the real codex flags in its argv.
    */
   protocolFlags?: string[];
+  /**
+   * Seed `currentThreadId` so the first turn after construction issues
+   * `codex exec resume <id>` instead of starting a fresh thread. The Bot
+   * supplies the value persisted across the previous gateway run. Ignored
+   * when `pass_resume_flag` is false.
+   */
+  initialThreadId?: string | null;
+  /**
+   * Notified whenever `currentThreadId` changes — both when a new thread is
+   * captured from `thread.started` and when `reset()` clears it. The Bot
+   * persists the value so the next gateway run can resume the same thread.
+   */
+  onThreadIdChanged?: (threadId: string | null) => void;
 }
 
 export class CodexRunner implements AgentRunner {
@@ -82,6 +95,7 @@ export class CodexRunner implements AgentRunner {
   private stopping = false;
   private stderrBuffer: string[] = [];
   private protocolFlags: readonly string[];
+  private onThreadIdChanged: ((threadId: string | null) => void) | null;
 
   constructor(opts: CodexRunnerOptions) {
     this.botId = opts.botId;
@@ -95,6 +109,10 @@ export class CodexRunner implements AgentRunner {
       });
     this.log = logger("runner.codex", { bot_id: opts.botId });
     this.protocolFlags = opts.protocolFlags ?? CodexRunner.PROTOCOL_FLAGS;
+    this.onThreadIdChanged = opts.onThreadIdChanged ?? null;
+    if (this.config.pass_resume_flag && opts.initialThreadId) {
+      this.currentThreadId = opts.initialThreadId;
+    }
   }
 
   on<E extends RunnerEventKind>(
@@ -197,7 +215,7 @@ export class CodexRunner implements AgentRunner {
     }
     // Drop the captured thread_id so the next turn starts a fresh Codex
     // session instead of resuming.
-    this.currentThreadId = null;
+    this.setCurrentThreadId(null);
   }
 
   sendTurn(
@@ -438,7 +456,7 @@ export class CodexRunner implements AgentRunner {
     const parser = createCodexJsonlParser({
       currentTurnId: () => this.activeTurn,
       onThreadStarted: (id) => {
-        if (this.config.pass_resume_flag) this.currentThreadId = id;
+        if (this.config.pass_resume_flag) this.setCurrentThreadId(id);
       },
     });
 
@@ -487,6 +505,16 @@ export class CodexRunner implements AgentRunner {
       if (this.status === "busy") this.status = "ready";
     }
     this.emitter.emit(ev);
+  }
+
+  private setCurrentThreadId(id: string | null): void {
+    if (this.currentThreadId === id) return;
+    this.currentThreadId = id;
+    try {
+      this.onThreadIdChanged?.(id);
+    } catch (err) {
+      this.log.warn("onThreadIdChanged callback threw", { error: String(err) });
+    }
   }
 
   private looksLikeAuthFailure(): boolean {

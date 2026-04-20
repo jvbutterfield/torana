@@ -36,6 +36,8 @@ export class GatewayDB {
     incWorkerGen: Statement;
     getWorkerGen: Statement;
     resetAllWorkers: Statement;
+    getCodexThreadId: Statement;
+    setCodexThreadId: Statement;
     initStreamState: Statement;
     getStreamState: Statement;
     mailboxDepth: Statement;
@@ -178,6 +180,12 @@ export class GatewayDB {
       getWorkerGen: d.prepare("SELECT generation FROM worker_state WHERE bot_id = ?"),
       resetAllWorkers: d.prepare(
         "UPDATE worker_state SET status = 'starting', pid = NULL",
+      ),
+      getCodexThreadId: d.prepare(
+        "SELECT codex_thread_id FROM worker_state WHERE bot_id = ?",
+      ),
+      setCodexThreadId: d.prepare(
+        "UPDATE worker_state SET codex_thread_id = ? WHERE bot_id = ?",
       ),
       initStreamState: d.prepare(
         "INSERT OR REPLACE INTO stream_state (turn_id, active_telegram_message_id, buffer_text, last_flushed_at, segment_index) VALUES (?, NULL, '', NULL, 0)",
@@ -639,6 +647,26 @@ export class GatewayDB {
 
   resetAllWorkerStates(): void {
     this.stmts.resetAllWorkers.run();
+  }
+
+  /**
+   * Most recently captured Codex thread_id for the bot, or null if the bot
+   * has never captured one. Used by CodexRunner to issue
+   * `codex exec resume <id>` on the first turn after a gateway restart.
+   */
+  getCodexThreadId(botId: BotId): string | null {
+    const row = this.stmts.getCodexThreadId.get(botId) as
+      | { codex_thread_id: string | null }
+      | null;
+    return row?.codex_thread_id ?? null;
+  }
+
+  /**
+   * Persist (or clear) the Codex thread_id for the bot. Pass null after
+   * `reset()` so the next turn starts a fresh Codex session.
+   */
+  setCodexThreadId(botId: BotId, threadId: string | null): void {
+    this.stmts.setCodexThreadId.run(threadId, botId);
   }
 
   // --- Stream state ---

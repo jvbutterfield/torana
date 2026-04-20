@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS worker_state (
   last_event_at        TEXT,
   last_ready_at        TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
-  last_error           TEXT
+  last_error           TEXT,
+  codex_thread_id      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stream_state (

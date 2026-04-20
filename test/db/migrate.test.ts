@@ -112,11 +112,11 @@ describe("db/migrate", () => {
     const dbPath = join(tmpDir, "fresh.db");
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(null);
-    expect(plan.targetVersion).toBe(2);
+    expect(plan.targetVersion).toBe(3);
 
     const db = new Database(dbPath);
     const user = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(user).toBe(2);
+    expect(user).toBe(3);
 
     // inbound_updates has bot_id, not persona
     const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{ name: string }>;
@@ -142,21 +142,31 @@ describe("db/migrate", () => {
     expect(turnsCols).toContain("idempotency_key");
     expect(turnsCols).toContain("usage_json");
     expect(turnsCols).toContain("duration_ms");
+
+    // worker_state gains codex_thread_id (from 0003).
+    const workerCols = (
+      db.query("PRAGMA table_info(worker_state)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
+    expect(workerCols).toContain("codex_thread_id");
     db.close();
   });
 
-  test("v0 → v2 renames column + applies both 0001 and 0002", () => {
+  test("v0 → v3 renames column + applies 0001/0002/0003", () => {
     const dbPath = join(tmpDir, "v0-upgrade.db");
     seedV0Schema(dbPath);
 
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(0);
-    expect(plan.targetVersion).toBe(2);
-    expect(plan.steps.map((s) => s.id)).toEqual(["0001_persona_to_bot_id", "0002_agent_api"]);
+    expect(plan.targetVersion).toBe(3);
+    expect(plan.steps.map((s) => s.id)).toEqual([
+      "0001_persona_to_bot_id",
+      "0002_agent_api",
+      "0003_runner_session_resume",
+    ]);
 
     const db = new Database(dbPath);
     const user = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(user).toBe(2);
+    expect(user).toBe(3);
 
     // status remap (from 0001)
     const rows = db
@@ -197,13 +207,13 @@ describe("db/migrate", () => {
   });
 
   test("migrate is a no-op on a current DB", () => {
-    const dbPath = join(tmpDir, "v2.db");
+    const dbPath = join(tmpDir, "v3.db");
     applyMigrations(dbPath);
     const plan = planMigration(dbPath);
     expect(plan.steps.length).toBe(0);
   });
 
-  test("v1 → v2 applies 0002 only", () => {
+  test("v1 → v3 applies 0002 + 0003", () => {
     const dbPath = join(tmpDir, "v1-upgrade.db");
     // Build a v1 DB by running the 0001 migration on a v0 DB, then
     // resetting user_version to 1 (simulating a v1-shipped install).
@@ -218,14 +228,54 @@ describe("db/migrate", () => {
 
     const plan = planMigration(dbPath);
     expect(plan.currentVersion).toBe(1);
-    expect(plan.targetVersion).toBe(2);
-    expect(plan.steps.map((s) => s.id)).toEqual(["0002_agent_api"]);
+    expect(plan.targetVersion).toBe(3);
+    expect(plan.steps.map((s) => s.id)).toEqual([
+      "0002_agent_api",
+      "0003_runner_session_resume",
+    ]);
 
     applyMigrations(dbPath);
 
     const db2 = new Database(dbPath);
     const user = (db2.query("PRAGMA user_version").get() as { user_version: number }).user_version;
-    expect(user).toBe(2);
+    expect(user).toBe(3);
+    db2.close();
+  });
+
+  test("v2 → v3 applies 0003 only", () => {
+    const dbPath = join(tmpDir, "v2-upgrade.db");
+    // Build a v2 DB by running 0001 + 0002 manually.
+    seedV0Schema(dbPath);
+    const db = new Database(dbPath);
+    const fs = require("node:fs");
+    db.exec(
+      fs.readFileSync(
+        join(__dirname, "..", "..", "src", "db", "migrations", "0001_persona_to_bot_id.sql"),
+        "utf8",
+      ),
+    );
+    db.exec(
+      fs.readFileSync(
+        join(__dirname, "..", "..", "src", "db", "migrations", "0002_agent_api.sql"),
+        "utf8",
+      ),
+    );
+    db.close();
+
+    const plan = planMigration(dbPath);
+    expect(plan.currentVersion).toBe(2);
+    expect(plan.targetVersion).toBe(3);
+    expect(plan.steps.map((s) => s.id)).toEqual(["0003_runner_session_resume"]);
+
+    applyMigrations(dbPath);
+
+    const db2 = new Database(dbPath);
+    const user = (db2.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    expect(user).toBe(3);
+    const cols = (db2.query("PRAGMA table_info(worker_state)").all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(cols).toContain("codex_thread_id");
     db2.close();
   });
 });

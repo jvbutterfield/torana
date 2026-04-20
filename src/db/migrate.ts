@@ -2,9 +2,10 @@
 //
 // States this dispatcher handles:
 //   - Fresh install: DB doesn't exist or has no tables. Apply schema.sql, set user_version=TARGET.
-//   - v0 upgrade: DB has inbound_updates with a `persona` column. Apply 0001 + 0002.
-//   - v1 upgrade: DB has bot_id but no agent_api tables. Apply 0002.
-//   - v2 current: user_version=2 — no-op.
+//   - v0 upgrade: DB has inbound_updates with a `persona` column. Apply 0001 + 0002 + 0003.
+//   - v1 upgrade: DB has bot_id but no agent_api tables. Apply 0002 + 0003.
+//   - v2 upgrade: DB has agent_api tables but no codex_thread_id column. Apply 0003.
+//   - v3 current: user_version=3 — no-op.
 //
 // Migration is idempotent: running twice is a no-op. Failure rolls back the
 // transaction; next run re-applies from scratch.
@@ -80,7 +81,7 @@ export function detectVersion(db: Database): number | null {
   throw new Error(`unknown schema: inbound_updates has neither bot_id nor persona column`);
 }
 
-const TARGET_VERSION = 2;
+const TARGET_VERSION = 3;
 
 const STEP_0001: MigrationStep = {
   id: "0001_persona_to_bot_id",
@@ -97,6 +98,14 @@ const STEP_0002: MigrationStep = {
   description: "Add agent_api tables + turns columns",
   get sql(): string {
     return readMigrationSql("0002_agent_api.sql");
+  },
+} as unknown as MigrationStep;
+
+const STEP_0003: MigrationStep = {
+  id: "0003_runner_session_resume",
+  description: "Add worker_state.codex_thread_id for cross-restart Codex resume",
+  get sql(): string {
+    return readMigrationSql("0003_runner_session_resume.sql");
   },
 } as unknown as MigrationStep;
 
@@ -131,18 +140,25 @@ export function planMigration(dbPath: string): MigrationPlan {
     if (version === TARGET_VERSION) {
       return { currentVersion: version, targetVersion: TARGET_VERSION, steps: [] };
     }
+    if (version === 2) {
+      return {
+        currentVersion: 2,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0003],
+      };
+    }
     if (version === 1) {
       return {
         currentVersion: 1,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0002],
+        steps: [STEP_0002, STEP_0003],
       };
     }
     if (version === 0) {
       return {
         currentVersion: 0,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0001, STEP_0002],
+        steps: [STEP_0001, STEP_0002, STEP_0003],
       };
     }
     throw new Error(

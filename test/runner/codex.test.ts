@@ -426,6 +426,86 @@ describe("CodexRunner lifecycle", () => {
     await runner.stop(2000);
   });
 
+  test("initialThreadId seeds resume on the first turn", async () => {
+    // Prove the cross-restart contract: a runner constructed with a thread id
+    // hydrated from persisted state issues `exec resume <id>` on its very
+    // first turn, instead of starting a fresh thread.
+    const runner = new CodexRunner({
+      botId: "alpha",
+      config: makeConfig("replay-resume"),
+      logDir: tmpDir,
+      protocolFlags: TEST_PROTOCOL_FLAGS,
+      initialThreadId: "tid-restored",
+    });
+    const { waitFor, waitForTurn } = track(runner);
+    await runner.start();
+    await waitFor("ready", 1000);
+
+    runner.sendTurn("T1", "hi", []);
+    await waitForTurn("done", "T1", 5000);
+
+    const logPath = resolve(tmpDir, "alpha.log");
+    const content = await Bun.file(logPath).text();
+    const line = content
+      .split("\n")
+      .filter((l) => l.includes('"thread.started"'))
+      .map((l) => JSON.parse(l) as { __argv?: string[]; __resuming?: boolean })[0];
+    expect(line.__resuming).toBe(true);
+    expect(line.__argv?.join(" ")).toContain("resume tid-restored");
+
+    await runner.stop(2000);
+  }, 15_000);
+
+  test("onThreadIdChanged fires on capture and on reset", async () => {
+    const events: Array<string | null> = [];
+    const runner = new CodexRunner({
+      botId: "alpha",
+      config: makeConfig("replay-resume"),
+      logDir: tmpDir,
+      protocolFlags: TEST_PROTOCOL_FLAGS,
+      onThreadIdChanged: (id) => events.push(id),
+    });
+    const { waitFor, waitForTurn } = track(runner);
+    await runner.start();
+    await waitFor("ready", 1000);
+
+    runner.sendTurn("T1", "hi", []);
+    await waitForTurn("done", "T1", 5000);
+
+    expect(events).toEqual(["tid-replay"]);
+
+    await runner.reset();
+    expect(events).toEqual(["tid-replay", null]);
+
+    await runner.stop(2000);
+  }, 15_000);
+
+  test("initialThreadId is ignored when pass_resume_flag is false", async () => {
+    const runner = new CodexRunner({
+      botId: "alpha",
+      config: makeConfig("replay-resume", { pass_resume_flag: false }),
+      logDir: tmpDir,
+      protocolFlags: TEST_PROTOCOL_FLAGS,
+      initialThreadId: "tid-restored",
+    });
+    const { waitFor, waitForTurn } = track(runner);
+    await runner.start();
+    await waitFor("ready", 1000);
+
+    runner.sendTurn("T1", "hi", []);
+    await waitForTurn("done", "T1", 5000);
+
+    const logPath = resolve(tmpDir, "alpha.log");
+    const content = await Bun.file(logPath).text();
+    const line = content
+      .split("\n")
+      .filter((l) => l.includes('"thread.started"'))
+      .map((l) => JSON.parse(l) as { __resuming?: boolean })[0];
+    expect(line.__resuming).toBe(false);
+
+    await runner.stop(2000);
+  }, 15_000);
+
   test("writes stderr to <bot_id>.log with [stderr] prefix", async () => {
     const runner = new CodexRunner({
       botId: "alpha",

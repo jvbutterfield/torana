@@ -260,17 +260,34 @@ export class Bot {
     const runnerConfig = this.botConfig.runner;
     const logDir = `${this.config.gateway.data_dir}/logs`;
     if (runnerConfig.type === "claude-code") {
+      // freshSession defaults to true in the runner, which is the right
+      // default for tests but wrong for production: it would force the
+      // first spawn after every gateway restart to omit `--continue`,
+      // losing the conversation. Pass false here so the persisted
+      // on-disk Claude session resumes across restarts. Users who want a
+      // truly stateless runner can still set `pass_continue_flag: false`
+      // in the bot config.
       return new ClaudeCodeRunner({
         botId: this.botConfig.id,
         config: runnerConfig,
         logDir,
+        freshSession: false,
       });
     }
     if (runnerConfig.type === "codex") {
+      // Codex's thread_id is captured per-process by the JSONL parser. To
+      // resume across gateway restarts we hydrate it from worker_state on
+      // construction and persist any future change.
+      const initialThreadId = runnerConfig.pass_resume_flag
+        ? this.db.getCodexThreadId(this.botConfig.id)
+        : null;
       return new CodexRunner({
         botId: this.botConfig.id,
         config: runnerConfig,
         logDir,
+        initialThreadId,
+        onThreadIdChanged: (id) =>
+          this.db.setCodexThreadId(this.botConfig.id, id),
       });
     }
     return new CommandRunner({

@@ -166,7 +166,7 @@ describe("CLI migrate --dry-run", () => {
     expect(exitCode).toBe(0);
     const plan = JSON.parse(stdout);
     expect(plan.currentVersion).toBeNull();
-    expect(plan.targetVersion).toBe(2);
+    expect(plan.targetVersion).toBe(3);
     expect(plan.steps.length).toBe(1);
     expect(plan.steps[0].id).toBe("fresh-install");
     // DB should NOT have been created.
@@ -178,7 +178,7 @@ describe("CLI migrate --dry-run", () => {
     applyMigrations(dbPath);
     const plan = planMigration(dbPath);
     expect(plan.steps).toHaveLength(0);
-    expect(plan.currentVersion).toBe(2);
+    expect(plan.currentVersion).toBe(3);
   });
 });
 
@@ -191,7 +191,7 @@ describe("CLI migrate (apply)", () => {
     const dbPath = join(tmpDir, "gateway.db");
     expect(existsSync(dbPath)).toBe(true);
     const plan = planMigration(dbPath);
-    expect(plan.currentVersion).toBe(2);
+    expect(plan.currentVersion).toBe(3);
   }, 15_000);
 });
 

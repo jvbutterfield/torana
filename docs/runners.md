@@ -29,7 +29,7 @@ bots:
 
 ### What `pass_continue_flag` does
 
-When true (default), torana appends `--continue` to `args` on every spawn *except* the first-after-`reset()`. This preserves conversation history across spawns. Disable (`false`) for one-shot runners that should start fresh every turn.
+When true (default), torana appends `--continue` to `args` on every spawn *except* the first-after-`reset()` — including the first spawn after a gateway restart, so the on-disk Claude session resumes seamlessly across reboots. Disable (`false`) for one-shot runners that should start fresh every turn.
 
 ### Setting up Claude Code
 
@@ -70,7 +70,7 @@ Codex is **one-shot per turn**: each `sendTurn()` spawns a fresh `codex exec` (o
 
 ### What `pass_resume_flag` does
 
-When true (default), the runner captures the `thread_id` from each turn's `thread.started` event and passes `resume <thread_id>` on the next turn. This preserves Codex's session history across turns. `reset()` clears the captured thread id so the next turn starts a new session. Set false for one-shot runners that should always start fresh.
+When true (default), the runner captures the `thread_id` from each turn's `thread.started` event and passes `resume <thread_id>` on the next turn. The captured id is also persisted in `worker_state.codex_thread_id` so the first turn after a gateway restart resumes the same thread instead of starting fresh. `reset()` clears the captured thread id (in memory and in the DB) so the next turn starts a new session. Set false for one-shot runners that should always start fresh.
 
 ### Approval mode and sandbox
 
