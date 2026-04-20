@@ -2,40 +2,52 @@
 
 Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
-Approach: **thin end-to-end first** — Claude + Codex ask paths (JSON +
-multipart), inject path (with FakeTelegram delivery proof), the four
-core CLI subcommands (`ask`, `inject`, `turns get`, `bots list`), and
-now the full Phase 7 observability + doctor + docs surface all work
-today. Remaining work is breadth/polish: Phase 6b (profile store, `@-`
-stdin, skills install, codex plugin) and Phase 2c (CommandRunner
-side-sessions, lower priority).
+PRD: [prd-agent-api.md](prd-agent-api.md)
+
+**Status:** the gateway-side surface is feature-complete and
+release-quality. Phases 1 → 7 all landed (inc. a gap-fill pass over
+Phase 7). Remaining work is pure UX polish (**Phase 6b**, ~1 day) plus
+an optional CommandRunner side-session pass (**Phase 2c**, defer-able)
+and the pre-release E2E gates.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (last phase commit `23abefd` — Phase 7; tip commit `adfbcc4` is the Phase 7 gap-fill, 24 commits ahead of `main`).
+1. `git checkout feat/agent-api` — tip commit `26236cd` (Phase 7
+   gap-fill pin); last phase commit `adfbcc4`. 25 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **719 pass / 4 skip / 0 fail**.
+   - `bun test` — expect **719 pass / 4 skip / 0 fail**. One test
+     (`CodexRunner side-sessions > after startSideSession resolves,
+     sendSideTurn is immediately accepted`) is mildly flaky under full
+     suite runs due to `queueMicrotask` timing; re-run if it trips.
    - `bun x tsc --noEmit` — expect clean (no output).
-3. **Pick the next branch (durable note — Phase 7 just landed):**
-   - **Phase 6b (CLI polish, RECOMMENDED)** — profile store
-     (`~/.config/torana/config.toml`), `--file @-` stdin, `torana skills
-     install --host=claude|codex`, codex plugin layout, the
-     `torana doctor --profile NAME` resolver (remote R001–R003 already
-     land in Phase 7; only the profile-name-to-(server,token) lookup is
-     missing — CLI currently exits 2 with a Phase-6b pointer when
-     `--profile` is passed). Pure UX; no gateway-side risk; ~1 day.
-   - **Phase 2c (CommandRunner side-sessions)** — protocol capability
-     descriptors; `claude-ndjson` long-lived + `codex-jsonl` per-turn +
-     `jsonl-text` unsupported. Only matters for users with custom
-     runners; safe to defer.
-   - **Pre-release validation** — after 6b (and optionally 2c),
-     `AGENT_API_E2E=1 bun test` against real binaries, a 24h
-     `AGENT_API_SOAK=1` run, the impl-plan §12.5 security matrix, and
-     impl-plan §12.10 error-path coverage.
+3. **Pick the next branch** (ranked — first is recommended):
+   - **Phase 6b — CLI polish (RECOMMENDED, ~1 day, pure UX).** Profile
+     store at `~/.config/torana/config.toml` (mode 0600, Bun.TOML),
+     `--file @-` stdin on `ask`/`inject`, `torana skills install
+     --host=claude|codex`, codex plugin scaffold, **and** the
+     `torana doctor --profile NAME` resolver.
+     Phase 7 already shipped the remote check runner
+     (`runRemoteDoctor`) and the `--profile` flag; the CLI currently
+     exits 2 with a Phase-6b pointer. Phase 6b just needs the
+     name → `(server, token)` lookup feeding into the existing path.
+     No gateway-side risk; all under `src/cli/`, `skills/`, `scripts/`,
+     `codex-plugin/`.
+   - **Phase 2c — CommandRunner side-sessions (defer-able).** Protocol
+     capability descriptors; `claude-ndjson` long-lived + `codex-jsonl`
+     per-turn + `jsonl-text` unsupported. Only matters for users with
+     custom runners. When this lands, flip the `command` entry in
+     `runnerTypeSupportsSideSessions` ([src/runner/types.ts](../src/runner/types.ts))
+     to `true` for the relevant protocols — the drift-guard test in
+     [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
+     will enforce the static map matches each runner's runtime answer.
+   - **Pre-release validation** (once 6b + optionally 2c land):
+     `AGENT_API_E2E=1 bun test` against real `claude` + `codex`
+     binaries; a 24h `AGENT_API_SOAK=1` run; impl-plan §12.5 security
+     matrix; impl-plan §12.10 error-path coverage matrix.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
-5. **Commit cadence** (durable — also recorded in auto-memory):
+5. **Commit cadence** (durable — also in auto-memory):
    one phase commit with the `US-xxx` tag in the subject, then a small
    follow-up that pins the new hash into this tracker. **Do not
    `--amend`** — pre-commit hooks may fail and amending would clobber
@@ -43,8 +55,8 @@ side-sessions, lower priority).
 
 ### Conventions in use on this branch
 - One commit per phase, with the exact `US-xxx` tag in the subject line.
-- Test files colocated under `test/agent-api/`, `test/runner/`, or
-  `test/cli/` — never under `src/`.
+- Test files colocated under `test/agent-api/`, `test/runner/`,
+  `test/cli/`, `test/docs/`, or `test/metrics/` — never under `src/`.
 - Handlers live in `src/agent-api/handlers/`; CLI subcommands in
   `src/cli/`; client lives at `src/agent-api/client.ts`.
 - `bun:sqlite` named-parameter binds use `$name` prefix (see
@@ -57,9 +69,51 @@ side-sessions, lower priority).
   loop does pick them up.
 - Side-session id format: `^[A-Za-z0-9_-]{1,64}$`. Ephemeral sessions
   get `eph-<uuid>` prefix (test assertions rely on this — also
-  recorded in auto-memory).
+  in auto-memory).
 - CLI subcommand bodies return `Rendered { stdout, stderr, exitCode }`
   so tests don't need to mock `process.stdout`.
+- **Metrics façade pattern:** handlers + pool + orphan listener call
+  helpers in [src/agent-api/metrics.ts](../src/agent-api/metrics.ts),
+  never the `Metrics` setters directly. Passing `metrics: undefined`
+  is a no-op everywhere. When wiring a new agent-api call site, pass
+  `metrics` through explicitly — `metrics?: Metrics` is optional on
+  purpose so tests stay lightweight, but the real wiring in
+  [src/main.ts](../src/main.ts) must pass it.
+- **Runner-type → side-session capability** lives in one helper:
+  `runnerTypeSupportsSideSessions(type)` in
+  [src/runner/types.ts](../src/runner/types.ts). Doctor C011 reads it;
+  a drift-guard test pins each concrete runner's runtime
+  `supportsSideSessions()` to the static map's answer. Change both
+  together or the test fails.
+- **Histogram bucket sequence** is exported as `DURATION_BUCKETS_MS`
+  from [src/metrics.ts](../src/metrics.ts). The doc-shape test parses
+  the "Bucket sequence" line in [docs/agent-api.md](../docs/agent-api.md)
+  and asserts the list matches the runtime constant — change buckets
+  in both places.
+
+### Surprises / gotchas worth remembering
+- `AskBodySchema` enforces `timeout_ms >= 1000`. For 202-timeout tests
+  you can't use `slow-echo` (500ms) — use the `very-slow` (2s)
+  claude-mock mode added in the gap-fill pass. `error-turn` mode emits
+  `is_error: true` so the NDJSON parser raises `{kind: "error"}`.
+- `insertInjectTurn` has two replay paths: pre-write (caught by
+  `getIdempotencyTurn`) and in-transaction (caught inside the
+  `BEGIN IMMEDIATE` on a unique-constraint collision). Both set
+  `outcome.replay = true` in the handler. The in-txn path is
+  exercised by `test/agent-api/handlers.metrics.test.ts >
+  "in-txn replay"` — two concurrent POSTs with the same key.
+- `agentApiSnapshot()` lazy-inits per bot — snapshot returns `{}` if
+  nothing ever recorded. Tests checking "no metrics were touched"
+  should assert the bot key is absent, not that counters are 0.
+- `ask_orphan_resolutions_total{outcome="backstop"}` is the distinctive
+  signal for the 1h force-release path. It is NOT an `error` — if it
+  spikes in prod, the runner isn't emitting terminal events. Shutdown
+  force-releases are deliberately not counted (they're not runner
+  outcomes).
+- `torana doctor --profile NAME` is currently a Phase-6b stub: CLI
+  accepts the flag, exits 2 with a pointer. The `runRemoteDoctor`
+  implementation is already in place and tested — 6b only needs the
+  name → (server, token) lookup.
 
 ---
 
@@ -84,11 +138,12 @@ side-sessions, lower priority).
 
 ---
 
-## What's done — feat/agent-api branch (24 commits)
+## What's done — feat/agent-api branch (25 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+26236cd agent-api: pin Phase 7 gap-fill commit hash in progress tracker
 adfbcc4 agent-api phase 7 gap-fill: handler failure paths + orphan metrics + scrape integration (US-015, US-016)
 88eaf3d agent-api: pin Phase 7 commit hash in progress tracker
 23abefd agent-api phase 7: observability + doctor + docs (US-015, US-016, US-017)
