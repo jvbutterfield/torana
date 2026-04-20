@@ -13,9 +13,9 @@ Remaining work is the pre-release E2E gates — no more implementation.
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `afc7850` (Phase 2c pin-commit polish);
+   `fbe1be0` (Phase 2c placeholder-fix polish);
    last phase commit `b7ab18f` (Phase 2c).
-   32 commits ahead of `main`.
+   33 commits ahead of `main`.
 2. Sanity-check before touching anything:
    - `bun test` — expect **874 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
@@ -157,11 +157,12 @@ Remaining work is the pre-release E2E gates — no more implementation.
 
 ---
 
-## What's done — feat/agent-api branch (32 commits)
+## What's done — feat/agent-api branch (33 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+fbe1be0 agent-api: replace pin-commit placeholder with afc7850
 afc7850 agent-api: pin Phase 2c commit hash in progress tracker
 b7ab18f agent-api phase 2c: CommandRunner side-sessions (US-007)
 c8f262d agent-api: correct branch commit count in tracker (28 → 30)
