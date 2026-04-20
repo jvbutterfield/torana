@@ -4,57 +4,61 @@ Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
 PRD: [prd-agent-api.md](prd-agent-api.md)
 
-**Status:** all implementation phases landed. Phases 1 → 7 complete,
-plus the Phase-7 gap-fill, plus **Phase 6b** (CLI polish), plus
-**Phase 2c** (CommandRunner side-sessions for `claude-ndjson` /
-`codex-jsonl` protocols, with `jsonl-text` explicitly left unsupported),
-plus a **Phase 2c gap-fill** that closed 7 coverage gaps with 20 more
-tests, plus **Phase 8** (§12.10 error-path coverage matrix — 1 gap
-closed in `src/server.ts` + 93 new tests including a drift-guard that
-enforces the matrix going forward), plus **Phase 9** (§12.5 security
-matrix — all 30 matrix files under `test/security/agent-api/` + 151
-new tests + a manifest drift-guard), plus **Phase 10** (§12.4 E2E
-matrix — 4 matrix files under `test/e2e/agent-api/` + manifest guard +
-a real production fix for Claude CLI 2.1 UUID validation in
-`--session-id`). Default suite: **1142 pass / 12 skip / 0 fail**. E2E
-suite (`AGENT_API_E2E=1`): **10 pass / 1 skip / 0 fail** in ~30s; the
-skip is `inject-claude` which additionally needs Telegram sandbox
-creds. Remaining work is the 24h soak + release mechanics — no more
-implementation.
+**Status:** **1.0.0-rc.5 staged** for publish. All implementation phases
+landed — Phases 1 → 10 complete (see full list below), plus **Phase 11**
+(§12.7 soak harness — a real-gateway driver that fires ask + inject at
+configurable cadence, samples RSS / FDs / pool-live / idempotency rows
+on a timer, and asserts the PRD §8 reliability invariants). Release
+prep done: version bump (rc.4 → rc.5), CHANGELOG cut with upgrade
+notes, `files` + `verify-pack.ts` extended, docker-install-smoke
+extended, every doc + README updated. Default suite: **1142 pass /
+13 skip / 0 fail** (+1 skip from the gated soak test). E2E suite
+(`AGENT_API_E2E=1`): **10 pass / 1 skip / 0 fail** in ~30s; the skip
+is `inject-claude` which needs Telegram sandbox creds. 65-min short
+soak (`AGENT_API_SOAK=1` at 12×-PRD rate) passed every invariant.
+Remaining work before cutting 1.0.0 stable: publish rc.5, run full
+24h soak at PRD rate, then promote.
 
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `15be4a9` (tracker polish / next-session handoff);
+   `<TIP>` (this tracker update);
    last pin commit `4dd31a7` (Phase 10 pin);
-   last implementation commit `fe3facf` (Phase 10 — Claude UUID
-   fix in `src/runner/claude-code.ts` + E2E matrix + UUID regression
-   test);
-   last test commit `fe3facf` (Phase 10 added 15 tests: 10 E2E +
-   3 manifest guards + 1 UUID regression + 1 existing count delta).
-   50 commits ahead of `main`.
+   last Phase-11 commit `36255f0` (§12.7 soak harness);
+   last release-prep commit `952b0d8` (1.0.0-rc.5 release prep).
+   53 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **1142 pass / 12 skip / 0 fail**. The 12
-     skips are all E2E-gated (4 `CODEX_E2E=1` runner tests + 8 `AGENT_API_E2E=1`
-     agent-api tests). Two tests (`CodexRunner side-sessions > after
-     startSideSession resolves...` and `threadId resume continuity >
-     first turn has no resume...`) are mildly flaky under full suite
-     runs due to `queueMicrotask` timing; re-run if they trip.
+   - `bun test` — expect **1142 pass / 13 skip / 0 fail**. The 13
+     skips are all gated (4 `CODEX_E2E=1` runner tests + 8 `AGENT_API_E2E=1`
+     agent-api tests + 1 `AGENT_API_SOAK=1` soak). Two tests (`CodexRunner
+     side-sessions > after startSideSession resolves...` and `threadId
+     resume continuity > first turn has no resume...`) are mildly flaky
+     under full suite runs due to `queueMicrotask` timing; re-run if
+     they trip.
    - `bun x tsc --noEmit` — expect clean (no output).
    - `AGENT_API_E2E=1 bun test test/e2e/agent-api/` — expect
      **10 pass / 1 skip / 0 fail** in ~30s. The skip is
      `inject-claude` (needs `TELEGRAM_TEST_BOT_TOKEN` +
      `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`).
-3. **Remaining work** — only pre-release validation is left:
+   - `bun run build && bun run scripts/verify-pack.ts` — expect
+     `tarball contains all 12 required SQL files`.
+3. **Remaining work** — only publish + final soak is left:
    - ~~`AGENT_API_E2E=1` against real binaries~~ ✅ done in Phase 10.
-   - A 24h `AGENT_API_SOAK=1` run.
+   - ~~Soak harness (§12.7)~~ ✅ done in Phase 11.
    - ~~Impl-plan §12.5 security matrix~~ ✅ done in Phase 9.
    - ~~Impl-plan §12.10 error-path coverage matrix~~ ✅ done in Phase 8.
-   - Release mechanics: CHANGELOG entry, bump `package.json` version,
-     extend `package.json` `files` to include `skills/`,
-     `codex-plugin/`, `scripts/install-skills.ts`, and
-     `examples/side-session-runner/`; extend [scripts/build.ts](../scripts/build.ts)
-     and docker smoke.
+   - ~~Release mechanics~~ ✅ done in the rc.5 release-prep commit
+     (`952b0d8`): CHANGELOG cut + upgrade notes, `package.json`
+     version bump + `files` extension, `verify-pack.ts` REQUIRED
+     extension, docker-install-smoke extension, docs + README
+     refresh.
+   - **Publish rc.5** — tag `v1.0.0-rc.5` from this branch; release
+     workflow auto-triggers → npm publish under `rc` dist-tag.
+   - **Run the full 24h `AGENT_API_SOAK=1` at PRD rate** (1 ask/min
+     + 1 inject/min) against rc.5. Short 65-min validation at
+     12×-rate already green: see commit `36255f0` body.
+   - **Promote to 1.0.0 stable** once soak passes + no real-world
+     regressions: strip `-rc.5`, publish on `latest`.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
@@ -178,14 +182,20 @@ implementation.
 | 8 — §12.10 error-path coverage matrix | ✅ Complete (`799caad`) | US-015 | Closed the one gap in §12.10: `method_not_allowed` had zero emission sites + zero test assertions. Fix in `src/server.ts` — `/v1/*` paths now return canonical JSON `{error, message}` on 405 (non-`/v1/*` paths keep the plain-text 405 for backwards compat — no agent-api coupling at the transport layer). **93 new tests**: 6 in `test/server/router.method.test.ts` (PUT/PATCH against /v1/*, unregistered /v1 path, non-/v1 plain-text preserved, statusFor drift-guard, GET 200 no-regression) + 87 in `test/agent-api/errors.coverage.test.ts` (the matrix drift-guard itself: 29 codes × 3 invariants — `statusFor` returns a valid 4xx/5xx, emitted from ≥1 src file, asserted by ≥1 test). The coverage test parses `STATUS_MAP` out of `errors.ts` so new codes are auto-included; `method_not_allowed` is whitelisted to `src/server.ts` since its emission site is at the transport layer. Full suite: **987 pass / 4 skip / 0 fail**. |
 | 9 — §12.5 security matrix | ✅ Complete (`4ec673f`) | US-015 | All 30 matrix files under `test/security/agent-api/`, backed by a shared `_harness.ts` (spins up a real HTTP server + GatewayDB + stubbed pool/orphans/registry). **151 new tests across 31 files** (30 matrix + 1 manifest drift-guard): auth (no-header / wrong-scheme / wrong-token / timing / case-mutation / log-redaction — 6 files), authz (wrong-bot / wrong-scope / enumeration-resistance / admin-scope — 4), input validation (huge-body / zip-bomb / path-traversal / null-byte / source-label / idempotency-key-injection / yaml-bomb / marker-injection — 8), resource exhaustion (side-session-flood against real pool / disk-fill via `computeDiskUsage` injection / slow-loris behavioural pin / idempotency-store-bloat with 10k seeded rows + sweep timing — 4), injection class (chat-forgery / acl-bypass / cross-bot / idempotency-reuse-different-content / runner-prompt-injection — 5), disclosure (error-body / metrics-labels — verifies scrape output has only `bot_id/status/result/reason/outcome/replay/route/mode/le` labels / logs — end-to-end log capture with secret + URL-pattern redaction — 3). `_manifest.test.ts` pins the file list against the matrix in impl-plan §12.5; new rows must add both a test file and a manifest entry. No production code changed. Full suite: **1138 pass / 4 skip / 0 fail**. |
 | 10 — §12.4 E2E matrix + claude UUID fix | ✅ Complete (`fe3facf`) | US-015 | `test/e2e/agent-api/` created — 4 matrix files + 1 manifest drift-guard + shared `_harness.ts` (real `startGateway()` + `ClaudeCodeRunner`/`CodexRunner` + optional FakeTelegram). The suite is gated by `AGENT_API_E2E=1`; `inject-claude.test.ts` additionally needs `TELEGRAM_TEST_BOT_TOKEN` + `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`. Running `AGENT_API_E2E=1 bun test test/e2e/agent-api/` yields **10 pass / 1 skip / 0 fail in ~30s**. **Production fix discovered + landed**: Claude CLI 2.1+ validates `--session-id` as a strict UUID and rejects the pool's `eph-<uuid>` / caller-named IDs (which match `^[A-Za-z0-9_-]{1,64}$` only). `ClaudeCodeRunner` now mints a fresh UUID per `startSideSession` (stored on the entry as `claudeUuid`) and passes that to the CLI; the pool's `sessionId` remains the public API. Regression test in `test/runner/claude-code.side-session.test.ts` pins the substitution. Also: `_harness.ts` exports `inheritedEnv()` because claude + codex auth needs more than HOME + PATH in the subprocess (keychain, XDG_*); E2E runners inherit the full test env. Non-E2E suite: **1142 pass / 12 skip / 0 fail** (+4 from phase: manifest guard + UUID regression + pre-existing). |
+| 11 — §12.7 soak harness | ✅ Complete (`36255f0`) | US-015 | `test/soak/agent-api.test.ts` gated by `AGENT_API_SOAK=1`. Spins up a real gateway + `CommandRunner(claude-ndjson)` side-session path + FakeTelegram, fires ask + inject at env-configurable cadence, samples RSS / FDs (via `lsof -p`) / pool-live / idempotency rows on a timer, writes every sample to `artifacts/samples.jsonl`, and on completion aggregates into a pass/fail `report.json` per the §12.7 invariants: post-1h RSS within ±20% of median, FDs bounded (≤ 2× initial), `side_sessions_live` ≤ `max_global`, idempotency rows drop after retention, zero unhandled rejections, zero orphan `side_sessions` rows at shutdown, and ≥99% success on both routes. Env params: `AGENT_API_SOAK_DURATION_MS` (default 24h), `_SAMPLE_INTERVAL_MS` (default 60s), `_WORKLOAD_INTERVAL_MS` (default 60s for PRD rate), `_IDEMPOTENCY_RETENTION_MS` (default 24h), `_ARTIFACT_DIR`. **65-min short soak at 12×-rate passed clean**: 779/779 ask + 779/779 inject, RSS stable 52–67 MB (post-hour median 65 MB, within ±20%), FDs 140→142, pool peak 3/8, idempotency peaked 707 and dropped to 120 after the retention sweep, zero orphans, zero rejections. Full 24h at PRD rate is the final gate before 1.0.0 stable. |
+| rc.5 release prep | ✅ Complete (`952b0d8`) | — | Not a phase; bundles all of: `package.json` rc.4 → rc.5 + `files` extension for `examples/side-session-runner/`; `codex-plugin/{plugin.json, marketplace.json}` version sync; `scripts/verify-pack.ts` REQUIRED extension (agent-api migrations + skills + codex-plugin + example files); `.github/workflows/ci.yml` docker-install-smoke extension (every agent-api CLI subcommand --help + skill/codex-plugin path existence); CHANGELOG rc.5 cut with upgrade notes + Phase-10 "Fixed" entry; docs/agent-api.md MIME allowlist + idempotency-key rationale; docs/cli.md stale-profile-language fix; docs/writing-a-runner.md stale-CommandRunner fix + `TORANA_SESSION_ID` docs; README 675→1142 + new commands + rc.5/rc.4 in Recent + new test gates; `.gitignore` adds `.claude/` + `tasks/*.md`; `test/docs/agent-api.test.ts` CHANGELOG assertion updated for post-cut shape. Full suite **1142 pass / 13 skip / 0 fail**; `bun audit` + `bun run build` + `verify-pack.ts` all clean. |
 
 ---
 
-## What's done — feat/agent-api branch (50 commits)
+## What's done — feat/agent-api branch (53 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+<TIP>   agent-api: pin Phase 11 + rc.5 hashes in progress tracker
+952b0d8 agent-api: 1.0.0-rc.5 release prep
+36255f0 agent-api phase 11: §12.7 soak harness (US-015)
+8bc4271 agent-api: replace tip-commit placeholder with 15be4a9
 15be4a9 agent-api: polish progress tracker for next-session handoff
 3830f97 agent-api: replace tip-commit placeholder with 4dd31a7
 4dd31a7 agent-api: pin Phase 10 commit hash in progress tracker
