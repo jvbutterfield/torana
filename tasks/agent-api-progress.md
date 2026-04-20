@@ -20,7 +20,7 @@ mechanics — no more implementation.
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `<PIN>` (Phase 9 pin);
+   `54b2261` (Phase 9 pin);
    last implementation commit `4ec673f` (Phase 9 — security matrix,
    tests only, no production code changed);
    last test commit `4ec673f` (Phase 9 added 151 tests).
