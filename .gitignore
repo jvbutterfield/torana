@@ -12,3 +12,14 @@ coverage/
 # Local smoke-test workspace — contains dev-bot tokens, local paths,
 # and runtime DB. Never committed.
 smoke/
+
+# Claude Code working directory — agent auto-memory, session state,
+# and other per-developer data. Never committed.
+.claude/
+
+# Task docs (PRDs, impl plans, audit reports). Kept local during
+# development; not published to the public repo.
+tasks/*.md
+# …except the in-branch progress tracker, which is a handoff artifact
+# for the implementation branches and has been committed since Phase 1.
+!tasks/agent-api-progress.md

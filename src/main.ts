@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
+import type { ResolvedAgentApiToken } from "./config/load.js";
 import { logger, setLogLevel, setLogFormat, setSecrets, autoFormat } from "./log.js";
 import { GatewayDB } from "./db/gateway-db.js";
 import { applyMigrations } from "./db/migrate.js";
@@ -16,10 +17,17 @@ import { StreamManager } from "./streaming.js";
 import { Bot } from "./core/bot.js";
 import { BotRegistry } from "./core/registry.js";
 import { sweepExpiredAttachments } from "./core/attachments.js";
+import { sweepUnreferencedAgentApiFiles } from "./agent-api/attachments.js";
 import { createServer, type Server } from "./server.js";
 import { WebhookTransport } from "./transport/webhook.js";
 import { PollingTransport } from "./transport/polling.js";
-import type { Transport } from "./transport/types.js";
+import type { Transport, Unregister } from "./transport/types.js";
+import {
+  registerAgentApiHealthRoute,
+  registerAgentApiRoutes,
+} from "./agent-api/router.js";
+import { SideSessionPool } from "./agent-api/pool.js";
+import { OrphanListenerManager } from "./agent-api/orphan-listeners.js";
 
 const log = logger("main");
 
@@ -27,6 +35,8 @@ export interface StartOptions {
   config: Config;
   secrets: string[];
   autoMigrate?: boolean;
+  /** Resolved agent-api tokens from load.ts — empty when the feature is disabled. */
+  agentApiTokens?: ResolvedAgentApiToken[];
 }
 
 export interface RunningGateway {
@@ -120,6 +130,48 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   const server = createServer({ port: config.gateway.port });
   registerFixedRoutes(server, config, db, metrics, registry);
 
+  // /v1/health is always available — operators need to confirm the binary
+  // has agent-api support even when the feature is disabled.
+  registerAgentApiHealthRoute(server.router, {
+    config,
+    uptimeSecs: () => metrics.uptimeSecs(),
+  });
+
+  const agentApiUnregs: Unregister[] = [];
+  let agentApiPool: SideSessionPool | null = null;
+  let agentApiOrphans: OrphanListenerManager | null = null;
+  let agentApiIdempotencySweep: ReturnType<typeof setInterval> | null = null;
+  if (config.agent_api?.enabled) {
+    const tokens = opts.agentApiTokens ?? [];
+    agentApiPool = new SideSessionPool({ config, db, registry, metrics });
+    agentApiOrphans = new OrphanListenerManager(db, agentApiPool, metrics);
+    agentApiPool.startSweeper();
+    agentApiUnregs.push(
+      ...registerAgentApiRoutes(server.router, {
+        config,
+        db,
+        registry,
+        tokens,
+        log: logger("agent-api"),
+        metrics,
+        pool: agentApiPool,
+        orphans: agentApiOrphans,
+      }),
+    );
+    const retention = config.agent_api.inject.idempotency_retention_ms;
+    agentApiIdempotencySweep = setInterval(() => {
+      try {
+        db.sweepIdempotency(Date.now() - retention);
+      } catch (err) {
+        log.warn("idempotency sweep failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }, 60 * 60 * 1000);
+    (agentApiIdempotencySweep as unknown as { unref?: () => void }).unref?.();
+    log.info("agent_api routes registered", { tokens: tokens.length });
+  }
+
   // Transports.
   const webhookClients = new Map<string, TelegramClient>();
   const pollingClients = new Map<string, TelegramClient>();
@@ -190,6 +242,30 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   void runSweeper();
   const attachmentSweeperTimer = setInterval(() => void runSweeper(), 60 * 60 * 1000);
 
+  // Agent-API orphan-file sweep: catches the crash window between a
+  // multipart write and the DB commit. Only relevant when agent-api is
+  // enabled; we still schedule the timer so an operator toggling the
+  // flag at runtime isn't surprised by a build-up.
+  const runOrphanSweep = async (): Promise<void> => {
+    if (!config.agent_api?.enabled) return;
+    try {
+      const result = await sweepUnreferencedAgentApiFiles(
+        db,
+        config.gateway.data_dir,
+        24 * 60 * 60 * 1000,
+      );
+      if (result.deleted > 0) {
+        log.info("agent-api orphan sweep", result);
+      }
+    } catch (err) {
+      log.warn("agent-api orphan sweep failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+  const orphanSweeperTimer = setInterval(() => void runOrphanSweep(), 60 * 60 * 1000);
+  (orphanSweeperTimer as unknown as { unref?: () => void }).unref?.();
+
   let shutdownStarted = false;
   const running: RunningGateway = {
     server,
@@ -216,6 +292,17 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       try {
         clearInterval(backlogTimer);
         clearInterval(attachmentSweeperTimer);
+        clearInterval(orphanSweeperTimer);
+        if (agentApiIdempotencySweep) clearInterval(agentApiIdempotencySweep);
+
+        // Unregister agent-api routes so new calls 404 before we tear down.
+        for (const u of agentApiUnregs) {
+          try {
+            u();
+          } catch {
+            /* best-effort */
+          }
+        }
 
         // 1. Stop accepting new updates.
         await Promise.all(transports.map((t) => t.stop()));
@@ -233,8 +320,13 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
 
         streaming.stopAll();
 
-        // 3. Stop runners with per-runner grace.
+        // 3a. Tear down agent-api side sessions before the main runners
+        //     so ask handlers observe fatal events rather than hangs.
         const runnerGraceMs = config.shutdown.runner_grace_secs * 1000;
+        if (agentApiOrphans) agentApiOrphans.shutdown();
+        if (agentApiPool) await agentApiPool.shutdown(runnerGraceMs);
+
+        // 3. Stop main runners with per-runner grace.
         await registry.stopAll(runnerGraceMs);
 
         // 4. Server + DB.

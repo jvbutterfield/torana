@@ -4,9 +4,17 @@ A **runner** is the process that turns incoming messages into responses. torana 
 
 Three built-in runners ship with v1:
 
-- **`claude-code`** — wraps the Claude Code CLI.
-- **`codex`** — wraps the OpenAI Codex CLI.
+- **`claude-code`** — wraps the Claude Code CLI. Side-sessions: **yes**.
+- **`codex`** — wraps the OpenAI Codex CLI. Side-sessions: **yes**
+  (per-turn `codex exec resume`).
 - **`command`** — wraps any subprocess that speaks a simple line protocol.
+  Side-sessions: **no** in v1 (capability descriptors land in Phase 2c).
+
+Side-sessions are a distinct subprocess-per-(bot, session_id) pool that the
+[Agent API](agent-api.md) uses for synchronous `ask` requests. An `ask`
+against a runner that doesn't support them returns
+`501 runner_does_not_support_side_sessions`. `inject` works against every
+runner.
 
 Pick one per bot in your YAML. Different bots in the same gateway can use different runners — see [Hybrid configurations](#hybrid-configurations) below.
 
@@ -29,7 +37,7 @@ bots:
 
 ### What `pass_continue_flag` does
 
-When true (default), torana appends `--continue` to `args` on every spawn *except* the first-after-`reset()`. This preserves conversation history across spawns. Disable (`false`) for one-shot runners that should start fresh every turn.
+When true (default), torana appends `--continue` to `args` on every spawn *except* the first-after-`reset()` — including the first spawn after a gateway restart, so the on-disk Claude session resumes seamlessly across reboots. Disable (`false`) for one-shot runners that should start fresh every turn.
 
 ### Setting up Claude Code
 
@@ -70,7 +78,7 @@ Codex is **one-shot per turn**: each `sendTurn()` spawns a fresh `codex exec` (o
 
 ### What `pass_resume_flag` does
 
-When true (default), the runner captures the `thread_id` from each turn's `thread.started` event and passes `resume <thread_id>` on the next turn. This preserves Codex's session history across turns. `reset()` clears the captured thread id so the next turn starts a new session. Set false for one-shot runners that should always start fresh.
+When true (default), the runner captures the `thread_id` from each turn's `thread.started` event and passes `resume <thread_id>` on the next turn. The captured id is also persisted in `worker_state.codex_thread_id` so the first turn after a gateway restart resumes the same thread instead of starting fresh. `reset()` clears the captured thread id (in memory and in the DB) so the next turn starts a new session. Set false for one-shot runners that should always start fresh.
 
 ### Approval mode and sandbox
 

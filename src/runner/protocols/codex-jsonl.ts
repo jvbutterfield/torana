@@ -10,9 +10,17 @@
 
 import { logger } from "../../log.js";
 import type { RunnerEvent, TurnId } from "../types.js";
-import { createLineBufferedParser, type LineBufferedParser } from "./shared.js";
+import {
+  createLineBufferedParser,
+  type LineBufferedParser,
+  type ProtocolCapabilities,
+} from "./shared.js";
 
 const log = logger("codex-jsonl");
+
+export const codexJsonlCapabilities: ProtocolCapabilities = {
+  sideSessions: true,
+};
 
 export interface CodexJsonlParseOptions {
   /** Turn id currently in flight — attached to text/done/error events. */

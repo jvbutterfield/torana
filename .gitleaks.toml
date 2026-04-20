@@ -1,0 +1,21 @@
+# gitleaks config — extend the default ruleset, allowlist test fixtures.
+#
+# Test files (test/**/*.test.ts) intentionally contain fake bearer tokens,
+# idempotency keys, and session ids with recognizable prefixes like `tok-`,
+# `abcd-`, or synthetic hex strings — these trip gitleaks' entropy-based
+# `generic-api-key` rule. None are real credentials; they're inlined so
+# auth + idempotency-replay tests can run without shared fixtures.
+#
+# Scope is narrow: only test files are allowlisted. Real-secret detection
+# still applies everywhere else (src/, scripts/, docs/, examples/, and
+# the workflow directory) so an accidental paste in production code fails
+# CI as intended.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures under test/ are fake by construction"
+paths = [
+  '''test/.*\.test\.ts$''',
+]

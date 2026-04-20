@@ -1,5 +1,6 @@
--- torana v1 schema. Single source of truth — migrate.ts applies this on
--- fresh installs, and migrations/0001_persona_to_bot_id.sql upgrades v0.
+-- torana v2 schema. Single source of truth — migrate.ts applies this on
+-- fresh installs; migrations/0001_persona_to_bot_id.sql upgrades v0 →v1, and
+-- migrations/0002_agent_api.sql upgrades v1→v2.
 --
 -- Keep columns ordered logically. Indexes at the bottom.
 
@@ -28,7 +29,15 @@ CREATE TABLE IF NOT EXISTS turns (
   worker_generation      INTEGER,
   first_output_at        TEXT,
   last_output_at         TEXT,
-  error_text             TEXT
+  error_text             TEXT,
+  -- Agent API columns (NULL for telegram-origin rows).
+  source                 TEXT,                                 -- telegram | agent_api_ask | agent_api_inject
+  agent_api_token_name   TEXT,
+  agent_api_source_label TEXT,
+  final_text             TEXT,
+  idempotency_key        TEXT,
+  usage_json             TEXT,
+  duration_ms            INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS outbox (
@@ -55,7 +64,8 @@ CREATE TABLE IF NOT EXISTS worker_state (
   last_event_at        TEXT,
   last_ready_at        TEXT,
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
-  last_error           TEXT
+  last_error           TEXT,
+  codex_thread_id      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stream_state (
@@ -74,6 +84,40 @@ CREATE TABLE IF NOT EXISTS bot_state (
   updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Agent API tables.
+CREATE TABLE IF NOT EXISTS user_chats (
+  bot_id            TEXT    NOT NULL,
+  telegram_user_id  TEXT    NOT NULL,
+  chat_id           INTEGER NOT NULL,
+  last_inbound_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (bot_id, telegram_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_api_idempotency (
+  bot_id            TEXT    NOT NULL,
+  idempotency_key   TEXT    NOT NULL,
+  turn_id           INTEGER NOT NULL REFERENCES turns(id),
+  created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (bot_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS side_sessions (
+  bot_id            TEXT    NOT NULL,
+  session_id        TEXT    NOT NULL,
+  pid               INTEGER,
+  started_at        TEXT    NOT NULL,
+  last_used_at      TEXT    NOT NULL,
+  hard_expires_at   TEXT    NOT NULL,
+  state             TEXT    NOT NULL,  -- starting|ready|busy|stopping|stopped
+  PRIMARY KEY (bot_id, session_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_turns_bot_status   ON turns(bot_id, status);
 CREATE INDEX IF NOT EXISTS idx_outbox_status_next ON outbox(status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_bot_status ON inbound_updates(bot_id, status);
+CREATE INDEX IF NOT EXISTS idx_idempotency_created ON agent_api_idempotency(created_at);
+CREATE INDEX IF NOT EXISTS idx_turns_idempotency
+  ON turns(bot_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_inbound_bot_negid
+  ON inbound_updates(bot_id, telegram_update_id)
+  WHERE telegram_update_id < 0;

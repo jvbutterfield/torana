@@ -129,6 +129,55 @@ When off, `/metrics` returns 404.
 | `retention_secs` | int | `86400` |
 | `disk_usage_cap_bytes` | int | `1073741824` (1 GB) |
 
+### `agent_api` (optional block — opt-in HTTP surface)
+
+Bearer-authenticated `/v1/*` API that lets external processes drive bots via
+`ask` (sync) and `inject` (queue into Telegram chat). Full protocol in
+[`agent-api.md`](agent-api.md).
+
+```yaml
+agent_api:
+  enabled: true
+  tokens:
+    - name: ci-reviewer
+      secret_ref: ${TORANA_CI_TOKEN}       # env-interpolated bearer string
+      bot_ids: ["reviewer"]
+      scopes: ["ask", "inject"]
+  side_sessions:
+    idle_ttl_ms: 3600000        # 1h
+    hard_ttl_ms: 86400000       # 24h
+    max_per_bot: 8
+    max_global: 64
+  inject:
+    idempotency_retention_ms: 86400000
+  ask:
+    default_timeout_ms: 60000
+    max_timeout_ms: 300000
+    max_body_bytes: 104857600   # 100 MiB
+    max_files_per_request: 10
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `false` | When `false`, only `/v1/health` is served; all other `/v1/*` routes 404 |
+| `tokens[].name` | string | — | `^[a-z][a-z0-9_-]{0,63}$`; unique within the block |
+| `tokens[].secret_ref` | string | — | Non-empty after interpolation. SHA-256 hashed at load; raw value added to log redactor |
+| `tokens[].bot_ids` | string[] | — | Must reference configured bots (enforced by schema + doctor `C010`) |
+| `tokens[].scopes` | `(ask\|inject)[]` | — | Min length 1 |
+| `side_sessions.idle_ttl_ms` | int ≥ 60000 | `3600000` | Unused-for-this-long → reap |
+| `side_sessions.hard_ttl_ms` | int ≥ 60000 | `86400000` | Absolute lifetime; `idle_ttl_ms ≤ hard_ttl_ms` (doctor `C013`) |
+| `side_sessions.max_per_bot` | int 1..64 | `8` | |
+| `side_sessions.max_global` | int 1..512 | `64` | `max_per_bot ≤ max_global` (doctor `C013`) |
+| `inject.idempotency_retention_ms` | int ≥ 60000 | `86400000` | Sweeps hourly |
+| `ask.default_timeout_ms` | int 1000..300000 | `60000` | Clamped to `max_timeout_ms` on every request |
+| `ask.max_timeout_ms` | int 1000..300000 | `300000` | |
+| `ask.max_body_bytes` | int ≥ 4096 | `104857600` | Multipart aggregate cap |
+| `ask.max_files_per_request` | int 1..50 | `10` | |
+
+Pre-flight: `torana doctor` runs `C009..C014` against this block. See
+[`security.md`](security.md#agent-api-auth) for the auth model and
+[`agent-api.md`](agent-api.md) for endpoint-level details.
+
 ### `bots[]`
 | Key | Type | Required | Notes |
 |---|---|---|---|

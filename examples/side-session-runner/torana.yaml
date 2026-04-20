@@ -1,0 +1,46 @@
+# Side-session-capable command runner, demonstrating Phase 2c behavior.
+#
+# The runner speaks `claude-ndjson` so torana's CommandRunner will spawn a
+# dedicated long-lived subprocess per agent-API side-session (in addition to
+# the main subprocess that handles ordinary Telegram traffic). Side-session
+# subprocesses receive `TORANA_SESSION_ID=<sessionId>` in env; main does not.
+#
+# Hit the agent API's `POST /v1/bots/echo/ask` with `session_id: "demo"` and
+# you'll see the reply tagged `[demo#...]`; Telegram messages get tagged
+# `[main#...]`.
+
+version: 1
+
+gateway:
+  port: ${PORT:-3000}
+  data_dir: ./data
+  log_level: info
+
+transport:
+  default_mode: polling
+
+access_control:
+  allowed_user_ids: [${MY_TELEGRAM_USER_ID}]
+
+bots:
+  - id: echo
+    token: ${TELEGRAM_BOT_TOKEN}
+    commands:
+      - trigger: /reset
+        action: builtin:reset
+    runner:
+      # `claude-ndjson` (or `codex-jsonl`) unlocks side-session support on the
+      # command runner; `jsonl-text` does not (no session semantics in that
+      # protocol's envelope).
+      type: command
+      protocol: claude-ndjson
+      cmd: ["bun", "./session-runner.ts"]
+      on_reset: signal
+
+agent_api:
+  enabled: true
+  tokens:
+    - name: caller
+      secret_ref: ${AGENT_API_TOKEN}
+      bot_ids: ["echo"]
+      scopes: ["ask"]

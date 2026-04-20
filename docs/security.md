@@ -62,6 +62,39 @@ All calls use `telegram.api_base_url` (default `https://api.telegram.org`) over 
 - `npm audit --audit-level=high` is a release gate.
 - `gitleaks` runs on every PR.
 
+## Agent API auth
+
+Opt-in HTTP surface at `/v1/*`. Covered by a distinct set of guarantees on top
+of the main ACL / secret story above. Full protocol in
+[`agent-api.md`](agent-api.md); summary:
+
+- **Bearer tokens are the only authentication.** Network access controls
+  (TLS, firewall, VPN, reverse proxy) are the operator's responsibility —
+  `torana doctor` surfaces this as `C014`.
+- **SHA-256 + `timingSafeEqual`.** Tokens are hashed at load time and
+  compared constant-time; the raw value is added to the redaction set so
+  it never appears in logs.
+- **Per-bot scoping.** A token can only drive bots listed in its
+  `bot_ids` array. Requests to other bots return the same error shape as
+  "token invalid" — callers can't probe for bot existence.
+- **Per-scope gating.** `ask` and `inject` are distinct scopes; a token
+  scoped `["inject"]` cannot call `/v1/bots/:id/ask` (403).
+- **Inject ACL re-check.** Agent-API tokens authorize *bots*, not *users*.
+  The resolved `user_id` is re-validated against the bot's
+  `access_control.allowed_user_ids` before the turn is enqueued.
+- **No enumeration.** Turn lookups return a single `turn_not_found` code
+  regardless of the underlying cause (nonexistent, cross-caller,
+  telegram-origin). Rate-limit 403s and 429s uniformly.
+- **Attachment hardening.** Filenames are gateway-controlled
+  (`agentapi-<uuid>-<idx><ext>`); per-file, aggregate, count, and
+  disk-usage caps all enforced in `parseMultipartRequest`.
+- **Idempotency is a safety property**, not just a UX one — retrying an
+  `inject` under a flaky network cannot double-send.
+
+Doctor `C009..C014` catch the most common misconfigurations before the
+gateway starts accepting traffic; `torana doctor --server URL --token TOK`
+(`R001..R003`) probes a running gateway from the caller's side.
+
 ## Disclosure
 
 Security issues: email `security@` (setting up the alias — see GitHub for the most up-to-date contact), or use GitHub's private vulnerability reporting on this repo.

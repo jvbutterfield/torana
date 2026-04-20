@@ -105,6 +105,33 @@ describe("CLI parseArgs", () => {
     const a = parseArgs(["--help"]);
     expect(a.help).toBe(true);
   });
+
+  test("parses --server + --token for doctor remote mode", () => {
+    const a = parseArgs([
+      "doctor",
+      "--server",
+      "https://gw.example.com",
+      "--token",
+      "tok",
+    ]);
+    expect(a.server).toBe("https://gw.example.com");
+    expect(a.token).toBe("tok");
+  });
+
+  test("parses --server=URL and --token=TOK (equals form)", () => {
+    const a = parseArgs([
+      "doctor",
+      "--server=https://gw.example.com",
+      "--token=tok",
+    ]);
+    expect(a.server).toBe("https://gw.example.com");
+    expect(a.token).toBe("tok");
+  });
+
+  test("parses --profile", () => {
+    const a = parseArgs(["doctor", "--profile", "prod"]);
+    expect(a.profile).toBe("prod");
+  });
 });
 
 // --- CLI invocation (subprocess) ---
@@ -166,7 +193,7 @@ describe("CLI migrate --dry-run", () => {
     expect(exitCode).toBe(0);
     const plan = JSON.parse(stdout);
     expect(plan.currentVersion).toBeNull();
-    expect(plan.targetVersion).toBe(1);
+    expect(plan.targetVersion).toBe(3);
     expect(plan.steps.length).toBe(1);
     expect(plan.steps[0].id).toBe("fresh-install");
     // DB should NOT have been created.
@@ -178,12 +205,12 @@ describe("CLI migrate --dry-run", () => {
     applyMigrations(dbPath);
     const plan = planMigration(dbPath);
     expect(plan.steps).toHaveLength(0);
-    expect(plan.currentVersion).toBe(1);
+    expect(plan.currentVersion).toBe(3);
   });
 });
 
 describe("CLI migrate (apply)", () => {
-  test("creates fresh DB with v1 schema, exits 0", async () => {
+  test("creates fresh DB with current schema, exits 0", async () => {
     const cfg = writeConfig("torana.yaml", MINIMAL_CONFIG(tmpDir));
     const { exitCode } = await runCli(["migrate", "--config", cfg]);
     expect(exitCode).toBe(0);
@@ -191,7 +218,7 @@ describe("CLI migrate (apply)", () => {
     const dbPath = join(tmpDir, "gateway.db");
     expect(existsSync(dbPath)).toBe(true);
     const plan = planMigration(dbPath);
-    expect(plan.currentVersion).toBe(1);
+    expect(plan.currentVersion).toBe(3);
   }, 15_000);
 });
 
@@ -380,4 +407,31 @@ describe("CLI doctor (subprocess)", () => {
     // The getMe call will fail for the fake bot token → exit 1.
     expect(exitCode).not.toBe(0);
   }, 20_000);
+
+  test("--profile with an empty profile store exits 2", async () => {
+    // Override XDG_CONFIG_HOME to an empty tmpdir so we don't touch the
+    // developer's real ~/.config/torana during `bun test`. Phase 6b's
+    // doctor path should report 'profile not found' cleanly.
+    const xdg = mkdtempSync(join(tmpdir(), "torana-cli-empty-xdg-"));
+    try {
+      const { exitCode, stderr } = await runCli(
+        ["doctor", "--profile", "prod"],
+        { env: { XDG_CONFIG_HOME: xdg } },
+      );
+      expect(exitCode).toBe(2);
+      expect(stderr).toMatch(/profile 'prod' not found|no profile store available/);
+    } finally {
+      rmSync(xdg, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test("--server without --token exits 2", async () => {
+    const { exitCode, stderr } = await runCli([
+      "doctor",
+      "--server",
+      "http://127.0.0.1:0",
+    ]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("token");
+  }, 15_000);
 });

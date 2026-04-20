@@ -243,6 +243,9 @@ export async function processUpdate(
         attachmentPaths.length > 0 ? attachmentPaths : undefined,
       );
       db.setUpdateStatus(inboundId, "enqueued");
+      // Record the most-recent authorized chat for this (bot, user) so the
+      // agent-API inject handler can resolve `user_id → chat_id` later.
+      db.upsertUserChat(botConfig.id, String(fromUserId), chatId);
       return tid;
     });
   } catch (err) {

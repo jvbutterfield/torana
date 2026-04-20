@@ -1,9 +1,11 @@
 // DB schema migration dispatcher. Uses SQLite's PRAGMA user_version.
 //
 // States this dispatcher handles:
-//   - Fresh install: DB doesn't exist or has no tables. Apply schema.sql, set user_version=1.
-//   - v0 upgrade: DB has inbound_updates with a `persona` column. Apply 0001 migration.
-//   - v1 current: user_version=1 — no-op.
+//   - Fresh install: DB doesn't exist or has no tables. Apply schema.sql, set user_version=TARGET.
+//   - v0 upgrade: DB has inbound_updates with a `persona` column. Apply 0001 + 0002 + 0003.
+//   - v1 upgrade: DB has bot_id but no agent_api tables. Apply 0002 + 0003.
+//   - v2 upgrade: DB has agent_api tables but no codex_thread_id column. Apply 0003.
+//   - v3 current: user_version=3 — no-op.
 //
 // Migration is idempotent: running twice is a no-op. Failure rolls back the
 // transaction; next run re-applies from scratch.
@@ -79,19 +81,49 @@ export function detectVersion(db: Database): number | null {
   throw new Error(`unknown schema: inbound_updates has neither bot_id nor persona column`);
 }
 
+const TARGET_VERSION = 3;
+
+const STEP_0001: MigrationStep = {
+  id: "0001_persona_to_bot_id",
+  description: "Rename persona → bot_id, remap inbound_updates.status, rebuild indexes",
+  // sql is resolved lazily because the migrations/ dir may not ship in some
+  // builds; readMigrationSql throws a descriptive error if missing.
+  get sql(): string {
+    return readMigrationSql("0001_persona_to_bot_id.sql");
+  },
+} as unknown as MigrationStep;
+
+const STEP_0002: MigrationStep = {
+  id: "0002_agent_api",
+  description: "Add agent_api tables + turns columns",
+  get sql(): string {
+    return readMigrationSql("0002_agent_api.sql");
+  },
+} as unknown as MigrationStep;
+
+const STEP_0003: MigrationStep = {
+  id: "0003_runner_session_resume",
+  description: "Add worker_state.codex_thread_id for cross-restart Codex resume",
+  get sql(): string {
+    return readMigrationSql("0003_runner_session_resume.sql");
+  },
+} as unknown as MigrationStep;
+
+function freshInstallStep(): MigrationStep {
+  return {
+    id: "fresh-install",
+    description: `Apply v${TARGET_VERSION} schema.sql and set user_version=${TARGET_VERSION}`,
+    sql: readSchemaSql() + `\nPRAGMA user_version = ${TARGET_VERSION};`,
+  };
+}
+
 export function planMigration(dbPath: string): MigrationPlan {
   const dbExists = existsSync(dbPath);
   if (!dbExists) {
     return {
       currentVersion: null,
-      targetVersion: 1,
-      steps: [
-        {
-          id: "fresh-install",
-          description: "Apply v1 schema.sql and set user_version=1",
-          sql: readSchemaSql() + "\nPRAGMA user_version = 1;",
-        },
-      ],
+      targetVersion: TARGET_VERSION,
+      steps: [freshInstallStep()],
     };
   }
 
@@ -101,40 +133,50 @@ export function planMigration(dbPath: string): MigrationPlan {
     if (version === null) {
       return {
         currentVersion: null,
-        targetVersion: 1,
-        steps: [
-          {
-            id: "fresh-install",
-            description: "Empty DB — apply v1 schema.sql and set user_version=1",
-            sql: readSchemaSql() + "\nPRAGMA user_version = 1;",
-          },
-        ],
+        targetVersion: TARGET_VERSION,
+        steps: [freshInstallStep()],
+      };
+    }
+    if (version === TARGET_VERSION) {
+      return { currentVersion: version, targetVersion: TARGET_VERSION, steps: [] };
+    }
+    if (version === 2) {
+      return {
+        currentVersion: 2,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0003],
       };
     }
     if (version === 1) {
-      return { currentVersion: 1, targetVersion: 1, steps: [] };
+      return {
+        currentVersion: 1,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0002, STEP_0003],
+      };
     }
     if (version === 0) {
       return {
         currentVersion: 0,
-        targetVersion: 1,
-        steps: [
-          {
-            id: "0001_persona_to_bot_id",
-            description: "Rename persona → bot_id, remap inbound_updates.status, rebuild indexes",
-            sql: readMigrationSql("0001_persona_to_bot_id.sql"),
-          },
-        ],
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0001, STEP_0002, STEP_0003],
       };
     }
-    throw new Error(`unsupported schema version: ${version} (this binary knows up to 1)`);
+    throw new Error(
+      `unsupported schema version: ${version} (this binary knows up to ${TARGET_VERSION})`,
+    );
   } finally {
     db.close();
   }
 }
 
 export interface ApplyOptions {
-  /** When true, take a snapshot at dbPath+".pre-v<current+1>" before the v0→v1 migration. */
+  /**
+   * When true, take a snapshot at dbPath+".pre-v<target>" before applying any
+   * upgrade to an existing DB. Back-compat alias `snapshotV0Upgrade` also
+   * honoured. Default false.
+   */
+  snapshotOnAnyUpgrade?: boolean;
+  /** @deprecated use {@link snapshotOnAnyUpgrade} — kept for back-compat. */
   snapshotV0Upgrade?: boolean;
 }
 
@@ -146,9 +188,11 @@ export function applyMigrations(dbPath: string, opts: ApplyOptions = {}): Migrat
     return plan;
   }
 
-  // Snapshot v0 before touching it — this must happen before WAL sidecars appear.
-  if (plan.currentVersion === 0 && opts.snapshotV0Upgrade) {
-    const snapshotPath = `${dbPath}.pre-v1`;
+  const wantSnapshot =
+    opts.snapshotOnAnyUpgrade ?? opts.snapshotV0Upgrade ?? false;
+  // Only snapshot when upgrading an existing DB — fresh installs have nothing to restore.
+  if (wantSnapshot && plan.currentVersion !== null) {
+    const snapshotPath = `${dbPath}.pre-v${plan.targetVersion}`;
     if (!existsSync(snapshotPath)) {
       copyFileSync(dbPath, snapshotPath);
       for (const suffix of ["-wal", "-shm"]) {

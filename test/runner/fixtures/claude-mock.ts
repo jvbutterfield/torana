@@ -12,8 +12,13 @@ export {}; // mark as module so top-level declarations are module-scoped
 //   auth-fail        — write "Error: not logged in" to stderr, exit 1.
 //   stubborn         — ignore SIGTERM; must be SIGKILLed.
 //   slow-start       — delay emitting system init by 400ms.
+//   slow-echo        — like `normal` but waits 500ms before emitting the result.
 //   replay-continue  — emit system init with current argv joined (so tests can
 //                       inspect whether --continue was passed).
+//   very-slow        — 2s delay before result (used for 202 timeout tests
+//                       where AskBodySchema enforces min timeout_ms=1000).
+//   error-turn       — ready, then on every turn emit a `result` with
+//                       is_error=true so the runner emits `{kind:"error"}`.
 
 const mode = process.argv[2] ?? "normal";
 
@@ -84,6 +89,23 @@ async function main(): Promise<void> {
           delta: { type: "text_delta", text: `echo: ${content}` },
         },
       });
+      if (mode === "slow-echo") {
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (mode === "very-slow") {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (mode === "error-turn") {
+        // Parser maps is_error=true result to a `{kind:"error"}` event.
+        emit({
+          type: "result",
+          is_error: true,
+          result: "runner refused the turn",
+          duration_ms: 1,
+          stop_reason: "error",
+        });
+        continue;
+      }
       // result → emits `done`
       emit({
         type: "result",

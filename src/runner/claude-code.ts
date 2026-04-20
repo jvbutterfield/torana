@@ -1,6 +1,7 @@
 // ClaudeCodeRunner — wraps `claude --print --output-format stream-json ...`
 // and translates its NDJSON into RunnerEvent.
 
+import { randomUUID } from "node:crypto";
 import { spawn, type Subprocess } from "bun";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -10,7 +11,11 @@ import type { BotId, ClaudeCodeRunnerConfig } from "../config/schema.js";
 import { logger, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
+  InvalidSideSessionId,
   RunnerEventEmitter,
+  SIDE_SESSION_ID_REGEX,
+  SideSessionAlreadyExists,
+  SideSessionNotFound,
   type AgentRunner,
   type RunnerEvent,
   type RunnerEventHandler,
@@ -20,7 +25,10 @@ import {
   type TurnId,
   type Unsubscribe,
 } from "./types.js";
-import { createClaudeNdjsonParser } from "./protocols/claude-ndjson.js";
+import {
+  createClaudeNdjsonParser,
+  type ClaudeNdjsonParser,
+} from "./protocols/claude-ndjson.js";
 import { encodeClaudeNdjsonTurn } from "./protocols/shared.js";
 
 const DEFAULT_STARTUP_MS = 2_000;
@@ -46,6 +54,29 @@ export interface ClaudeCodeRunnerOptions {
   protocolFlags?: string[];
 }
 
+interface ClaudeSideSession {
+  id: string;
+  /**
+   * The UUID passed to `claude --session-id`. The pool's `sessionId`
+   * (e.g. `eph-<uuid>` or a caller-chosen name) is permitted to be any
+   * `[A-Za-z0-9_-]{1,64}`, but Claude CLI 2.1+ rejects non-UUID values.
+   * We mint a fresh UUID per startSideSession and store it here so
+   * stopSideSession and any subsequent respawn refer to the same
+   * on-disk Claude session-file. See §12.4 ask-claude E2E.
+   */
+  claudeUuid: string;
+  emitter: RunnerEventEmitter;
+  proc: Subprocess<"pipe", "pipe", "pipe"> | null;
+  logStream: WriteStream | null;
+  status: "starting" | "ready" | "busy" | "stopping" | "stopped";
+  activeTurn: TurnId | null;
+  stopping: boolean;
+  stopPromise: Promise<void> | null;
+  readyPromise: Promise<void> | null;
+  resolveReady: (() => void) | null;
+  rejectReady: ((err: Error) => void) | null;
+}
+
 export class ClaudeCodeRunner implements AgentRunner {
   readonly botId: BotId;
   private config: ClaudeCodeRunnerConfig;
@@ -65,6 +96,9 @@ export class ClaudeCodeRunner implements AgentRunner {
   private stopping = false;
   private startupMs: number;
   private protocolFlags: readonly string[];
+
+  // Side-session state — separate subprocesses, separate emitters.
+  private sideSessions = new Map<string, ClaudeSideSession>();
 
   constructor(opts: ClaudeCodeRunnerOptions) {
     this.botId = opts.botId;
@@ -152,6 +186,295 @@ export class ClaudeCodeRunner implements AgentRunner {
     // watchExit will pick up pendingFreshSession and respawn without --continue.
   }
 
+  // ---------- Side sessions ----------
+  //
+  // A side-session runs as its own subprocess with `--session-id <id>` so the
+  // Claude CLI maintains a separate session-file on disk. Each side-session
+  // owns its own emitter; events parsed from its stdout are routed *only* to
+  // that emitter — never to the main runner's emitter.
+
+  supportsSideSessions(): boolean {
+    return true;
+  }
+
+  async startSideSession(sessionId: string): Promise<void> {
+    if (!SIDE_SESSION_ID_REGEX.test(sessionId)) {
+      throw new InvalidSideSessionId(sessionId);
+    }
+    if (this.sideSessions.has(sessionId)) {
+      throw new SideSessionAlreadyExists(sessionId);
+    }
+
+    await this.ensureLogDir(this.logDir);
+
+    const entry: ClaudeSideSession = {
+      id: sessionId,
+      claudeUuid: randomUUID(),
+      emitter: new RunnerEventEmitter(),
+      proc: null,
+      logStream: null,
+      status: "starting",
+      activeTurn: null,
+      stopping: false,
+      stopPromise: null,
+      readyPromise: null,
+      resolveReady: null,
+      rejectReady: null,
+    };
+    entry.readyPromise = new Promise<void>((resolve, reject) => {
+      entry.resolveReady = resolve;
+      entry.rejectReady = reject;
+    });
+    this.sideSessions.set(sessionId, entry);
+
+    try {
+      const argv = [
+        this.config.cli_path,
+        ...this.protocolFlags,
+        ...this.config.args,
+        "--session-id",
+        entry.claudeUuid,
+      ];
+      entry.proc = this.spawnImpl({
+        cmd: argv,
+        cwd: this.config.cwd ?? process.cwd(),
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: this.buildEnv(),
+      }) as Subprocess<"pipe", "pipe", "pipe">;
+      entry.logStream = createWriteStream(
+        resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
+        { flags: "a" },
+      );
+      entry.logStream.on("error", (err: Error) => {
+        this.log.warn("side-session logStream error", {
+          bot_id: this.botId,
+          session_id: sessionId,
+          error: err.message,
+        });
+      });
+
+      void this.pumpSideStdout(entry);
+      void this.pumpSideStderr(entry);
+      void this.watchSideExit(entry);
+
+      // Ready gate: either the parser fires {kind:"ready"} via dispatchSide,
+      // or we fall back after startupMs.
+      const timer = setTimeout(() => {
+        if (entry.status === "starting") {
+          entry.status = "ready";
+          entry.emitter.emit({ kind: "ready" });
+          entry.resolveReady?.();
+        }
+      }, this.startupMs);
+      (timer as unknown as { unref?: () => void }).unref?.();
+
+      await entry.readyPromise;
+    } catch (err) {
+      // Spawn/setup failure: scrub the entry so pool retry works cleanly.
+      entry.status = "stopped";
+      try {
+        entry.proc?.kill();
+      } catch {
+        /* already dead */
+      }
+      try {
+        entry.logStream?.end();
+      } catch {
+        /* best-effort */
+      }
+      this.sideSessions.delete(sessionId);
+      throw err;
+    }
+  }
+
+  sendSideTurn(
+    sessionId: string,
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult {
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry || entry.status === "stopping" || entry.status === "stopped") {
+      return { accepted: false, reason: "not_ready" };
+    }
+    // Check busy BEFORE readiness — a session that's mid-turn has status='busy'
+    // but the caller needs 'busy' surfaced, not 'not_ready'.
+    if (entry.activeTurn !== null) {
+      return { accepted: false, reason: "busy" };
+    }
+    if (entry.status !== "ready" || !entry.proc) {
+      return { accepted: false, reason: "not_ready" };
+    }
+
+    try {
+      entry.proc.stdin.write(encodeClaudeNdjsonTurn(text, attachments));
+      entry.proc.stdin.flush();
+    } catch (err) {
+      this.log.warn("side-session stdin write failed", {
+        session_id: sessionId,
+        error: String(err),
+      });
+      return { accepted: false, reason: "not_ready" };
+    }
+
+    entry.activeTurn = turnId;
+    entry.status = "busy";
+    return { accepted: true, turnId };
+  }
+
+  async stopSideSession(sessionId: string, graceMs = 5000): Promise<void> {
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry) return;
+    if (entry.stopPromise) return entry.stopPromise;
+
+    entry.stopping = true;
+    entry.status = "stopping";
+    entry.stopPromise = (async () => {
+      const proc = entry.proc;
+      if (proc) {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        const killer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            /* ok */
+          }
+        }, graceMs);
+        (killer as unknown as { unref?: () => void }).unref?.();
+        try {
+          await proc.exited;
+        } catch {
+          /* ignore */
+        }
+        clearTimeout(killer);
+      }
+      try {
+        entry.logStream?.end();
+      } catch {
+        /* ok */
+      }
+      entry.proc = null;
+      entry.logStream = null;
+      entry.status = "stopped";
+      this.sideSessions.delete(sessionId);
+    })();
+    return entry.stopPromise;
+  }
+
+  onSide<E extends RunnerEventKind>(
+    sessionId: string,
+    event: E,
+    handler: RunnerEventHandler<E>,
+  ): Unsubscribe {
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry) throw new SideSessionNotFound(sessionId);
+    return entry.emitter.on(event, handler);
+  }
+
+  private async pumpSideStdout(entry: ClaudeSideSession): Promise<void> {
+    const proc = entry.proc;
+    if (!proc) return;
+    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const parser: ClaudeNdjsonParser = createClaudeNdjsonParser({
+      currentTurnId: () => entry.activeTurn,
+    });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        entry.logStream?.write(chunk);
+        parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
+      }
+      parser.flush((ev) => this.dispatchSide(entry, ev));
+    } catch (err) {
+      if (!entry.stopping) {
+        this.log.warn("side-session stdout read error", {
+          session_id: entry.id,
+          error: String(err),
+        });
+      }
+    }
+  }
+
+  private async pumpSideStderr(entry: ClaudeSideSession): Promise<void> {
+    const proc = entry.proc;
+    if (!proc) return;
+    const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        entry.logStream?.write(`[stderr] ${text}`);
+      }
+    } catch {
+      /* expected on exit */
+    }
+  }
+
+  private async watchSideExit(entry: ClaudeSideSession): Promise<void> {
+    const proc = entry.proc;
+    if (!proc) return;
+    const code = await proc.exited;
+    if (entry.proc !== proc) return;
+    try {
+      entry.logStream?.end();
+    } catch {
+      /* ok */
+    }
+    entry.proc = null;
+    entry.logStream = null;
+
+    if (entry.stopping) {
+      // Expected teardown path — stopSideSession handles state transitions.
+      return;
+    }
+
+    // Unexpected exit: route fatal to the side-session emitter only, never
+    // to the main runner's emitter. Also fail any in-flight ready promise.
+    entry.status = "stopped";
+    entry.activeTurn = null;
+    if (entry.resolveReady) {
+      entry.rejectReady?.(
+        new Error(`claude side-session subprocess exited before ready (code=${code})`),
+      );
+      entry.resolveReady = null;
+      entry.rejectReady = null;
+    }
+    entry.emitter.emit({
+      kind: "fatal",
+      code: "exit",
+      message: `claude side-session subprocess exited with code ${code}`,
+    });
+  }
+
+  private dispatchSide(entry: ClaudeSideSession, ev: RunnerEvent): void {
+    if (ev.kind === "ready" && entry.status === "starting") {
+      entry.status = "ready";
+      entry.emitter.emit(ev);
+      entry.resolveReady?.();
+      entry.resolveReady = null;
+      entry.rejectReady = null;
+      return;
+    }
+    if (ev.kind === "done" || ev.kind === "error") {
+      // The parser emits done/error with the turnId from currentTurnId; that
+      // maps to entry.activeTurn by construction.
+      entry.activeTurn = null;
+      if (entry.status === "busy") entry.status = "ready";
+    }
+    entry.emitter.emit(ev);
+  }
+
   sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {
     // Order matters: a runner mid-turn has status "busy", and the caller
     // needs to distinguish that from "hasn't finished starting yet".
@@ -185,6 +508,12 @@ export class ClaudeCodeRunner implements AgentRunner {
     const logPath = resolve(this.logDir, `${this.botId}.log`);
     await this.ensureLogDir(dirname(logPath));
     this.logStream = createWriteStream(logPath, { flags: "a" });
+    this.logStream.on("error", (err: Error) => {
+      this.log.warn("runner logStream error", {
+        bot_id: this.botId,
+        error: err.message,
+      });
+    });
 
     const fresh = this.pendingFreshSession;
     this.pendingFreshSession = false;
