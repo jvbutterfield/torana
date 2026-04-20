@@ -13,27 +13,39 @@ tests, plus **Phase 8** (§12.10 error-path coverage matrix — 1 gap
 closed in `src/server.ts` + 93 new tests including a drift-guard that
 enforces the matrix going forward), plus **Phase 9** (§12.5 security
 matrix — all 30 matrix files under `test/security/agent-api/` + 151
-new tests + a manifest drift-guard). Full suite: **1138 pass / 4 skip
-/ 0 fail.** Remaining work is the real-binary E2E + soak + release
-mechanics — no more implementation.
+new tests + a manifest drift-guard), plus **Phase 10** (§12.4 E2E
+matrix — 4 matrix files under `test/e2e/agent-api/` + manifest guard +
+a real production fix for Claude CLI 2.1 UUID validation in
+`--session-id`). Default suite: **1142 pass / 12 skip / 0 fail**. E2E
+suite (`AGENT_API_E2E=1`): **10 pass / 1 skip / 0 fail** in ~30s; the
+skip is `inject-claude` which additionally needs Telegram sandbox
+creds. Remaining work is the 24h soak + release mechanics — no more
+implementation.
 
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `54b2261` (Phase 9 pin);
-   last implementation commit `4ec673f` (Phase 9 — security matrix,
-   tests only, no production code changed);
-   last test commit `4ec673f` (Phase 9 added 151 tests).
-   43 commits ahead of `main`.
+   `<PIN>` (Phase 10 pin);
+   last implementation commit `<PHASE10>` (Phase 10 — Claude UUID
+   fix in `src/runner/claude-code.ts` + E2E matrix + UUID regression
+   test);
+   last test commit `<PHASE10>` (Phase 10 added 15 tests: 10 E2E +
+   3 manifest guards + 1 UUID regression + 1 existing count delta).
+   46 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **1138 pass / 4 skip / 0 fail**. Two tests
-     (`CodexRunner side-sessions > after startSideSession resolves...`
-     and `threadId resume continuity > first turn has no resume...`)
-     are mildly flaky under full suite runs due to `queueMicrotask`
-     timing; re-run if they trip.
+   - `bun test` — expect **1142 pass / 12 skip / 0 fail**. The 12
+     skips are all E2E-gated (4 `CODEX_E2E=1` runner tests + 8 `AGENT_API_E2E=1`
+     agent-api tests). Two tests (`CodexRunner side-sessions > after
+     startSideSession resolves...` and `threadId resume continuity >
+     first turn has no resume...`) are mildly flaky under full suite
+     runs due to `queueMicrotask` timing; re-run if they trip.
    - `bun x tsc --noEmit` — expect clean (no output).
+   - `AGENT_API_E2E=1 bun test test/e2e/agent-api/` — expect
+     **10 pass / 1 skip / 0 fail** in ~30s. The skip is
+     `inject-claude` (needs `TELEGRAM_TEST_BOT_TOKEN` +
+     `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`).
 3. **Remaining work** — only pre-release validation is left:
-   - `AGENT_API_E2E=1 bun test` against real `claude` + `codex` binaries.
+   - ~~`AGENT_API_E2E=1` against real binaries~~ ✅ done in Phase 10.
    - A 24h `AGENT_API_SOAK=1` run.
    - ~~Impl-plan §12.5 security matrix~~ ✅ done in Phase 9.
    - ~~Impl-plan §12.10 error-path coverage matrix~~ ✅ done in Phase 8.
@@ -164,6 +176,7 @@ mechanics — no more implementation.
 | 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
 | 8 — §12.10 error-path coverage matrix | ✅ Complete (`799caad`) | US-015 | Closed the one gap in §12.10: `method_not_allowed` had zero emission sites + zero test assertions. Fix in `src/server.ts` — `/v1/*` paths now return canonical JSON `{error, message}` on 405 (non-`/v1/*` paths keep the plain-text 405 for backwards compat — no agent-api coupling at the transport layer). **93 new tests**: 6 in `test/server/router.method.test.ts` (PUT/PATCH against /v1/*, unregistered /v1 path, non-/v1 plain-text preserved, statusFor drift-guard, GET 200 no-regression) + 87 in `test/agent-api/errors.coverage.test.ts` (the matrix drift-guard itself: 29 codes × 3 invariants — `statusFor` returns a valid 4xx/5xx, emitted from ≥1 src file, asserted by ≥1 test). The coverage test parses `STATUS_MAP` out of `errors.ts` so new codes are auto-included; `method_not_allowed` is whitelisted to `src/server.ts` since its emission site is at the transport layer. Full suite: **987 pass / 4 skip / 0 fail**. |
 | 9 — §12.5 security matrix | ✅ Complete (`4ec673f`) | US-015 | All 30 matrix files under `test/security/agent-api/`, backed by a shared `_harness.ts` (spins up a real HTTP server + GatewayDB + stubbed pool/orphans/registry). **151 new tests across 31 files** (30 matrix + 1 manifest drift-guard): auth (no-header / wrong-scheme / wrong-token / timing / case-mutation / log-redaction — 6 files), authz (wrong-bot / wrong-scope / enumeration-resistance / admin-scope — 4), input validation (huge-body / zip-bomb / path-traversal / null-byte / source-label / idempotency-key-injection / yaml-bomb / marker-injection — 8), resource exhaustion (side-session-flood against real pool / disk-fill via `computeDiskUsage` injection / slow-loris behavioural pin / idempotency-store-bloat with 10k seeded rows + sweep timing — 4), injection class (chat-forgery / acl-bypass / cross-bot / idempotency-reuse-different-content / runner-prompt-injection — 5), disclosure (error-body / metrics-labels — verifies scrape output has only `bot_id/status/result/reason/outcome/replay/route/mode/le` labels / logs — end-to-end log capture with secret + URL-pattern redaction — 3). `_manifest.test.ts` pins the file list against the matrix in impl-plan §12.5; new rows must add both a test file and a manifest entry. No production code changed. Full suite: **1138 pass / 4 skip / 0 fail**. |
+| 10 — §12.4 E2E matrix + claude UUID fix | ✅ Complete (`<PIN>`) | US-015 | `test/e2e/agent-api/` created — 4 matrix files + 1 manifest drift-guard + shared `_harness.ts` (real `startGateway()` + `ClaudeCodeRunner`/`CodexRunner` + optional FakeTelegram). The suite is gated by `AGENT_API_E2E=1`; `inject-claude.test.ts` additionally needs `TELEGRAM_TEST_BOT_TOKEN` + `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`. Running `AGENT_API_E2E=1 bun test test/e2e/agent-api/` yields **10 pass / 1 skip / 0 fail in ~30s**. **Production fix discovered + landed**: Claude CLI 2.1+ validates `--session-id` as a strict UUID and rejects the pool's `eph-<uuid>` / caller-named IDs (which match `^[A-Za-z0-9_-]{1,64}$` only). `ClaudeCodeRunner` now mints a fresh UUID per `startSideSession` (stored on the entry as `claudeUuid`) and passes that to the CLI; the pool's `sessionId` remains the public API. Regression test in `test/runner/claude-code.side-session.test.ts` pins the substitution. Also: `_harness.ts` exports `inheritedEnv()` because claude + codex auth needs more than HOME + PATH in the subprocess (keychain, XDG_*); E2E runners inherit the full test env. Non-E2E suite: **1142 pass / 12 skip / 0 fail** (+4 from phase: manifest guard + UUID regression + pre-existing). |
 
 ---
 

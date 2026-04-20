@@ -273,6 +273,54 @@ describe("ClaudeCodeRunner side-sessions", () => {
     }
   });
 
+  test("claude --session-id receives a UUID, not the pool's sessionId (CLI 2.1+ compat)", async () => {
+    // Regression guard for §12.4 ask-claude E2E. Claude CLI 2.1+
+    // rejects non-UUID values with `Invalid session ID. Must be a
+    // valid UUID.` The pool's sessionId can be any
+    // [A-Za-z0-9_-]{1,64} (commonly `eph-<uuid>`), so the runner
+    // mints a fresh UUID per startSideSession and passes that to
+    // --session-id. The public API still uses the pool's sessionId.
+    const captured: string[][] = [];
+    const r = new ClaudeCodeRunner({
+      botId: "alpha",
+      config: makeConfig("normal"),
+      logDir: tmpDir,
+      protocolFlags: [],
+      startupMs: 100,
+      spawnImpl: ((opts: Parameters<typeof import("bun").spawn>[0]) => {
+        const cmd = (opts as { cmd?: unknown }).cmd;
+        if (Array.isArray(cmd)) captured.push([...cmd] as string[]);
+        // Delegate to real spawn so the rest of the runner machinery
+        // works. We just snoop the argv.
+        return (require("bun") as typeof import("bun")).spawn(opts);
+      }) as never,
+    });
+    await r.start();
+    try {
+      const poolSessionId = "eph-not-a-uuid-prefix-123";
+      await r.startSideSession(poolSessionId);
+      try {
+        // Find the side-session argv (second spawn call; first is main.start).
+        const sideArgv = captured.find(
+          (cmd) => cmd.includes("--session-id"),
+        );
+        expect(sideArgv).toBeDefined();
+        const idx = sideArgv!.indexOf("--session-id");
+        const passedId = sideArgv![idx + 1]!;
+        // Must NOT echo the pool's session id (which is not UUID-shaped).
+        expect(passedId).not.toBe(poolSessionId);
+        // Must match a UUID v4 shape (hex blocks separated by dashes).
+        expect(passedId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+        );
+      } finally {
+        await r.stopSideSession(poolSessionId, 500);
+      }
+    } finally {
+      await r.stop(500);
+    }
+  });
+
   test("spawn failure leaves no phantom entry in the sideSessions map", async () => {
     const r = new ClaudeCodeRunner({
       botId: "alpha",

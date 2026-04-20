@@ -1,6 +1,7 @@
 // ClaudeCodeRunner — wraps `claude --print --output-format stream-json ...`
 // and translates its NDJSON into RunnerEvent.
 
+import { randomUUID } from "node:crypto";
 import { spawn, type Subprocess } from "bun";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -55,6 +56,15 @@ export interface ClaudeCodeRunnerOptions {
 
 interface ClaudeSideSession {
   id: string;
+  /**
+   * The UUID passed to `claude --session-id`. The pool's `sessionId`
+   * (e.g. `eph-<uuid>` or a caller-chosen name) is permitted to be any
+   * `[A-Za-z0-9_-]{1,64}`, but Claude CLI 2.1+ rejects non-UUID values.
+   * We mint a fresh UUID per startSideSession and store it here so
+   * stopSideSession and any subsequent respawn refer to the same
+   * on-disk Claude session-file. See §12.4 ask-claude E2E.
+   */
+  claudeUuid: string;
   emitter: RunnerEventEmitter;
   proc: Subprocess<"pipe", "pipe", "pipe"> | null;
   logStream: WriteStream | null;
@@ -199,6 +209,7 @@ export class ClaudeCodeRunner implements AgentRunner {
 
     const entry: ClaudeSideSession = {
       id: sessionId,
+      claudeUuid: randomUUID(),
       emitter: new RunnerEventEmitter(),
       proc: null,
       logStream: null,
@@ -222,7 +233,7 @@ export class ClaudeCodeRunner implements AgentRunner {
         ...this.protocolFlags,
         ...this.config.args,
         "--session-id",
-        sessionId,
+        entry.claudeUuid,
       ];
       entry.proc = this.spawnImpl({
         cmd: argv,
