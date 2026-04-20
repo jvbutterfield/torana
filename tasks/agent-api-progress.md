@@ -12,8 +12,9 @@ CommandRunner side-session pass and the pre-release E2E gates.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` — tip is this tracker-pin commit; last
-   phase commit `7b62e1c` (Phase 6b). 28 commits ahead of `main`.
+1. `git checkout feat/agent-api` — tip commit `cd44c83` (Phase 6b
+   placeholder-fix polish); last phase commit `7b62e1c` (Phase 6b).
+   30 commits ahead of `main`.
 2. Sanity-check before touching anything:
    - `bun test` — expect **843 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
@@ -140,11 +141,12 @@ CommandRunner side-session pass and the pre-release E2E gates.
 
 ---
 
-## What's done — feat/agent-api branch (28 commits)
+## What's done — feat/agent-api branch (30 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+cd44c83 agent-api: replace pin-commit placeholder with 73a043d
 73a043d agent-api: pin Phase 6b commit hash in progress tracker
 7b62e1c agent-api phase 6b: profile store + @- stdin + skills + codex plugin (US-018, US-019, US-020)
 b3536ac agent-api: polish progress tracker for next-session handoff
