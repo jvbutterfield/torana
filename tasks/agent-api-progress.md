@@ -12,9 +12,9 @@ side-sessions, lower priority).
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (last phase commit `23abefd` — Phase 7; 22 commits ahead of `main`).
+1. `git checkout feat/agent-api` (last phase commit `23abefd` — Phase 7; tip commit `adfbcc4` is the Phase 7 gap-fill, 24 commits ahead of `main`).
 2. Sanity-check before touching anything:
-   - `bun test` — expect **691 pass / 4 skip / 0 fail**.
+   - `bun test` — expect **719 pass / 4 skip / 0 fail**.
    - `bun x tsc --noEmit` — expect clean (no output).
 3. **Pick the next branch (durable note — Phase 7 just landed):**
    - **Phase 6b (CLI polish, RECOMMENDED)** — profile store
@@ -80,14 +80,17 @@ side-sessions, lower priority).
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
 | 6b — CLI follow-ups + skills | ⏳ Pending | US-018 (rest) US-019 US-020 | Profile store, `@-` stdin, `skills install`, Codex plugin, `doctor --profile NAME` resolver |
 | 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
+| 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
 
 ---
 
-## What's done — feat/agent-api branch (22 commits)
+## What's done — feat/agent-api branch (24 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+adfbcc4 agent-api phase 7 gap-fill: handler failure paths + orphan metrics + scrape integration (US-015, US-016)
+88eaf3d agent-api: pin Phase 7 commit hash in progress tracker
 23abefd agent-api phase 7: observability + doctor + docs (US-015, US-016, US-017)
 b008991 agent-api: pin gap-fill commit hash in progress tracker
 76cab87 agent-api: PRD-gap test pass + invalid_timeout + load.ts warning fix
@@ -112,7 +115,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 691 pass / 4 skip / 0 fail.** Coverage at a glance:
+**Full test suite: 719 pass / 4 skip / 0 fail.** Coverage at a glance:
 
 - **Ask round-trip (Claude)** — JSON + multipart through real HTTP →
   bearer auth → `SideSessionPool` → `ClaudeCodeRunner` (mock binary)
@@ -698,6 +701,98 @@ Behavior chosen during implementation (not in plan):
   Phase-6b message and `doctor --server URL` without a token exits 2.
 - [test/docs/agent-api.test.ts](../test/docs/agent-api.test.ts) (+16)
   — the doc-shape guards listed above.
+
+### Commit `adfbcc4` — Phase 7 gap-fill (quality-review pass)
+
+Post-Phase-7 audit surfaced several untested failure paths + one real
+observability hole. All addressed in this commit.
+
+- **Handler failure-path metrics** ([test/agent-api/handlers.metrics.test.ts](../test/agent-api/handlers.metrics.test.ts) +7).
+  Ask 202 timeout via new `very-slow` claude-mock mode (2s delay) +
+  timeout_ms=1000 — asserts ask_requests_2xx AND ask_timeouts_total
+  bump at handoff, then ask_orphan_resolutions_done bumps after the
+  runner's eventual reply (two counter states in one test). Ask 500
+  runner_error via new `error-turn` mock mode. Ask 503 runner_fatal
+  via `crash-on-turn`. Ask 501 via a Proxy wrapper that flips
+  `supportsSideSessions()` without reimplementing the runner. Ask 429
+  side_session_capacity (max_per_bot=1 + slow-echo hold). Ask 429
+  side_session_busy (concurrent on same session_id; [200, 429]
+  ordering asserted). Inject in-txn replay (two concurrent POSTs
+  with the same key before either commits — exercises the
+  `insertInjectTurn {replay:true}` branch the pre-write dedup path
+  doesn't reach).
+
+- **Orphan-listener metrics emission — new counter family**.
+  The 202-handoff-then-eventual-outcome was an observability hole:
+  operators couldn't see "of asks that timed out, how many finished
+  cleanly vs. force-released at the 1h backstop?" Added
+  `ask_orphan_resolutions_{done,error,fatal,backstop}` →
+  `torana_agent_api_ask_orphan_resolutions_total{outcome=...}`.
+  [src/agent-api/orphan-listeners.ts](../src/agent-api/orphan-listeners.ts)
+  constructor gains optional `metrics` arg; terminal handler routes
+  each outcome to the matching counter; backstop timer gets its own
+  `backstop` outcome so it doesn't conflate with `error`. Shutdown
+  force-releases are deliberately NOT counted.
+  [test/agent-api/orphan-listeners.test.ts](../test/agent-api/orphan-listeners.test.ts)
+  (+7) uses a fake SideRunner event emitter + fake pool + real DB to
+  drive each of the four outcomes plus the double-terminal guard +
+  shutdown-release-doesn't-count invariant + undefined-metrics no-op.
+
+- **`/metrics` endpoint integration**
+  ([test/agent-api/metrics.scrape.test.ts](../test/agent-api/metrics.scrape.test.ts) +3).
+  The missing link: unit tests cover `renderPrometheus()` output but
+  nothing verified main.ts actually wires the same Metrics instance
+  into the `/metrics` route. New test stands up a gateway with the
+  same wiring as main.ts, fires real HTTP ask + inject, scrapes
+  `/metrics`, and asserts: HELP + TYPE comments present for every
+  family; no duplicate HELP lines (Prometheus rejects those);
+  Content-Type header is `text/plain; version=0.0.4`; pre-traffic
+  scrape correctly omits agent-api lines (empty-state gating works);
+  every expected metric family has non-zero samples after traffic.
+
+- **Subprocess doctor round-trip** ([test/cli/doctor.agent-api.test.ts](../test/cli/doctor.agent-api.test.ts) +5).
+  `runRemoteDoctor` was only tested against mock fetchImpl directly —
+  so argv parsing, credential resolution, JSON output, and the
+  dispatcher's integration with the check runner were all unproven
+  end-to-end. New tests spin up a `Bun.serve` mock gateway with
+  minimal /v1/health + /v1/bots and run the real CLI via
+  `Bun.spawn`. Covers: happy path (R001/R002 ok, R003 skips on
+  http://); R001 fail (503 → exit 1 with 503 in detail);
+  TORANA_SERVER + TORANA_TOKEN env var substitution; --format json
+  output parseability with all three R-ids; R002 401 detail
+  surfaces in text output.
+
+- **Maintainability fixes**:
+  - `runnerTypeSupportsSideSessions(type)` exported from
+    [src/runner/types.ts](../src/runner/types.ts). Replaces the
+    hard-coded `{claude-code: true, codex: true, command: false}`
+    literal in [src/doctor.ts](../src/doctor.ts) C011. New drift-guard
+    test in [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
+    (+3) pins the runtime `supportsSideSessions()` of each concrete
+    runner to the static helper's answer — if they diverge, C011
+    would lie and this test fails.
+  - `DURATION_BUCKETS_MS` now `export`ed from
+    [src/metrics.ts](../src/metrics.ts). The existing doc guard test
+    parses the "Bucket sequence" sentence in docs/agent-api.md and
+    asserts the list matches the runtime constant — changing buckets
+    without updating docs fails CI.
+
+- **New claude-mock modes** for these tests:
+  - `very-slow` — 2s delay; 202-timeout test needs > min timeout_ms
+    (1000ms).
+  - `error-turn` — emits a `result` with `is_error=true` so the
+    NDJSON parser maps it to a `{kind:"error"}` event.
+
+**Tests added (+28, 691 → 719):**
+- 7 handler-failure tests (handlers.metrics.test.ts)
+- 7 orphan-listener tests (new orphan-listeners.test.ts)
+- 3 /metrics integration tests (new metrics.scrape.test.ts)
+- 5 subprocess doctor tests (doctor.agent-api.test.ts)
+- 3 runnerTypeSupportsSideSessions tests + drift guard (side-session-stub.test.ts)
+- 1 orphan-counter rendering test (metrics/agent-api.test.ts)
+- 1 recordOrphanResolution façade test (agent-api/metrics.test.ts)
+- 1 bucket-sync guard (docs/agent-api.test.ts)
+- 1 orphan-metric documented guard (docs/agent-api.test.ts)
 
 **Durable notes for the next session:**
 
