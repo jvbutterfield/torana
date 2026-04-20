@@ -3,31 +3,35 @@
 Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
 Approach: **thin end-to-end first** — Claude + Codex ask paths (JSON +
-multipart), inject path (with FakeTelegram delivery proof), and the
-four core CLI subcommands (`ask`, `inject`, `turns get`, `bots list`)
-all work today. Remaining work is breadth/polish: Phase 6b (profile
-store, `@-` stdin, skills install, codex plugin), Phase 7 (metrics +
-doctor + docs), and Phase 2c (CommandRunner side-sessions, lower
-priority).
+multipart), inject path (with FakeTelegram delivery proof), the four
+core CLI subcommands (`ask`, `inject`, `turns get`, `bots list`), and
+now the full Phase 7 observability + doctor + docs surface all work
+today. Remaining work is breadth/polish: Phase 6b (profile store, `@-`
+stdin, skills install, codex plugin) and Phase 2c (CommandRunner
+side-sessions, lower priority).
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (last phase commit `7967c93`; tip commit `76cab87` is the PRD-gap test pass, 21 commits ahead of `main`).
+1. `git checkout feat/agent-api` (last phase commit `23abefd` — Phase 7; 22 commits ahead of `main`).
 2. Sanity-check before touching anything:
-   - `bun test` — expect **613 pass / 4 skip / 0 fail**.
+   - `bun test` — expect **691 pass / 4 skip / 0 fail**.
    - `bun x tsc --noEmit` — expect clean (no output).
-3. **Pick the next branch (durable note — Phase 2b just landed):**
-   - **Phase 7 (recommended for release)** — metrics histograms, doctor
-     checks C009–C014 + R001–R003, `docs/agent-api.md` + `docs/cli.md`
-     + README updates. The actual gating items for shipping v1; ~2 days.
-   - **Phase 6b (CLI polish)** — profile store
+3. **Pick the next branch (durable note — Phase 7 just landed):**
+   - **Phase 6b (CLI polish, RECOMMENDED)** — profile store
      (`~/.config/torana/config.toml`), `--file @-` stdin, `torana skills
-     install --host=claude|codex`, codex plugin layout, `torana doctor
-     --profile X` remote checks. Pure UX; no gateway-side risk; ~1 day.
+     install --host=claude|codex`, codex plugin layout, the
+     `torana doctor --profile NAME` resolver (remote R001–R003 already
+     land in Phase 7; only the profile-name-to-(server,token) lookup is
+     missing — CLI currently exits 2 with a Phase-6b pointer when
+     `--profile` is passed). Pure UX; no gateway-side risk; ~1 day.
    - **Phase 2c (CommandRunner side-sessions)** — protocol capability
      descriptors; `claude-ndjson` long-lived + `codex-jsonl` per-turn +
      `jsonl-text` unsupported. Only matters for users with custom
      runners; safe to defer.
+   - **Pre-release validation** — after 6b (and optionally 2c),
+     `AGENT_API_E2E=1 bun test` against real binaries, a 24h
+     `AGENT_API_SOAK=1` run, the impl-plan §12.5 security matrix, and
+     impl-plan §12.10 error-path coverage.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
@@ -74,16 +78,20 @@ priority).
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
-| 6b — CLI follow-ups + skills | ⏳ Pending | US-018 (rest) US-019 US-020 | Profile store, `@-` stdin, `skills install`, Codex plugin |
-| 7 — Observability + docs | ⏳ Pending | US-015 US-016 US-017 | Metrics histograms, doctor C009–C014 + R001–R003, docs/agent-api.md + cli.md + README |
+| 6b — CLI follow-ups + skills | ⏳ Pending | US-018 (rest) US-019 US-020 | Profile store, `@-` stdin, `skills install`, Codex plugin, `doctor --profile NAME` resolver |
+| 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
 
 ---
 
-## What's done — feat/agent-api branch (19 commits)
+## What's done — feat/agent-api branch (22 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+23abefd agent-api phase 7: observability + doctor + docs (US-015, US-016, US-017)
+b008991 agent-api: pin gap-fill commit hash in progress tracker
+76cab87 agent-api: PRD-gap test pass + invalid_timeout + load.ts warning fix
+9aa64c8 agent-api: polish progress tracker for next-session handoff
 97dd888 agent-api: pin Phase 2b commit hash in progress tracker
 7967c93 agent-api phase 2b: CodexRunner side-sessions (US-006)
 d7811c6 agent-api: pin inject e2e commit hash in progress tracker
@@ -104,7 +112,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 613 pass / 4 skip / 0 fail.** Coverage at a glance:
+**Full test suite: 691 pass / 4 skip / 0 fail.** Coverage at a glance:
 
 - **Ask round-trip (Claude)** — JSON + multipart through real HTTP →
   bearer auth → `SideSessionPool` → `ClaudeCodeRunner` (mock binary)
@@ -539,6 +547,183 @@ Behavior chosen during implementation (not in plan):
 
 ---
 
+### Commit `23abefd` — Phase 7: Observability + doctor + docs (US-015, US-016, US-017)
+
+**US-015 — Metrics.**
+
+- [src/metrics.ts](../src/metrics.ts) — adds `AgentApiCounters` +
+  `AgentApiGauges` + `HistogramState` types; lazy
+  `initAgentApi(botId)` so disabled path stays zero-alloc; new setters
+  `incAgentApi`, `setAgentApiGauge`,
+  `observeAgentApiRequestDuration(bot, route, ms)`,
+  `observeAgentApiAcquireDuration(bot, outcome, ms)`. Bucket sequence
+  `[50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000]` ms for
+  both histograms. `renderPrometheus` emits the new families only when
+  `agentApi.size > 0` so pre-feature scrapes stay byte-identical.
+  Non-finite + negative observations are dropped before bucket
+  placement.
+- [src/agent-api/metrics.ts](../src/agent-api/metrics.ts) — thin façade.
+  `recordAsk`, `recordInject`, `recordAcquire`, `recordEviction`,
+  `setSideSessionsLive`. Every function no-ops on `metrics: undefined`
+  so existing pool/handler tests stay green without threading metrics
+  through.
+- Wiring:
+  - [src/agent-api/pool.ts](../src/agent-api/pool.ts): constructor takes
+    optional `metrics`; `publishLiveGauge(botId)` recomputes + emits on
+    every state change (spawn success, release, `scheduleStop`,
+    hard-TTL sweep with inflight>0); `acquire` calls `recordAcquire`
+    with `reuse|spawn|capacity|busy` and observed duration; `evict` +
+    in-place hard-TTL mark call `recordEviction`.
+  - [src/agent-api/handlers/ask.ts](../src/agent-api/handlers/ask.ts):
+    outer handler wraps `handleAskInner` + times duration + maps status
+    to ask-bucket (200→2xx, 202→2xx+timeout, 4xx/5xx direct).
+  - [src/agent-api/handlers/inject.ts](../src/agent-api/handlers/inject.ts):
+    same pattern, plus a closure-captured `outcome: {replay: boolean}`
+    ref so both the pre-write and in-txn replay paths set it. Replay
+    counter increments only on 2xx+replay.
+- [src/main.ts](../src/main.ts) — passes `metrics` into
+  `SideSessionPool` constructor + `AgentApiDeps`.
+
+**US-016 — Doctor.**
+
+- [src/doctor.ts](../src/doctor.ts) — `DoctorCheck.status` gains
+  `"warn"`. Local checks appended after C008 (all skip cleanly when
+  `agent_api.enabled=false`):
+  - C009 warn: enabled + empty `tokens`.
+  - C010 fail: token references unknown bot.
+  - C011 fail: ask-scope on a runner whose `runner.type` is in the
+    non-side-session set (currently just `command`).
+  - C012 fail: `secret_ref` empty/whitespace after interpolation.
+  - C013 fail: `idle_ttl_ms > hard_ttl_ms`, `max_per_bot > max_global`,
+    or `default_timeout_ms > max_timeout_ms` (defence-in-depth vs.
+    schema superRefine).
+  - C014 warn: deployment-posture reminder (bearer auth is the only
+    thing between callers and the bot — confirm TLS + firewall posture).
+  - `runRemoteDoctor({server, token, timeoutMs?, fetchImpl?})` →
+    `DoctorResult`. R001 = `GET /v1/health` within 2s. R002 = `GET
+    /v1/bots` with token → 200 + non-empty (empty emits `warn`, not
+    `fail`). R003 = TLS handshake (re-probe /v1/health on https://;
+    skip on http://). Uses a per-call `AbortController` + `signal`
+    threaded into `fetchImpl` so timeouts actually fire.
+- [src/cli.ts](../src/cli.ts) — `parseArgs` gains `--server`, `--token`,
+  `--profile` (both space + equals forms). `doctor` subcommand: when
+  `--server` (or `TORANA_SERVER`) is supplied, routes to
+  `runRemoteDoctor` and skips the local config load entirely. `--token`
+  or `TORANA_TOKEN` required; missing → exit 2. `--profile` exits 2
+  with a Phase-6b pointer until the profile store lands. Output adds a
+  `[warn]` badge for the new severity.
+
+**US-017 — Docs.**
+
+- [docs/agent-api.md](../docs/agent-api.md) — ~2100 words. Enable it,
+  architecture diagram, authentication (SHA-256 + timingSafeEqual,
+  no-enumeration contract), every endpoint with status code table,
+  rate-limit + concurrency model, full metrics table with bucket
+  sequence, security model, session-id sharing caveat, CLI quick tour,
+  three worked examples, "What's not in v1" pointer at Phase 2c + 6b.
+- [docs/cli.md](../docs/cli.md) — exhaustive CLI reference. Gateway
+  commands (start/doctor/validate/migrate/version) with the new
+  C009–C014 + R001–R003 tables; agent-api client commands
+  (ask/inject/turns get/bots list) with every flag + every exit code
+  + the stable 0/1/2/3/4/5/6/7 taxonomy.
+- [docs/security.md](../docs/security.md) — new "Agent API auth"
+  subsection on bearer-only model, per-bot + per-scope scoping, inject
+  ACL re-check, no-enumeration, attachment hardening, idempotency as a
+  safety feature.
+- [docs/configuration.md](../docs/configuration.md) — full `agent_api`
+  block with defaults + schema-enforced invariants table.
+- [docs/runners.md](../docs/runners.md) — side-session support
+  per-runner (claude-code yes, codex yes, command no v1).
+- [docs/writing-a-runner.md](../docs/writing-a-runner.md) — interface
+  addition covering `supportsSideSessions`, `startSideSession`,
+  `sendSideTurn`, `stopSideSession`, `onSide`; per-runner support
+  matrix.
+- [README.md](../README.md) — removes the "Agent-to-agent messaging"
+  non-goal; new `## Agent API` section after Runners; mermaid diagram
+  updated to include an "Agent API" node + a side-session pool box
+  connected to the runners; `docs/agent-api.md` + `docs/cli.md` added
+  to the docs list; test badge bumped 255 → 675+.
+- [CHANGELOG.md](../CHANGELOG.md) — `## [Unreleased]` entry detailing
+  the full agent-api surface, side-session runners (Claude + Codex),
+  CLI client commands, Prometheus metrics, doctor checks, and the v2
+  schema with auto-migrate snapshot.
+- [test/docs/agent-api.test.ts](../test/docs/agent-api.test.ts) — 16
+  guard tests. Most importantly: walks every shipped markdown file
+  (excludes `tasks/`, `test/`, `node_modules/`, `dist/`) and asserts
+  no occurrence of "Agent-to-agent messaging". Also pins down the
+  required headings in `docs/agent-api.md`, the metric-name list
+  documented, the required flag + R00x coverage in `docs/cli.md`,
+  the per-runner side-session row in `runners.md`, and the CHANGELOG
+  Unreleased content.
+
+**Tests added (+78 net, 613 → 691):**
+
+- [test/metrics/agent-api.test.ts](../test/metrics/agent-api.test.ts)
+  (+17) — counter init semantics, per-bot isolation, gauge overwrite
+  including explicit zero, deep-copy snapshot, histogram bucket
+  monotonicity, cross-route/outcome isolation, non-finite observation
+  drop, above-top-bucket +Inf handling, full Prometheus body shape
+  (HELP + TYPE + all counter lines for a populated multi-bot state).
+- [test/agent-api/metrics.test.ts](../test/agent-api/metrics.test.ts)
+  (+19) — façade entrypoints: ask 200 / 202 / 4xx / 5xx buckets,
+  inject 202 no-replay / 202 replay / 4xx / 5xx, acquire spawn /
+  capacity / reuse / busy (only spawn + capacity touch counters),
+  eviction reason routing, `setSideSessionsLive`, undefined-metrics
+  no-op across every entrypoint.
+- [test/agent-api/pool.metrics.test.ts](../test/agent-api/pool.metrics.test.ts)
+  (+9) — drives the real `SideSessionPool` through spawn / reuse /
+  busy / capacity / LRU / idle-TTL sweep / hard-TTL sweep at
+  inflight=0 / hard-TTL sweep at inflight>0 + live-gauge publish
+  after each transition. Uses a fake runner (no real subprocesses)
+  plus a fake clock so TTL sweeps are deterministic. A "no metrics"
+  variant asserts the pool still works when `metrics` is omitted.
+- [test/agent-api/handlers.metrics.test.ts](../test/agent-api/handlers.metrics.test.ts)
+  (+6) — real HTTP round-trip with a real `ClaudeCodeRunner` (mock
+  binary). Ask 200 increments `ask_requests_2xx` + duration histogram;
+  ask 400 bumps `ask_requests_4xx`; inject fresh 202 bumps
+  `inject_requests_2xx` + leaves replay counter at 0; inject replay
+  bumps `inject_idempotent_replays_total`; inject missing_target (400)
+  bumps `inject_requests_4xx`; inject 403 scope-denied is rejected by
+  the `authed()` wrapper before the handler, so counters stay zero.
+- [test/cli/doctor.agent-api.test.ts](../test/cli/doctor.agent-api.test.ts)
+  (+15) — every state for C009..C014, including the `command`-runner
+  ask-scope fail path and the `claude-code` ok path; R001 ok / 503 fail;
+  R002 ok (non-empty) / 401 fail / warn (empty); R003 ok on https / skip
+  on http / fail when fetch throws `self-signed certificate`; R001
+  timeout test drives the AbortController path end-to-end with a
+  50ms `timeoutMs` override.
+- [test/cli/cli.test.ts](../test/cli/cli.test.ts) (+5) — `parseArgs`
+  cases for `--server`/`--token`/`--profile` (space + equals);
+  subprocess tests confirming `doctor --profile` exits 2 with the
+  Phase-6b message and `doctor --server URL` without a token exits 2.
+- [test/docs/agent-api.test.ts](../test/docs/agent-api.test.ts) (+16)
+  — the doc-shape guards listed above.
+
+**Durable notes for the next session:**
+
+- The `agent_api_enabled=false` branch of `renderPrometheus` is
+  exercised by `test/metrics/metrics.test.ts` (existing tests); the
+  agent-api line emission is gated on `agentApi.size > 0` (the map
+  lazy-initializes on first `initAgentApi`/`incAgentApi` call). Don't
+  add a size check to `agentApiGauges` — a bot can register a live
+  gauge without any counter bumps if the pool emits before a handler.
+- Handler metrics wrap the inner function rather than intercepting
+  every return site — less churn and cleanly handles the finally
+  block + the orphan-listener handoff on the 202 ask timeout path.
+- Doctor `C011` derives runner-supports-side-sessions statically from
+  `runner.type` rather than instantiating runners. Keep that list
+  (`claude-code`, `codex`) in sync with any new runner that flips
+  `supportsSideSessions()` to true.
+- Remote `R003` re-probes `/v1/health` rather than doing a separate
+  TLS handshake because Bun's fetch validates the chain by default on
+  https URLs; a bad chain shows up as a fetch throw during the retry.
+- `torana doctor --profile NAME` is intentionally left as an exit-2
+  stub in Phase 7. Phase 6b implements the resolver that feeds
+  `--server` + `--token` from the profile store; the remote runner
+  code doesn't change.
+
+---
+
 ### Test-coverage gap-fill pass (`76cab87`)
 
 Audit of completed user stories vs PRD acceptance criteria surfaced
@@ -616,33 +801,8 @@ follow-ups:**
 
 ## What's left
 
-Phases 1, 2a, 2b, 3, 4a, 4b (incl. e2e), 5, 6 core all done.
-Three branches remain — sized + ranked for next session:
-
-### Phase 7 — Observability + docs (RECOMMENDED, ~2 days, release-gating)
-
-[impl plan §9](impl-agent-api.md). The actual blockers for shipping
-`v1`. Three deliverables:
-
-- **Metrics** ([src/metrics.ts](../src/metrics.ts)):
-  `AgentApiCounters` + `AgentApiGauges` + minimal `HistogramState`
-  primitive; `incAgentApi`, `setAgentApiGauge`,
-  `observeAgentApiRequestDuration`, `observeAgentApiAcquireDuration`.
-  Extend `renderPrometheus`. Wire emission points into `pool.ts` +
-  handlers.
-- **Doctor checks** ([src/doctor.ts](../src/doctor.ts)): C009
-  (enabled-but-no-tokens, warn), C010 (unknown `bot_ids`, fail), C011
-  (ask-scope on non-side-session-capable runner, fail), C012 (empty
-  `secret_ref` after interpolation, fail), C013 (TTL/cap
-  defence-in-depth, fail), C014 (localhost binding warning, warn).
-  Plus R001–R003 (remote health / bots / TLS) under
-  `torana doctor --profile X`.
-- **Docs**: [docs/agent-api.md](../docs/agent-api.md) (~2000 words);
-  [docs/cli.md](../docs/cli.md) reference; updates to
-  `docs/security.md`, `docs/configuration.md`, `docs/runners.md`,
-  `docs/writing-a-runner.md`; [README.md](../README.md) non-goal
-  removal + feature list + Mermaid diagram. Add a CI link-check step;
-  verify `grep -rn "Agent-to-agent messaging"` → 0 matches.
+Phases 1, 2a, 2b, 3, 4a, 4b (incl. e2e), 5, 6 core, **and 7** all done.
+Two branches remain — sized + ranked for next session:
 
 ### Phase 6b — CLI follow-ups + skills (~1 day, pure UX polish)
 
@@ -654,6 +814,11 @@ core. No gateway-side risk; all changes live under `src/cli/`,
   mode 0600). Resolve precedence becomes `flag > env > profile > error`.
   Phase 6 core's `resolveCredentials` already has the trace plumbing —
   add a third source.
+- **`torana doctor --profile NAME` resolver.** Phase 7 already ships
+  the remote check runner (`runRemoteDoctor`) + the `--profile` flag
+  (CLI exits 2 with a pointer). Phase 6b just needs the
+  profile-name-to-(server, token) lookup that feeds into the existing
+  code path.
 - **`@-` stdin file support** for `torana ask --file @-` /
   `torana inject --file @-`. Magic-byte MIME detection.
 - **`torana skills install --host=claude|codex`** — implements
