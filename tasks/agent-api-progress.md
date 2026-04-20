@@ -4,34 +4,23 @@ Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
 PRD: [prd-agent-api.md](prd-agent-api.md)
 
-**Status:** the gateway-side surface is feature-complete and
-release-quality. Phases 1 → 7 all landed (inc. a gap-fill pass over
-Phase 7). Remaining work is pure UX polish (**Phase 6b**, ~1 day) plus
-an optional CommandRunner side-session pass (**Phase 2c**, defer-able)
-and the pre-release E2E gates.
+**Status:** the CLI surface is now feature-complete for v1. Phases 1 → 7
+landed, plus the Phase-7 gap-fill, plus **Phase 6b** (CLI polish —
+profile store, `@-` stdin, `skills install`, Codex plugin, `doctor
+--profile NAME` resolver). Remaining work is the optional **Phase 2c**
+CommandRunner side-session pass and the pre-release E2E gates.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` — tip commit `26236cd` (Phase 7
-   gap-fill pin); last phase commit `adfbcc4`. 25 commits ahead of `main`.
+1. `git checkout feat/agent-api` — tip is this tracker-pin commit; last
+   phase commit `7b62e1c` (Phase 6b). 28 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **719 pass / 4 skip / 0 fail**. One test
+   - `bun test` — expect **843 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
      sendSideTurn is immediately accepted`) is mildly flaky under full
      suite runs due to `queueMicrotask` timing; re-run if it trips.
    - `bun x tsc --noEmit` — expect clean (no output).
 3. **Pick the next branch** (ranked — first is recommended):
-   - **Phase 6b — CLI polish (RECOMMENDED, ~1 day, pure UX).** Profile
-     store at `~/.config/torana/config.toml` (mode 0600, Bun.TOML),
-     `--file @-` stdin on `ask`/`inject`, `torana skills install
-     --host=claude|codex`, codex plugin scaffold, **and** the
-     `torana doctor --profile NAME` resolver.
-     Phase 7 already shipped the remote check runner
-     (`runRemoteDoctor`) and the `--profile` flag; the CLI currently
-     exits 2 with a Phase-6b pointer. Phase 6b just needs the
-     name → `(server, token)` lookup feeding into the existing path.
-     No gateway-side risk; all under `src/cli/`, `skills/`, `scripts/`,
-     `codex-plugin/`.
    - **Phase 2c — CommandRunner side-sessions (defer-able).** Protocol
      capability descriptors; `claude-ndjson` long-lived + `codex-jsonl`
      per-turn + `jsonl-text` unsupported. Only matters for users with
@@ -40,10 +29,10 @@ and the pre-release E2E gates.
      to `true` for the relevant protocols — the drift-guard test in
      [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
      will enforce the static map matches each runner's runtime answer.
-   - **Pre-release validation** (once 6b + optionally 2c land):
-     `AGENT_API_E2E=1 bun test` against real `claude` + `codex`
-     binaries; a 24h `AGENT_API_SOAK=1` run; impl-plan §12.5 security
-     matrix; impl-plan §12.10 error-path coverage matrix.
+   - **Pre-release validation** (once 2c lands or is explicitly
+     deferred): `AGENT_API_E2E=1 bun test` against real `claude` +
+     `codex` binaries; a 24h `AGENT_API_SOAK=1` run; impl-plan §12.5
+     security matrix; impl-plan §12.10 error-path coverage matrix.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
@@ -90,6 +79,19 @@ and the pre-release E2E gates.
   the "Bucket sequence" line in [docs/agent-api.md](../docs/agent-api.md)
   and asserts the list matches the runtime constant — change buckets
   in both places.
+- **Profile store** lives at `$XDG_CONFIG_HOME/torana/config.toml` (or
+  `~/.config/torana/config.toml`) with mode 0600. Written via
+  `saveProfiles` (atomic rename + chmod); read via `loadProfiles`. The
+  schema is a flat `[profile.NAME]` table per entry plus a top-level
+  `default = "name"`. See [src/cli/shared/profile.ts](../src/cli/shared/profile.ts).
+- **Skill parity** — `codex-plugin/skills/*/SKILL.md` are build-copies
+  of `skills/*/SKILL.md`. Don't edit the copies directly; run
+  `bun scripts/check-skill-parity.ts` or `bun run build` to re-sync.
+  Parity is enforced by [test/cli/skills.parity.test.ts](../test/cli/skills.parity.test.ts).
+- **`--file @-`** may be given at most once per `ask` / `inject` call
+  (stdin is not repeatable). MIME is sniffed from magic bytes
+  (PNG/JPEG/GIF/WEBP/PDF); unknown → `application/octet-stream`.
+  Empty stdin is a usage error.
 
 ### Surprises / gotchas worth remembering
 - `AskBodySchema` enforces `timeout_ms >= 1000`. For 202-timeout tests
@@ -110,10 +112,10 @@ and the pre-release E2E gates.
   spikes in prod, the runner isn't emitting terminal events. Shutdown
   force-releases are deliberately not counted (they're not runner
   outcomes).
-- `torana doctor --profile NAME` is currently a Phase-6b stub: CLI
-  accepts the flag, exits 2 with a pointer. The `runRemoteDoctor`
-  implementation is already in place and tested — 6b only needs the
-  name → (server, token) lookup.
+- `torana doctor --profile NAME` now resolves the profile to
+  `(server, token)` and feeds `runRemoteDoctor`. Flag/env still win
+  over the profile per standard precedence; `--server` without
+  `--token` (and vice-versa) errors with exit 2.
 
 ---
 
@@ -132,17 +134,20 @@ and the pre-release E2E gates.
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
-| 6b — CLI follow-ups + skills | ⏳ Pending | US-018 (rest) US-019 US-020 | Profile store, `@-` stdin, `skills install`, Codex plugin, `doctor --profile NAME` resolver |
+| 6b — CLI follow-ups + skills | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates |
 | 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
 | 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
 
 ---
 
-## What's done — feat/agent-api branch (25 commits)
+## What's done — feat/agent-api branch (28 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+<pin>   agent-api: pin Phase 6b commit hash in progress tracker
+7b62e1c agent-api phase 6b: profile store + @- stdin + skills + codex plugin (US-018, US-019, US-020)
+b3536ac agent-api: polish progress tracker for next-session handoff
 26236cd agent-api: pin Phase 7 gap-fill commit hash in progress tracker
 adfbcc4 agent-api phase 7 gap-fill: handler failure paths + orphan metrics + scrape integration (US-015, US-016)
 88eaf3d agent-api: pin Phase 7 commit hash in progress tracker
@@ -170,7 +175,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 719 pass / 4 skip / 0 fail.** Coverage at a glance:
+**Full test suite: 843 pass / 4 skip / 0 fail.** Coverage at a glance:
 
 - **Ask round-trip (Claude)** — JSON + multipart through real HTTP →
   bearer auth → `SideSessionPool` → `ClaudeCodeRunner` (mock binary)
