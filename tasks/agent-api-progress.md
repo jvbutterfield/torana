@@ -3,35 +3,27 @@
 Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
 Approach: **thin end-to-end first** — Claude-ask + inject (JSON and
-multipart) round-trips are working and tested. Remaining work is
-breadth-wise: Codex/Command runners, CLI, skills, docs.
+multipart) round-trips are working and tested, and the four core CLI
+subcommands (`ask`, `inject`, `turns get`, `bots list`) ship in Phase 6
+core. Remaining work is breadth-wise: Codex/Command runners, Phase 6b
+(profile store, `@-` stdin, skills install, codex plugin), Phase 7
+(observability + docs).
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (tip: `dae65ea`, 10 commits ahead of `main`).
-2. `bun test` — expect **388 pass / 4 skip / 0 fail**.
-3. **Decision reached at end of last session: do Phase 6 next, scoped
-   to the CLI core.** The CLI is the user surface, it unblocks the
-   skill packages, and it makes the inject e2e gap fall out naturally
-   (shelling `torana inject` against a FakeTelegram gateway is simpler
-   than a direct HTTP-based integration test). Phase 2b (Codex side-
-   sessions) is deferred until after; Phase 7 (docs + observability)
-   after that.
-4. Recommended scope for the next session — **Phase 6 core only**:
-   - `src/agent-api/client.ts` — typed `AgentApiClient`.
-   - `src/cli/shared/{args,output,exit}.ts` — flag parser (two-pass for
-     subcommand chains), JSON/human formatter, exit-code enum.
-   - `src/cli/ask.ts`, `src/cli/inject.ts`, `src/cli/turns.ts`,
-     `src/cli/bots.ts` — the four core subcommands.
-   - `src/cli.ts` → dispatcher (keep existing `start`/`doctor`/`migrate`/
-     `validate`/`version` subcommands intact; add the new ones alongside).
-   - Profile store (`~/.config/torana/config.toml`), `@-` stdin
-     support, `skills install`, and the Codex plugin can all land in
-     a Phase 6b follow-up.
-5. Every commit on this branch is self-contained — you can run tests
+1. `git checkout feat/agent-api` (tip: `f7aa077`, 11 commits ahead of `main`).
+2. `bun test` — expect **530 pass / 4 skip / 0 fail**.
+3. **Decision for next session:** pick from the three remaining branches.
+   Phase 2b (Codex side-sessions, US-006) unblocks `torana ask` against
+   non-Claude bots and is the clearest unblock. Phase 6b adds the
+   profile store + `@-` stdin + skills install + codex plugin (the
+   pieces deferred from Phase 6 core). Phase 7 finishes the release —
+   metrics, doctor checks C009-C014 + R001-R003, docs/agent-api.md +
+   docs/cli.md.
+4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
-6. Commit cadence (durable — see memory): one phase commit, then a
+5. Commit cadence (durable — see memory): one phase commit, then a
    small follow-up that pins the hash into this tracker. Do not
    `--amend`.
 
@@ -59,18 +51,22 @@ Conventions in use on this branch:
 | — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
 | 4b — Inject path | ✅ Complete (`b09f746`) | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
 | 5 — Cross-cutting (full) | ✅ Complete (`35b355d`) | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
+| 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
-| 6 — CLI + skills | ⏳ Pending | US-018 US-019 US-020 | `torana ask/inject/turns/bots/config/skills install` + Claude + Codex skill packages |
+| 6b — CLI follow-ups + skills | ⏳ Pending | US-018 (rest) US-019 US-020 | Profile store, `@-` stdin, `skills install`, Codex plugin |
 | 7 — Observability + docs | ⏳ Pending | US-015 US-016 US-017 | Metrics histograms, doctor C009–C014 + R001–R003, docs/agent-api.md + cli.md + README |
 
 ---
 
-## What's done — feat/agent-api branch (8+ commits)
+## What's done — feat/agent-api branch (11 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`):
 
 ```
+f7aa077 agent-api phase 6 (core): CLI ask/inject/turns/bots + AgentApiClient (US-018)
+092046e agent-api: record Phase 6 scoping decision in progress tracker
+dae65ea agent-api: pin Phase 5 commit hash in progress tracker
 35b355d agent-api phase 5: multipart + orphan sweep (US-013, US-014)
 bd2583c agent-api: pin Phase 4b commit hash in progress tracker
 b09f746 agent-api phase 4b: inject path (US-011, US-012)
@@ -83,7 +79,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 388 pass / 4 skip / 0 fail.** End-to-end round-trips:
+**Full test suite: 530 pass / 4 skip / 0 fail.** End-to-end round-trips:
 ask (JSON + multipart) through real HTTP → bearer auth →
 SideSessionPool → ClaudeCodeRunner (mock binary) → response body in
 [test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts) +
@@ -381,6 +377,76 @@ in [test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts) +
 wired but only lightly tested — the mock claude binary echoes its
 input rather than opening the file, so "runner actually reads the
 bytes" remains unverified. Real-claude E2E covers this in soak.
+
+---
+
+### Commit `f7aa077` — Phase 6 core: CLI + AgentApiClient (US-018)
+
+- [src/agent-api/client.ts](../src/agent-api/client.ts) — typed
+  `AgentApiClient` with `listBots`/`ask`/`inject`/`getTurn`/
+  `listSessions`/`deleteSession`. Constructs JSON or multipart bodies
+  based on file presence; maps every non-2xx into a typed
+  `AgentApiError` whose `.code` mirrors `errors.ts`. `network` and
+  `malformed_response` codes added for transport-level failures.
+  `fetchImpl` injectable for tests.
+- [src/cli/shared/args.ts](../src/cli/shared/args.ts) — `extractChain`
+  + `parseFlags` (two-pass), `resolveCredentials` (flag > env),
+  `COMMON_FLAGS`. `CliUsageError` propagates to dispatch loop for
+  exit-2 mapping.
+- [src/cli/shared/exit.ts](../src/cli/shared/exit.ts) — `ExitCode`
+  enum (success/internal/badUsage/authFailed/notFound/serverError/
+  timeout/capacity) + `exitCodeFor(code, status?)` covering every
+  current `AgentApiErrorCode` plus an HTTP-status-class fallback for
+  unknown future codes.
+- [src/cli/shared/output.ts](../src/cli/shared/output.ts) — `Rendered`
+  shape + `renderJson`/`renderText`/`formatTable`/`emit` so subcommand
+  bodies are testable without `process.stdout` mocking.
+- [src/cli/shared/files.ts](../src/cli/shared/files.ts) — `readFileForUpload`
+  used by both `ask` and `inject` for `--file PATH` (extension-based
+  MIME guess; relies on the gateway allowlist for the actual reject).
+- [src/cli/{ask,inject,turns,bots}.ts](../src/cli) — the four
+  subcommands. Each returns a `Rendered`. Inject auto-generates an
+  Idempotency-Key when omitted (printed to stderr as a `# comment`
+  so callers can reuse it on retry; the auto-key notice is preserved
+  even when the API call errors). Ask uses **exit 6 (timeout)** when
+  the server returns 202 and prints the `turn_id` on stdout for
+  piping into `torana turns get`.
+- [src/cli.ts](../src/cli.ts) — dispatcher peeks at argv[0]; routes
+  ask/inject/turns/bots to the new modules. Legacy `parseArgs` export
+  is unmodified so existing test imports (`test/cli/cli.test.ts`)
+  keep working. `--help` short-circuits BEFORE credential resolution
+  so users can read help without env vars set.
+
+**Tests added (142):**
+- [test/cli/args.test.ts](../test/cli/args.test.ts) — 24 tests:
+  extractChain coverage, parseFlags bool/value/values + short + `--`
+  + every error path, resolveCredentials precedence + missing-flag.
+- [test/cli/exit.test.ts](../test/cli/exit.test.ts) — 28 tests:
+  every code mapped + status fallback for unknown future codes.
+- [test/cli/output.test.ts](../test/cli/output.test.ts) — 8 tests:
+  padRight, renderJson, renderText, formatTable.
+- [test/agent-api/client.test.ts](../test/agent-api/client.test.ts)
+  — 22 tests: URL normalization, Authorization header, listBots
+  happy + 401, ask JSON/multipart/202/503, network failure, malformed
+  JSON, non-JSON 5xx, inject Idempotency-Key forwarding (JSON +
+  multipart) + 403, getTurn in_progress/done/failed/410,
+  listSessions/deleteSession + 404, bot_id slash percent-encoding.
+- [test/cli/{ask,inject,turns,bots}.cmd.test.ts](../test/cli) — 40
+  function-level tests with a fake AgentApiClient: happy paths,
+  --json, all usage errors, all exit-code-mapped server errors,
+  --help short-circuit.
+- [test/cli/dispatch.test.ts](../test/cli/dispatch.test.ts) — 15
+  subprocess round-trip tests: `bun run src/cli.ts <subcmd>` against
+  a real in-process gateway with the claude-mock runner. Exit-code
+  mapping verified end-to-end (success, badUsage, authFailed,
+  notFound, capacity), TORANA_SERVER + TORANA_TOKEN env path, --help
+  works without credentials, legacy `version` subcommand still works.
+
+**Phase 6 core deliberately excludes** (deferred to Phase 6b):
+profile store (`~/.config/torana/config.toml`), `--file @-` stdin
+support, `torana skills install`, codex plugin layout, `torana doctor
+--profile X` remote checks. The progress tracker §how-to-resume
+calls these out so the next session can pick up cleanly.
 
 ---
 
