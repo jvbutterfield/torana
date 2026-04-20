@@ -7,15 +7,18 @@ PRD: [prd-agent-api.md](prd-agent-api.md)
 **Status:** all implementation phases landed. Phases 1 → 7 complete,
 plus the Phase-7 gap-fill, plus **Phase 6b** (CLI polish), plus
 **Phase 2c** (CommandRunner side-sessions for `claude-ndjson` /
-`codex-jsonl` protocols, with `jsonl-text` explicitly left unsupported).
-Remaining work is the pre-release E2E gates — no more implementation.
+`codex-jsonl` protocols, with `jsonl-text` explicitly left unsupported)
+plus a **Phase 2c gap-fill** that closed 7 coverage gaps with 20 more
+tests. Full suite: **894 pass / 4 skip / 0 fail.** Remaining work is
+the pre-release E2E gates — no more implementation.
 
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `65550f6` (Phase 2c count-fix polish);
-   last phase commit `b7ab18f` (Phase 2c).
-   36 commits ahead of `main`.
+   `ffa709f` (Phase 2c gap-fill pin);
+   last implementation commit `b7ab18f` (Phase 2c);
+   last test commit `c2d96af` (Phase 2c gap-fill).
+   39 commits ahead of `main`.
 2. Sanity-check before touching anything:
    - `bun test` — expect **894 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
@@ -151,17 +154,21 @@ Remaining work is the pre-release E2E gates — no more implementation.
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
 | 2c — CommandRunner side-sessions | ✅ Complete (`b7ab18f`) | US-007 | Protocol capability descriptors (`claudeNdjsonCapabilities`/`codexJsonlCapabilities`/`jsonlTextCapabilities`); per-session subprocess spawn with `TORANA_SESSION_ID=<id>` env var; `runnerSupportsSideSessions` now protocol-aware; doctor C011 labels offender as `command/<protocol>`; `examples/side-session-runner/` (~60 lines Bun) demonstrates the pattern; **31 new tests** across `command.side-session.test.ts` (26), `example-side-session-runner.test.ts` (1), `side-session-stub.test.ts` (+3 cases), `doctor.agent-api.test.ts` (+2 C011 cases) |
+| 2c gap-fill | ✅ Complete (`c2d96af`) | US-007 | Critical quality-review pass closed 7 gaps: end-to-end `POST /v1/bots/:id/ask` via `CommandRunner(claude-ndjson)` + `(codex-jsonl)` + `jsonl-text`→501 (10 tests in new `ask.command.test.ts`); `stopSideSession` unknown-id silent + concurrent coalescence; `startSideSession` rejects on exit-before-ready (new `crash-on-start` mock mode); `sideStartupMs` fallback verified; side-turn attachments for both protocols; explicit `TORANA_SESSION_ID` env var contract (new `reply-env` mock mode). **20 new tests** (10 ask.command + 10 command.side-session additions). No production code changed. |
 | 6b — CLI follow-ups + skills | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates |
 | 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
 | 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
 
 ---
 
-## What's done — feat/agent-api branch (36 commits)
+## What's done — feat/agent-api branch (39 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+ffa709f agent-api: pin Phase 2c gap-fill commit hash
+c2d96af agent-api phase 2c gap-fill: end-to-end ask + startup/stop/attachment edges (US-007)
+e47d210 agent-api: replace count-fix placeholder with 65550f6
 65550f6 agent-api: correct Phase 2c branch count (33 → 36)
 86959e0 agent-api: correct Phase 2c branch count (32 → 33) + log fbe1be0
 fbe1be0 agent-api: replace pin-commit placeholder with afc7850
@@ -199,7 +206,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 843 pass / 4 skip / 0 fail.** Coverage at a glance:
+**Full test suite: 894 pass / 4 skip / 0 fail.** Coverage at a glance:
 
 - **Ask round-trip (Claude)** — JSON + multipart through real HTTP →
   bearer auth → `SideSessionPool` → `ClaudeCodeRunner` (mock binary)
@@ -209,6 +216,21 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
   per-turn-spawn architecture in
   [test/agent-api/ask.codex.test.ts](../test/agent-api/ask.codex.test.ts);
   threadId-resume continuity verified via per-side log argv.
+- **Ask round-trip (Command)** — end-to-end HTTP → pool →
+  `CommandRunner(claude-ndjson)` and `CommandRunner(codex-jsonl)` with
+  full happy + failure-path coverage (ephemeral, keyed reuse, 429,
+  crash-on-turn, jsonl-text→501) in
+  [test/agent-api/ask.command.test.ts](../test/agent-api/ask.command.test.ts);
+  parallel to the Claude + Codex suites, parametrized over both
+  side-session-capable protocols.
+- **Side-session runner contract (Command)** —
+  [test/runner/command.side-session.test.ts](../test/runner/command.side-session.test.ts)
+  exercises every non-trivial edge: id validation, double-start,
+  cross-session isolation, busy serialization, startSideSession ready
+  gate + fallback + scrub-on-exit, stopSideSession unknown-id-silent +
+  concurrent coalescence, attachment forwarding (both protocols),
+  explicit `TORANA_SESSION_ID` env contract. Example runner e2e in
+  [test/runner/example-side-session-runner.test.ts](../test/runner/example-side-session-runner.test.ts).
 - **Inject persistence** — JSON + multipart through real HTTP → chat
   resolve → `insertInjectTurn` → queued row + attachment paths in
   [test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts) +
