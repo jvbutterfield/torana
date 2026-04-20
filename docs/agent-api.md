@@ -273,9 +273,17 @@ and two histograms:
 | `torana_agent_api_side_sessions_started_total` | counter | `bot_id` |
 | `torana_agent_api_side_session_evictions_total` | counter | `bot_id, reason ∈ {idle,hard,lru}` |
 | `torana_agent_api_side_session_capacity_rejected_total` | counter | `bot_id` |
+| `torana_agent_api_ask_orphan_resolutions_total` | counter | `bot_id, outcome ∈ {done,error,fatal,backstop}` |
 | `torana_agent_api_side_sessions_live` | gauge | `bot_id` |
 | `torana_agent_api_request_duration_ms` | histogram | `bot_id, route ∈ {ask,inject}` |
 | `torana_agent_api_side_session_acquire_duration_ms` | histogram | `bot_id, outcome ∈ {reuse,spawn,capacity,busy}` |
+
+`ask_timeouts_total` (in the `requests_total` table above, counted once per
+202 handoff) pairs with `ask_orphan_resolutions_total` (counted once per
+eventual terminal event) to answer "of the asks that timed out and got a
+202, how did the runner actually finish?" A sustained gap between the two
+means turns are being force-released at the 1h backstop
+(`outcome="backstop"`) — the runner isn't emitting terminal events.
 
 Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000`.
 

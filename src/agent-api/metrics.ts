@@ -121,3 +121,33 @@ export function setSideSessionsLive(
   if (!metrics) return;
   metrics.setAgentApiGauge(botId, "side_sessions_live", count);
 }
+
+export type OrphanResolution = "done" | "error" | "fatal" | "backstop";
+
+/**
+ * Record the terminal outcome of an ask that was handed off to the orphan
+ * listener on 202. `ask_timeouts_total` (incremented at handoff time by
+ * recordAsk) and these counters together tell operators: "of the asks
+ * that timed out and got a 202, how did the runner eventually finish?"
+ */
+export function recordOrphanResolution(
+  metrics: Metrics | undefined,
+  botId: string,
+  outcome: OrphanResolution,
+): void {
+  if (!metrics) return;
+  switch (outcome) {
+    case "done":
+      metrics.incAgentApi(botId, "ask_orphan_resolutions_done");
+      break;
+    case "error":
+      metrics.incAgentApi(botId, "ask_orphan_resolutions_error");
+      break;
+    case "fatal":
+      metrics.incAgentApi(botId, "ask_orphan_resolutions_fatal");
+      break;
+    case "backstop":
+      metrics.incAgentApi(botId, "ask_orphan_resolutions_backstop");
+      break;
+  }
+}

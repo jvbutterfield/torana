@@ -47,9 +47,20 @@ let pool: SideSessionPool | null = null;
 let orphans: OrphanListenerManager | null = null;
 let metrics: Metrics | null = null;
 
-async function setup(
-  scopes: ("ask" | "inject")[] = ["ask", "inject"],
-): Promise<{ base: string; secret: string }> {
+interface SetupOpts {
+  scopes?: ("ask" | "inject")[];
+  /** claude-mock mode: normal | slow-echo | very-slow | error-turn | crash-on-turn */
+  mockMode?: string;
+  /** Override max_per_bot (default 8). Used for capacity tests. */
+  maxPerBot?: number;
+  /** Override max_global (default 64). */
+  maxGlobal?: number;
+  /** Use a runner that reports supportsSideSessions=false (for 501). */
+  runnerUnsupported?: boolean;
+}
+
+async function setup(opts: SetupOpts = {}): Promise<{ base: string; secret: string }> {
+  const scopes = opts.scopes ?? (["ask", "inject"] as ("ask" | "inject")[]);
   tmpDir = mkdtempSync(join(tmpdir(), "torana-handlers-metrics-"));
   const dbPath = join(tmpDir, "gateway.db");
   applyMigrations(dbPath);
@@ -59,13 +70,15 @@ async function setup(
     runner: {
       type: "claude-code" as const,
       cli_path: "bun",
-      args: ["run", MOCK, "normal"],
+      args: ["run", MOCK, opts.mockMode ?? "normal"],
       env: {},
       pass_continue_flag: false,
     },
   });
   const config = makeTestConfig([bot]);
   config.agent_api.enabled = true;
+  if (opts.maxPerBot !== undefined) config.agent_api.side_sessions.max_per_bot = opts.maxPerBot;
+  if (opts.maxGlobal !== undefined) config.agent_api.side_sessions.max_global = opts.maxGlobal;
   metrics = new Metrics(config);
 
   runner = new ClaudeCodeRunner({
@@ -76,13 +89,25 @@ async function setup(
     startupMs: 100,
   });
 
+  // For 501 tests, swap in a wrapper that reports the runner as unsupported
+  // without changing the event contract. Simpler than faking the whole
+  // AgentRunner surface.
+  const effectiveRunner = opts.runnerUnsupported
+    ? new Proxy(runner as unknown as Record<string, unknown>, {
+        get(target, prop) {
+          if (prop === "supportsSideSessions") return () => false;
+          return (target as unknown as Record<string, unknown>)[prop as string];
+        },
+      })
+    : runner;
+
   const registry = {
     bot(id: string) {
       if (id !== "bot1") return undefined;
       const botConfig = config.bots.find((b) => b.id === "bot1")!;
       return {
         botConfig,
-        runner,
+        runner: effectiveRunner,
       };
     },
     get botIds() {
@@ -100,7 +125,7 @@ async function setup(
     metrics,
     sweepIntervalMs: 60_000,
   });
-  orphans = new OrphanListenerManager(db, pool);
+  orphans = new OrphanListenerManager(db, pool, metrics);
 
   const secret = `tok-${randomUUID().slice(0, 8)}`;
   server = createServer({ port: 0, hostname: "127.0.0.1" });
@@ -142,7 +167,7 @@ afterEach(async () => {
 
 describe("ask handler → Metrics", () => {
   test("successful ask (200) → ask_requests_2xx + duration histogram", async () => {
-    const { base, secret } = await setup(["ask"]);
+    const { base, secret } = await setup({ scopes: ["ask"] });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
@@ -161,7 +186,7 @@ describe("ask handler → Metrics", () => {
   }, 15_000);
 
   test("invalid body (400) → ask_requests_4xx", async () => {
-    const { base, secret } = await setup(["ask"]);
+    const { base, secret } = await setup({ scopes: ["ask"] });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
@@ -176,7 +201,7 @@ describe("ask handler → Metrics", () => {
 
 describe("inject handler → Metrics", () => {
   test("fresh inject (202) → inject_requests_2xx (no replay)", async () => {
-    const { base, secret } = await setup(["inject"]);
+    const { base, secret } = await setup({ scopes: ["inject"] });
     const r = await fetch(`${base}/v1/bots/bot1/inject`, {
       method: "POST",
       headers: {
@@ -198,7 +223,7 @@ describe("inject handler → Metrics", () => {
   });
 
   test("replayed inject (same Idempotency-Key) → inject_idempotent_replays_total", async () => {
-    const { base, secret } = await setup(["inject"]);
+    const { base, secret } = await setup({ scopes: ["inject"] });
     const key = "dup-metrics-0000001a";
     const body = JSON.stringify({
       source: "test",
@@ -233,7 +258,7 @@ describe("inject handler → Metrics", () => {
   });
 
   test("missing_target (400) → inject_requests_4xx, no replay bump", async () => {
-    const { base, secret } = await setup(["inject"]);
+    const { base, secret } = await setup({ scopes: ["inject"] });
     const r = await fetch(`${base}/v1/bots/bot1/inject`, {
       method: "POST",
       headers: {
@@ -250,7 +275,7 @@ describe("inject handler → Metrics", () => {
   });
 
   test("403 scope_not_permitted → inject_requests_4xx", async () => {
-    const { base, secret } = await setup(["ask"]); // inject not in scopes
+    const { base, secret } = await setup({ scopes: ["ask"] }); // inject not in scopes
     const r = await fetch(`${base}/v1/bots/bot1/inject`, {
       method: "POST",
       headers: {
@@ -275,4 +300,175 @@ describe("inject handler → Metrics", () => {
       expect(snap.bot1.counters.inject_requests_total).toBe(0);
     }
   });
+});
+
+// --- Failure-path metrics (ask) --------------------------------------------
+
+describe("ask handler failure paths → Metrics", () => {
+  test("202 timeout → ask_requests_2xx + ask_timeouts_total + orphan handoff", async () => {
+    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "very-slow" });
+    // very-slow mock stalls 2s before result; clamp timeout to 1000ms (min).
+    const r = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "slow", timeout_ms: 1000 }),
+    });
+    expect(r.status).toBe(202);
+    const body = (await r.json()) as { turn_id: number; status: string };
+    expect(body.status).toBe("in_progress");
+
+    // At handoff: ask_requests_2xx + ask_timeouts_total both bumped.
+    const after202 = metrics!.agentApiSnapshot().bot1.counters;
+    expect(after202.ask_requests_2xx).toBe(1);
+    expect(after202.ask_timeouts_total).toBe(1);
+    // Orphan resolution hasn't fired yet — runner still has ~1s to go.
+    expect(after202.ask_orphan_resolutions_done).toBe(0);
+
+    // Wait for the very-slow runner to emit its result; orphan listener
+    // should catch it and count a `done` resolution.
+    await new Promise((r) => setTimeout(r, 2000));
+    const afterResolve = metrics!.agentApiSnapshot().bot1.counters;
+    expect(afterResolve.ask_orphan_resolutions_done).toBe(1);
+  }, 15_000);
+
+  test("500 runner_error → ask_requests_5xx", async () => {
+    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "error-turn" });
+    const r = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hello" }),
+    });
+    expect(r.status).toBe(500);
+    expect((await r.json()).error).toBe("runner_error");
+    const snap = metrics!.agentApiSnapshot().bot1.counters;
+    expect(snap.ask_requests_5xx).toBe(1);
+    expect(snap.ask_requests_2xx).toBe(0);
+  }, 15_000);
+
+  test("503 runner_fatal (crash-on-turn) → ask_requests_5xx", async () => {
+    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "crash-on-turn" });
+    const r = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hello" }),
+    });
+    expect(r.status).toBe(503);
+    expect((await r.json()).error).toBe("runner_fatal");
+    const snap = metrics!.agentApiSnapshot().bot1.counters;
+    expect(snap.ask_requests_5xx).toBe(1);
+  }, 15_000);
+
+  test("501 runner_does_not_support_side_sessions → ask_requests_5xx", async () => {
+    const { base, secret } = await setup({ scopes: ["ask"], runnerUnsupported: true });
+    const r = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hello" }),
+    });
+    expect(r.status).toBe(501);
+    expect((await r.json()).error).toBe("runner_does_not_support_side_sessions");
+    const snap = metrics!.agentApiSnapshot().bot1.counters;
+    expect(snap.ask_requests_5xx).toBe(1);
+  });
+
+  test("429 side_session_capacity → ask_requests_4xx + capacity_rejected counter", async () => {
+    const { base, secret } = await setup({
+      scopes: ["ask"],
+      mockMode: "slow-echo",
+      maxPerBot: 1,
+      maxGlobal: 1,
+    });
+    // First ask holds the only side-session.
+    const first = fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "first", session_id: "held" }),
+    });
+    // Give it a moment to acquire before we fire the second.
+    await new Promise((r) => setTimeout(r, 80));
+    const second = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "second", session_id: "other" }),
+    });
+    expect(second.status).toBe(429);
+    expect((await second.json()).error).toBe("side_session_capacity");
+    await first; // let the slow-echo complete cleanly
+
+    const snap = metrics!.agentApiSnapshot().bot1.counters;
+    expect(snap.ask_requests_4xx).toBeGreaterThanOrEqual(1);
+    expect(snap.side_session_capacity_rejected_total).toBe(1);
+  }, 15_000);
+
+  test("429 side_session_busy (same session_id mid-turn) → ask_requests_4xx", async () => {
+    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "slow-echo" });
+    const both = await Promise.all([
+      fetch(`${base}/v1/bots/bot1/ask`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "a", session_id: "same" }),
+      }),
+      fetch(`${base}/v1/bots/bot1/ask`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "b", session_id: "same" }),
+      }),
+    ]);
+    const statuses = both.map((r) => r.status).sort();
+    // slow-echo means [200, 429] in some order.
+    expect(statuses).toEqual([200, 429]);
+
+    const snap = metrics!.agentApiSnapshot().bot1.counters;
+    expect(snap.ask_requests_2xx).toBe(1);
+    expect(snap.ask_requests_4xx).toBe(1);
+  }, 15_000);
+});
+
+// --- Failure-path metrics (inject) -----------------------------------------
+
+describe("inject handler failure paths → Metrics", () => {
+  test("in-txn replay (two concurrent inserts, same key) → replay counter", async () => {
+    // Both requests arrive with the same Idempotency-Key before either has
+    // committed a turn row. Only one wins the insert; the other takes the
+    // in-txn replay branch in insertInjectTurn. Both callers observe 202
+    // with the same turn_id; exactly one replay counter bump.
+    const { base, secret } = await setup({ scopes: ["inject"] });
+    const key = "in-txn-metrics-race-0001";
+    const body = JSON.stringify({
+      source: "test",
+      text: "hello",
+      user_id: "111222333",
+    });
+
+    const both = await Promise.all([
+      fetch(`${base}/v1/bots/bot1/inject`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": key,
+        },
+        body,
+      }),
+      fetch(`${base}/v1/bots/bot1/inject`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/json",
+          "Idempotency-Key": key,
+        },
+        body,
+      }),
+    ]);
+    for (const r of both) expect(r.status).toBe(202);
+    const turnIds = await Promise.all(both.map(async (r) => (await r.json()).turn_id));
+    expect(turnIds[0]).toBe(turnIds[1]);
+
+    const snap = metrics!.agentApiSnapshot().bot1.counters;
+    expect(snap.inject_requests_total).toBe(2);
+    expect(snap.inject_requests_2xx).toBe(2);
+    // EXACTLY one replay bump — the one that lost the race (pre-write
+    // dedup OR in-txn replay; the handler counts both as `replay=true`).
+    expect(snap.inject_idempotent_replays_total).toBe(1);
+  }, 15_000);
 });

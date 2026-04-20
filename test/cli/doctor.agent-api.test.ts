@@ -350,3 +350,177 @@ describe("remote doctor — R001..R003", () => {
     expect(r001?.status).toBe("fail");
   });
 });
+
+// --- Subprocess round-trip: `torana doctor --server` against a live server.
+//
+// Mocks a minimal /v1/health + /v1/bots HTTP surface with Bun.serve, then
+// spawns the real CLI binary. Catches bugs in argv parsing, credential
+// resolution, JSON output formatting, and the integration between the CLI
+// dispatcher and `runRemoteDoctor` that unit tests can't see.
+
+describe("subprocess: torana doctor --server URL --token TOK", () => {
+  const CLI_ENTRY = resolve(__dirname, "../../src/cli.ts");
+
+  async function runCli(
+    args: string[],
+    env: Record<string, string> = {},
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const proc = Bun.spawn({
+      cmd: ["bun", "run", CLI_ENTRY, ...args],
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { PATH: process.env.PATH ?? "", ...env },
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout as ReadableStream).text(),
+      new Response(proc.stderr as ReadableStream).text(),
+      proc.exited,
+    ]);
+    return { stdout, stderr, exitCode: exitCode ?? 0 };
+  }
+
+  async function mockGateway(opts: {
+    health: Response | (() => Response);
+    bots: Response | ((req: Request) => Response);
+  }): Promise<{ url: string; stop: () => void }> {
+    const server = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        const u = new URL(req.url);
+        if (u.pathname === "/v1/health") {
+          return typeof opts.health === "function" ? opts.health() : opts.health.clone();
+        }
+        if (u.pathname === "/v1/bots") {
+          return typeof opts.bots === "function" ? opts.bots(req) : opts.bots.clone();
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+    return {
+      url: `http://127.0.0.1:${server.port}`,
+      stop: () => server.stop(true),
+    };
+  }
+
+  test("happy path: both R001 and R002 succeed; exit 0; text output", async () => {
+    const gw = await mockGateway({
+      health: new Response(
+        JSON.stringify({ ok: true, version: "test", agent_api_enabled: true, uptime_secs: 1 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+      bots: new Response(
+        JSON.stringify({
+          bots: [{ bot_id: "alpha", runner_type: "claude-code", supports_side_sessions: true }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    });
+    try {
+      const { stdout, exitCode } = await runCli([
+        "doctor",
+        "--server",
+        gw.url,
+        "--token",
+        "tok",
+      ]);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("[ ok ] R001");
+      expect(stdout).toContain("[ ok ] R002");
+      // http:// so R003 skips.
+      expect(stdout).toContain("[skip] R003");
+      // R002 detail includes the bot count so a typo in the bots-list
+      // filter would be caught here end-to-end.
+      expect(stdout).toContain("1 bot");
+    } finally {
+      gw.stop();
+    }
+  }, 15_000);
+
+  test("R001 fail: exit 1; stdout still includes R002/R003 attempts", async () => {
+    const gw = await mockGateway({
+      health: new Response("nope", { status: 503 }),
+      bots: new Response(JSON.stringify({ bots: [] }), { status: 200 }),
+    });
+    try {
+      const { stdout, exitCode } = await runCli([
+        "doctor",
+        "--server",
+        gw.url,
+        "--token",
+        "tok",
+      ]);
+      expect(exitCode).toBe(1);
+      expect(stdout).toContain("[fail] R001");
+      expect(stdout).toMatch(/R001.*503/);
+    } finally {
+      gw.stop();
+    }
+  }, 15_000);
+
+  test("env vars TORANA_SERVER + TORANA_TOKEN stand in for flags", async () => {
+    const gw = await mockGateway({
+      health: new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      bots: new Response(JSON.stringify({ bots: [{ bot_id: "x" }] }), { status: 200 }),
+    });
+    try {
+      const { stdout, exitCode } = await runCli(["doctor"], {
+        TORANA_SERVER: gw.url,
+        TORANA_TOKEN: "tok",
+      });
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("[ ok ] R001");
+      expect(stdout).toContain("[ ok ] R002");
+    } finally {
+      gw.stop();
+    }
+  }, 15_000);
+
+  test("--format json emits a parseable JSON body with all three R-check ids", async () => {
+    const gw = await mockGateway({
+      health: new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      bots: new Response(JSON.stringify({ bots: [{ bot_id: "x" }] }), { status: 200 }),
+    });
+    try {
+      const { stdout, exitCode } = await runCli([
+        "doctor",
+        "--server",
+        gw.url,
+        "--token",
+        "tok",
+        "--format",
+        "json",
+      ]);
+      expect(exitCode).toBe(0);
+      const parsed = JSON.parse(stdout);
+      const ids = (parsed.checks as Array<{ id: string }>).map((c) => c.id);
+      expect(ids).toContain("R001");
+      expect(ids).toContain("R002");
+      expect(ids).toContain("R003");
+    } finally {
+      gw.stop();
+    }
+  }, 15_000);
+
+  test("R002 received 401: token rejection is visible in stderr output", async () => {
+    const gw = await mockGateway({
+      health: new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      bots: new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 }),
+    });
+    try {
+      const { stdout, exitCode } = await runCli([
+        "doctor",
+        "--server",
+        gw.url,
+        "--token",
+        "wrong",
+      ]);
+      expect(exitCode).toBe(1);
+      expect(stdout).toContain("[ ok ] R001");
+      expect(stdout).toContain("[fail] R002");
+      expect(stdout).toMatch(/R002.*401/);
+    } finally {
+      gw.stop();
+    }
+  }, 15_000);
+});

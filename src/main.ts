@@ -144,7 +144,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   if (config.agent_api?.enabled) {
     const tokens = opts.agentApiTokens ?? [];
     agentApiPool = new SideSessionPool({ config, db, registry, metrics });
-    agentApiOrphans = new OrphanListenerManager(db, agentApiPool);
+    agentApiOrphans = new OrphanListenerManager(db, agentApiPool, metrics);
     agentApiPool.startSweeper();
     agentApiUnregs.push(
       ...registerAgentApiRoutes(server.router, {

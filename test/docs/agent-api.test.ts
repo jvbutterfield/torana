@@ -17,6 +17,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { DURATION_BUCKETS_MS } from "../../src/metrics.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "../..");
 const DOCS = resolve(REPO, "docs");
@@ -106,6 +108,7 @@ describe("docs/agent-api.md", () => {
       "torana_agent_api_side_sessions_started_total",
       "torana_agent_api_side_session_evictions_total",
       "torana_agent_api_side_session_capacity_rejected_total",
+      "torana_agent_api_ask_orphan_resolutions_total",
       "torana_agent_api_side_sessions_live",
       "torana_agent_api_request_duration_ms",
       "torana_agent_api_side_session_acquire_duration_ms",
@@ -118,6 +121,27 @@ describe("docs/agent-api.md", () => {
   test("documents the session_id sharing caveat", () => {
     const body = read(path);
     expect(body).toMatch(/session.?id sharing|session_id.*sharing/i);
+  });
+
+  test("documented histogram bucket list matches DURATION_BUCKETS_MS at runtime", () => {
+    // Guards against buckets drifting silently between code + docs.
+    // The doc renders the sequence as a comma-separated list; this test
+    // extracts it and compares to the exported constant.
+    const body = read(path);
+    const sentence = body.match(/Bucket sequence.*?:\s*`([^`]+)`/);
+    expect(sentence).not.toBeNull();
+    const docBuckets = sentence![1]!
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => Number(s.replace(/_/g, "")));
+    expect(docBuckets).toEqual([...DURATION_BUCKETS_MS]);
+  });
+
+  test("documents the orphan-resolutions counter added with the orphan-listener wiring", () => {
+    const body = read(path);
+    expect(body).toContain("torana_agent_api_ask_orphan_resolutions_total");
+    expect(body).toMatch(/outcome.*done.*error.*fatal.*backstop|done.*error.*fatal.*backstop/);
   });
 });
 

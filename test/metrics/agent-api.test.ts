@@ -242,6 +242,25 @@ describe("Metrics — agent-api renderPrometheus", () => {
       'torana_agent_api_side_session_capacity_rejected_total{bot_id="alpha"} 2',
     );
 
+    m.incAgentApi("alpha", "ask_orphan_resolutions_done", 3);
+    m.incAgentApi("alpha", "ask_orphan_resolutions_error", 1);
+    m.incAgentApi("alpha", "ask_orphan_resolutions_backstop", 1);
+    const body2 = m.renderPrometheus({ alpha: 2, beta: 2 });
+    expect(body2).toContain("# HELP torana_agent_api_ask_orphan_resolutions_total");
+    expect(body2).toContain("# TYPE torana_agent_api_ask_orphan_resolutions_total counter");
+    expect(body2).toContain(
+      'torana_agent_api_ask_orphan_resolutions_total{bot_id="alpha",outcome="done"} 3',
+    );
+    expect(body2).toContain(
+      'torana_agent_api_ask_orphan_resolutions_total{bot_id="alpha",outcome="error"} 1',
+    );
+    expect(body2).toContain(
+      'torana_agent_api_ask_orphan_resolutions_total{bot_id="alpha",outcome="fatal"} 0',
+    );
+    expect(body2).toContain(
+      'torana_agent_api_ask_orphan_resolutions_total{bot_id="alpha",outcome="backstop"} 1',
+    );
+
     expect(body).toContain("# HELP torana_agent_api_side_sessions_live");
     expect(body).toContain("# TYPE torana_agent_api_side_sessions_live gauge");
     expect(body).toContain(

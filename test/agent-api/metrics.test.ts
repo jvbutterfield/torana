@@ -9,6 +9,7 @@ import {
   recordInject,
   recordAcquire,
   recordEviction,
+  recordOrphanResolution,
   setSideSessionsLive,
 } from "../../src/agent-api/metrics.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
@@ -170,7 +171,24 @@ describe("recordEviction + setSideSessionsLive", () => {
     recordInject(undefined, "alpha", { status: 202, replay: false, durationMs: 1 });
     recordAcquire(undefined, "alpha", "spawn", 1);
     recordEviction(undefined, "alpha", "idle");
+    recordOrphanResolution(undefined, "alpha", "done");
     setSideSessionsLive(undefined, "alpha", 1);
     // No assertion needed — just mustn't throw.
+  });
+});
+
+describe("recordOrphanResolution", () => {
+  test("routes each outcome to the matching counter", () => {
+    const m = makeMetrics();
+    recordOrphanResolution(m, "alpha", "done");
+    recordOrphanResolution(m, "alpha", "done");
+    recordOrphanResolution(m, "alpha", "error");
+    recordOrphanResolution(m, "alpha", "fatal");
+    recordOrphanResolution(m, "alpha", "backstop");
+    const c = m.agentApiSnapshot().alpha.counters;
+    expect(c.ask_orphan_resolutions_done).toBe(2);
+    expect(c.ask_orphan_resolutions_error).toBe(1);
+    expect(c.ask_orphan_resolutions_fatal).toBe(1);
+    expect(c.ask_orphan_resolutions_backstop).toBe(1);
   });
 });

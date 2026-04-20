@@ -11,6 +11,7 @@ import {
   InvalidSideSessionId,
   RunnerDoesNotSupportSideSessions,
   SIDE_SESSION_ID_REGEX,
+  runnerTypeSupportsSideSessions,
   validateSideSessionId,
 } from "../../src/runner/types.js";
 
@@ -87,5 +88,65 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
     expect(() => r.sendSideTurn("sid", "tid", "hi", [])).toThrow(
       RunnerDoesNotSupportSideSessions,
     );
+  });
+});
+
+describe("runnerTypeSupportsSideSessions — static mapping", () => {
+  test("claude-code + codex → true; command → false", () => {
+    expect(runnerTypeSupportsSideSessions("claude-code")).toBe(true);
+    expect(runnerTypeSupportsSideSessions("codex")).toBe(true);
+    expect(runnerTypeSupportsSideSessions("command")).toBe(false);
+  });
+  test("unknown runner types default to false (safe-by-default)", () => {
+    expect(runnerTypeSupportsSideSessions("made-up")).toBe(false);
+    expect(runnerTypeSupportsSideSessions("")).toBe(false);
+  });
+  test("static mapping agrees with each runner's supportsSideSessions() runtime value", () => {
+    // Guard against drift between doctor C011's check and the runtime
+    // impl. If claude-code or codex is ever changed to return false, the
+    // runtime vs static answer will diverge here.
+    const claude = new ClaudeCodeRunner({
+      botId: "bot1",
+      config: {
+        type: "claude-code",
+        cli_path: "claude",
+        args: [],
+        env: {},
+        pass_continue_flag: true,
+      },
+      logDir: "/tmp",
+    });
+    expect(runnerTypeSupportsSideSessions("claude-code")).toBe(
+      claude.supportsSideSessions(),
+    );
+
+    const codex = new CodexRunner({
+      botId: "bot1",
+      config: {
+        type: "codex",
+        cli_path: "codex",
+        args: [],
+        env: {},
+        pass_resume_flag: true,
+        approval_mode: "full-auto",
+        sandbox: "workspace-write",
+        acknowledge_dangerous: false,
+      },
+      logDir: "/tmp",
+    });
+    expect(runnerTypeSupportsSideSessions("codex")).toBe(codex.supportsSideSessions());
+
+    const cmd = new CommandRunner({
+      botId: "bot1",
+      config: {
+        type: "command",
+        cmd: ["echo"],
+        protocol: "jsonl-text",
+        env: {},
+        on_reset: "signal",
+      },
+      logDir: "/tmp",
+    });
+    expect(runnerTypeSupportsSideSessions("command")).toBe(cmd.supportsSideSessions());
   });
 });

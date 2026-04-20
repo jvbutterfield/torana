@@ -13,7 +13,9 @@
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { SideSessionPool } from "./pool.js";
 import type { AgentRunner, RunnerEvent } from "../runner/types.js";
+import type { Metrics } from "../metrics.js";
 import { logger } from "../log.js";
+import { recordOrphanResolution, type OrphanResolution } from "./metrics.js";
 
 interface Registration {
   botId: string;
@@ -31,6 +33,7 @@ export class OrphanListenerManager {
   constructor(
     private db: GatewayDB,
     private pool: SideSessionPool,
+    private metrics?: Metrics,
   ) {}
 
   attach(opts: {
@@ -55,7 +58,11 @@ export class OrphanListenerManager {
     };
     this.regs.set(key, reg);
 
-    const onTerminal = (ev: RunnerEvent, source: "done" | "error" | "fatal") => {
+    const onTerminal = (
+      ev: RunnerEvent,
+      source: "done" | "error" | "fatal",
+      outcome: OrphanResolution = source,
+    ) => {
       if (reg.resolved) return;
       reg.resolved = true;
       for (const u of reg.unsubs) {
@@ -67,6 +74,7 @@ export class OrphanListenerManager {
       }
       if (reg.backstopTimer) clearTimeout(reg.backstopTimer);
       this.applyTerminalToDb(turnId, source, ev);
+      recordOrphanResolution(this.metrics, botId, outcome);
       try {
         this.pool.release(botId, sessionId);
       } catch (err) {
@@ -120,6 +128,7 @@ export class OrphanListenerManager {
           retriable: false,
         },
         "error",
+        "backstop",
       );
     }, backstop);
     (reg.backstopTimer as unknown as { unref?: () => void }).unref?.();

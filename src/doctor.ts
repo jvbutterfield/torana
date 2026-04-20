@@ -13,6 +13,7 @@ import { platform } from "node:os";
 import type { Config } from "./config/schema.js";
 import { TelegramClient } from "./telegram/client.js";
 import { planMigration } from "./db/migrate.js";
+import { runnerTypeSupportsSideSessions } from "./runner/types.js";
 
 export interface DoctorCheck {
   id: string;
@@ -286,17 +287,12 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
   }
 
   // C011 — ask-scope token on a runner that can't back it. Fail.
-  // Derived statically from runner.type — the actual runner instance isn't
-  // constructed by doctor. claude-code/codex support side-sessions; command
-  // does not (Phase 2c pending).
+  // Derived statically from runner.type via runnerTypeSupportsSideSessions
+  // (src/runner/types.ts) — single source of truth for this mapping so new
+  // runners can flip the bit in one place.
   if (!agentApiActive) {
     checks.push({ id: "C011", status: "skip", detail: "agent_api disabled" });
   } else {
-    const runnerSupports: Record<string, boolean> = {
-      "claude-code": true,
-      codex: true,
-      command: false,
-    };
     const byBot = new Map(config.bots.map((b) => [b.id, b.runner.type] as const));
     const offenders: string[] = [];
     for (const tok of agentApi.tokens) {
@@ -304,7 +300,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       for (const botId of tok.bot_ids) {
         const type = byBot.get(botId);
         if (!type) continue; // C010 will fail first
-        if (runnerSupports[type] !== true) {
+        if (!runnerTypeSupportsSideSessions(type)) {
           offenders.push(`${tok.name}→${botId}(${type})`);
         }
       }

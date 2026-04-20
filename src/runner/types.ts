@@ -106,6 +106,35 @@ export interface AgentRunner {
 }
 
 /**
+ * Runner-type → side-session support, derived statically (without
+ * instantiating a runner). Used by `torana doctor` C011 and by docs/help
+ * text so there's a single place to update when a new runner flips its
+ * support bit.
+ *
+ * Keep this in sync with the `supportsSideSessions()` implementation on
+ * each concrete runner:
+ *   - `src/runner/claude-code.ts` returns true (Phase 2a).
+ *   - `src/runner/codex.ts` returns true (Phase 2b).
+ *   - `src/runner/command.ts` returns false in v1; Phase 2c will flip
+ *     true for `claude-ndjson` / `codex-jsonl` via protocol capability
+ *     descriptors.
+ *
+ * A config `runner.type` string maps deterministically to one of the
+ * three, so this function is total.
+ */
+export function runnerTypeSupportsSideSessions(type: string): boolean {
+  switch (type) {
+    case "claude-code":
+    case "codex":
+      return true;
+    case "command":
+      return false;
+    default:
+      return false;
+  }
+}
+
+/**
  * Thrown by runners whose underlying protocol can't multiplex a second
  * subprocess (e.g. jsonl-text command runner).
  */

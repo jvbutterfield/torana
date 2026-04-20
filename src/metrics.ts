@@ -53,6 +53,17 @@ export interface AgentApiCounters {
   side_session_evictions_hard: number;
   side_session_evictions_lru: number;
   side_session_capacity_rejected_total: number;
+  /**
+   * Terminal-event outcomes for asks that were handed off to the orphan
+   * listener on a 202 timeout (ask_timeouts_total counts the handoff
+   * itself; these four count the *eventual* outcome). Together they
+   * answer "for my 202 asks, how often did the runner actually finish
+   * cleanly vs. fail vs. get force-released at the 1h backstop?"
+   */
+  ask_orphan_resolutions_done: number;
+  ask_orphan_resolutions_error: number;
+  ask_orphan_resolutions_fatal: number;
+  ask_orphan_resolutions_backstop: number;
 }
 
 export interface AgentApiGauges {
@@ -115,6 +126,10 @@ function zeroAgentApiCounters(): AgentApiCounters {
     side_session_evictions_hard: 0,
     side_session_evictions_lru: 0,
     side_session_capacity_rejected_total: 0,
+    ask_orphan_resolutions_done: 0,
+    ask_orphan_resolutions_error: 0,
+    ask_orphan_resolutions_fatal: 0,
+    ask_orphan_resolutions_backstop: 0,
   };
 }
 
@@ -124,9 +139,11 @@ function zeroAgentApiGauges(): AgentApiGauges {
 
 // Bucket sequences are duration-in-milliseconds. Both series use the same
 // sequence so the histogram cardinality stays predictable for operators.
-const DURATION_BUCKETS_MS = [
+// Exported so `docs/agent-api.md` can be pinned to the live value via a
+// unit test (see `test/docs/agent-api.test.ts`).
+export const DURATION_BUCKETS_MS = [
   50, 100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000,
-];
+] as const;
 
 function zeroHistogram(): HistogramState {
   return {
@@ -389,6 +406,25 @@ export class Metrics {
       for (const [botId, c] of this.agentApi) {
         lines.push(
           `torana_agent_api_side_session_capacity_rejected_total{bot_id="${botId}"} ${c.side_session_capacity_rejected_total}`,
+        );
+      }
+
+      lines.push(
+        "# HELP torana_agent_api_ask_orphan_resolutions_total Terminal outcomes for asks that were 202-handed-off to the orphan listener.",
+      );
+      lines.push("# TYPE torana_agent_api_ask_orphan_resolutions_total counter");
+      for (const [botId, c] of this.agentApi) {
+        lines.push(
+          `torana_agent_api_ask_orphan_resolutions_total{bot_id="${botId}",outcome="done"} ${c.ask_orphan_resolutions_done}`,
+        );
+        lines.push(
+          `torana_agent_api_ask_orphan_resolutions_total{bot_id="${botId}",outcome="error"} ${c.ask_orphan_resolutions_error}`,
+        );
+        lines.push(
+          `torana_agent_api_ask_orphan_resolutions_total{bot_id="${botId}",outcome="fatal"} ${c.ask_orphan_resolutions_fatal}`,
+        );
+        lines.push(
+          `torana_agent_api_ask_orphan_resolutions_total{bot_id="${botId}",outcome="backstop"} ${c.ask_orphan_resolutions_backstop}`,
         );
       }
 
