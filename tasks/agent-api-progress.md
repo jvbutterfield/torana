@@ -14,7 +14,7 @@ Remaining work is the pre-release E2E gates — no more implementation.
 
 1. `git checkout feat/agent-api` — tip commit
    `<PHASE_2C_PIN_COMMIT_PLACEHOLDER>` (Phase 2c pin-commit polish);
-   last phase commit `<PHASE_2C_COMMIT_PLACEHOLDER>` (Phase 2c).
+   last phase commit `b7ab18f` (Phase 2c).
    32 commits ahead of `main`.
 2. Sanity-check before touching anything:
    - `bun test` — expect **874 pass / 4 skip / 0 fail**. One test
@@ -150,18 +150,21 @@ Remaining work is the pre-release E2E gates — no more implementation.
 | 5 — Cross-cutting (full) | ✅ Complete (`35b355d`) | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
-| 2c — CommandRunner side-sessions | ✅ Complete (`<PHASE_2C_COMMIT_PLACEHOLDER>`) | US-007 | Protocol capability descriptors (`claudeNdjsonCapabilities`/`codexJsonlCapabilities`/`jsonlTextCapabilities`); per-session subprocess spawn with `TORANA_SESSION_ID=<id>` env var; `runnerSupportsSideSessions` now protocol-aware; doctor C011 labels offender as `command/<protocol>`; `examples/side-session-runner/` (~60 lines Bun) demonstrates the pattern; **31 new tests** across `command.side-session.test.ts` (26), `example-side-session-runner.test.ts` (1), `side-session-stub.test.ts` (+3 cases), `doctor.agent-api.test.ts` (+2 C011 cases) |
+| 2c — CommandRunner side-sessions | ✅ Complete (`b7ab18f`) | US-007 | Protocol capability descriptors (`claudeNdjsonCapabilities`/`codexJsonlCapabilities`/`jsonlTextCapabilities`); per-session subprocess spawn with `TORANA_SESSION_ID=<id>` env var; `runnerSupportsSideSessions` now protocol-aware; doctor C011 labels offender as `command/<protocol>`; `examples/side-session-runner/` (~60 lines Bun) demonstrates the pattern; **31 new tests** across `command.side-session.test.ts` (26), `example-side-session-runner.test.ts` (1), `side-session-stub.test.ts` (+3 cases), `doctor.agent-api.test.ts` (+2 C011 cases) |
 | 6b — CLI follow-ups + skills | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates |
 | 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
 | 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
 
 ---
 
-## What's done — feat/agent-api branch (30 commits)
+## What's done — feat/agent-api branch (32 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+<PHASE_2C_PIN_COMMIT_PLACEHOLDER> agent-api: pin Phase 2c commit hash in progress tracker
+b7ab18f agent-api phase 2c: CommandRunner side-sessions (US-007)
+c8f262d agent-api: correct branch commit count in tracker (28 → 30)
 cd44c83 agent-api: replace pin-commit placeholder with 73a043d
 73a043d agent-api: pin Phase 6b commit hash in progress tracker
 7b62e1c agent-api phase 6b: profile store + @- stdin + skills + codex plugin (US-018, US-019, US-020)
@@ -972,7 +975,7 @@ follow-ups:**
 
 ---
 
-### Commit `<PHASE_2C_COMMIT_PLACEHOLDER>` — Phase 2c: CommandRunner side-sessions (US-007)
+### Commit `b7ab18f` — Phase 2c: CommandRunner side-sessions (US-007)
 
 - [src/runner/protocols/shared.ts](../src/runner/protocols/shared.ts)
   — new `ProtocolCapabilities` interface (just `{ sideSessions: bool }`
