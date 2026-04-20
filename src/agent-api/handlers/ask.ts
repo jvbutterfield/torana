@@ -15,6 +15,9 @@
 // Invariant: exactly one of (handler finally, orphan listener terminal)
 // calls pool.release for any given acquire.
 
+import { randomUUID } from "node:crypto";
+
+import type { Attachment } from "../../telegram/types.js";
 import type {
   AgentRunner,
   RunnerEvent,
@@ -26,6 +29,7 @@ import type { OrphanListenerManager } from "../orphan-listeners.js";
 import type { SideSessionPool } from "../pool.js";
 import { AskBodySchema } from "../schemas.js";
 import { errorResponse, jsonResponse } from "../errors.js";
+import { cleanupFiles, parseMultipartRequest } from "../attachments.js";
 
 export interface AskDeps extends AgentApiDeps {
   pool: SideSessionPool;
@@ -34,15 +38,40 @@ export interface AskDeps extends AgentApiDeps {
 
 export function handleAsk(deps: AskDeps): AuthedHandler {
   return async (req, { botId, token }) => {
-    // 1. Parse body.
+    // 1. Parse body — JSON or multipart. Multipart writes files to disk
+    //    up-front; on any failure before the turn row lands, we unlink them.
+    const contentType = (req.headers.get("content-type") ?? "").toLowerCase();
+    const isMultipart = contentType.includes("multipart/form-data");
+    const requestId = randomUUID();
+
     let bodyRaw: unknown;
-    try {
-      bodyRaw = await req.json();
-    } catch {
-      return errorResponse("invalid_body", "body must be JSON");
+    let attachments: Attachment[] = [];
+    if (isMultipart) {
+      const multipart = await parseMultipartRequest(
+        req,
+        deps.config,
+        botId,
+        requestId,
+      );
+      if (multipart.kind === "err") {
+        return errorResponse(multipart.code, multipart.detail);
+      }
+      attachments = multipart.attachments;
+      bodyRaw = {
+        text: multipart.text,
+        session_id: multipart.fields.session_id,
+        timeout_ms: multipart.fields.timeout_ms,
+      };
+    } else {
+      try {
+        bodyRaw = await req.json();
+      } catch {
+        return errorResponse("invalid_body", "body must be JSON");
+      }
     }
     const parsed = AskBodySchema.safeParse(bodyRaw);
     if (!parsed.success) {
+      await cleanupFiles(attachments.map((a) => a.path));
       return errorResponse("invalid_body", parsed.error.issues[0]?.message);
     }
     const body = parsed.data;
@@ -50,6 +79,7 @@ export function handleAsk(deps: AskDeps): AuthedHandler {
     // 2. Runner readiness precheck.
     const bot = deps.registry.bot(botId)!;
     if (!bot.runner.supportsSideSessions()) {
+      await cleanupFiles(attachments.map((a) => a.path));
       return errorResponse("runner_does_not_support_side_sessions");
     }
 
@@ -61,19 +91,20 @@ export function handleAsk(deps: AskDeps): AuthedHandler {
 
     // 3. Acquire side session.
     const acquire = await deps.pool.acquire(botId, body.session_id ?? null);
-    switch (acquire.kind) {
-      case "capacity":
-        return errorResponse("side_session_capacity");
-      case "busy":
-        return errorResponse("side_session_busy");
-      case "runner_does_not_support_side_sessions":
-        return errorResponse("runner_does_not_support_side_sessions");
-      case "gateway_shutting_down":
-        return errorResponse("gateway_shutting_down");
-      case "runner_error":
-        return errorResponse("runner_error", acquire.message);
-      case "ok":
-        break;
+    if (acquire.kind !== "ok") {
+      await cleanupFiles(attachments.map((a) => a.path));
+      switch (acquire.kind) {
+        case "capacity":
+          return errorResponse("side_session_capacity");
+        case "busy":
+          return errorResponse("side_session_busy");
+        case "runner_does_not_support_side_sessions":
+          return errorResponse("runner_does_not_support_side_sessions");
+        case "gateway_shutting_down":
+          return errorResponse("gateway_shutting_down");
+        case "runner_error":
+          return errorResponse("runner_error", acquire.message);
+      }
     }
     const sessionId = acquire.sessionId;
 
@@ -85,13 +116,15 @@ export function handleAsk(deps: AskDeps): AuthedHandler {
     };
 
     try {
-      // 4. Persist turn row (status='running').
+      // 4. Persist turn row (status='running'). From this point on the
+      //    turn row owns the attachment files — they live until the
+      //    completed-turn sweeper reaps them (retention_secs).
       const turnId = deps.db.insertAskTurn({
         botId,
         tokenName: token.name,
         sessionId,
         textPreview: body.text,
-        attachmentPaths: [],
+        attachmentPaths: attachments.map((a) => a.path),
       });
 
       // 5. Subscribe + send.
@@ -100,6 +133,7 @@ export function handleAsk(deps: AskDeps): AuthedHandler {
         sessionId,
         turnId,
         text: body.text,
+        attachments,
         timeoutMs,
       });
 
@@ -171,6 +205,7 @@ interface AwaitSideTurnOptions {
   sessionId: string;
   turnId: number;
   text: string;
+  attachments?: Attachment[];
   timeoutMs: number;
 }
 
@@ -189,6 +224,7 @@ export async function awaitSideTurn(
   opts: AwaitSideTurnOptions,
 ): Promise<AwaitSideTurnResult> {
   const { runner, sessionId, turnId, text, timeoutMs } = opts;
+  const attachments = opts.attachments ?? [];
   let buffer = "";
   const unsubs: Unsubscribe[] = [];
   const turnIdStr = String(turnId);
@@ -239,7 +275,7 @@ export async function awaitSideTurn(
     const timer = setTimeout(() => done({ kind: "timeout" }), timeoutMs);
     (timer as unknown as { unref?: () => void }).unref?.();
 
-    const send = runner.sendSideTurn(sessionId, turnIdStr, text, []);
+    const send = runner.sendSideTurn(sessionId, turnIdStr, text, attachments);
     if (!send.accepted) {
       done({
         kind: "error",

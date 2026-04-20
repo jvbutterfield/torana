@@ -2,18 +2,19 @@
 
 Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
-Approach: **thin end-to-end first** — Claude-ask + inject round-trips are
-working and tested. Remaining work is breadth-wise: multipart, Codex/
-Command runners, CLI, skills, docs.
+Approach: **thin end-to-end first** — Claude-ask + inject (JSON and
+multipart) round-trips are working and tested. Remaining work is
+breadth-wise: Codex/Command runners, CLI, skills, docs.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (7 commits ahead of `main`).
-2. `bun test` — expect 346 pass / 4 skip / 0 fail.
-3. Read the "What's left" section below. Next is **Phase 5 — Multipart
-   + idempotency full** (the idempotency-in-transaction path is already
-   live from Phase 4b; Phase 5 adds file uploads + a formalized sweeper
-   timer). After that: **Phase 2b — CodexRunner side-sessions**.
+1. `git checkout feat/agent-api` (8+ commits ahead of `main`).
+2. `bun test` — expect 388 pass / 4 skip / 0 fail.
+3. Read the "What's left" section below. Next is **Phase 2b —
+   CodexRunner side-sessions** OR **Phase 6 — CLI + skills**, depending
+   on priority. The acknowledged gap across Phases 4b+5 is a full
+   inject end-to-end test (main runner → outbox → FakeTelegram); that
+   lands naturally with the CLI in Phase 6 or can be done sooner.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
@@ -41,7 +42,7 @@ Conventions in use on this branch:
 | 4a — Ask + turns handlers | ✅ Complete (`94445a1`) | US-009 US-010 | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints |
 | — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
 | 4b — Inject path | ✅ Complete (`b09f746`) | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
-| 5 — Cross-cutting (full) | ⏳ Next (recommended) | US-013 US-014 | Multipart attachments + formalize idempotency sweeper + orphan-file sweep |
+| 5 — Cross-cutting (full) | ✅ Complete | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
 | 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
 | 6 — CLI + skills | ⏳ Pending | US-018 US-019 US-020 | `torana ask/inject/turns/bots/config/skills install` + Claude + Codex skill packages |
@@ -49,11 +50,13 @@ Conventions in use on this branch:
 
 ---
 
-## What's done — feat/agent-api branch (7 commits)
+## What's done — feat/agent-api branch (8+ commits)
 
 Commits (`git log --oneline feat/agent-api ^main`):
 
 ```
+<tip>   agent-api phase 5: multipart + orphan sweep (US-013, US-014)
+bd2583c agent-api: pin Phase 4b commit hash in progress tracker
 b09f746 agent-api phase 4b: inject path (US-011, US-012)
 a8d3aa8 agent-api: rewrite progress tracker for session handoff
 9c4a7e1 agent-api: update progress tracker — Phase 1–4a complete
@@ -64,13 +67,15 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 346 pass / 4 skip / 0 fail.** End-to-end round-trips
-both live: ask through real HTTP → bearer auth → SideSessionPool →
-ClaudeCodeRunner (mock binary) → response body in
-[test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts); inject
-through real HTTP → bearer auth → chat resolve → `insertInjectTurn` →
-queued row persisted with marker-wrapped prompt in
-[test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts).
+**Full test suite: 388 pass / 4 skip / 0 fail.** End-to-end round-trips:
+ask (JSON + multipart) through real HTTP → bearer auth →
+SideSessionPool → ClaudeCodeRunner (mock binary) → response body in
+[test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts) +
+[test/agent-api/ask.multipart.test.ts](../test/agent-api/ask.multipart.test.ts);
+inject (JSON + multipart) through real HTTP → bearer auth → chat
+resolve → `insertInjectTurn` → queued row + attachment paths persisted
+in [test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts) +
+[test/agent-api/inject.multipart.test.ts](../test/agent-api/inject.multipart.test.ts).
 
 ---
 
@@ -313,35 +318,73 @@ queued row persisted with marker-wrapped prompt in
 
 ---
 
+### Phase 5: Multipart + idempotency full (US-013, US-014)
+
+- [src/agent-api/attachments.ts](../src/agent-api/attachments.ts) —
+  `parseMultipartRequest` (per-file cap, aggregate cap via
+  Content-Length + summed sizes, count cap, MIME allowlist, disk-usage
+  cap, gateway-controlled filenames under
+  `<data_dir>/attachments/<botId>/agentapi-<uuid>-<idx><ext>`);
+  `cleanupFiles` best-effort unlink; `sweepUnreferencedAgentApiFiles`
+  orphan-file sweep (skips non-`agentapi-*` files; age-gated to avoid
+  reaping in-flight writes).
+- [src/agent-api/idempotency.ts](../src/agent-api/idempotency.ts) —
+  re-exports the key validator from schemas for call-site clarity;
+  `sweepIdempotencyRows` wrapper that swallows transient DB errors.
+- [src/agent-api/handlers/inject.ts](../src/agent-api/handlers/inject.ts)
+  + [src/agent-api/handlers/ask.ts](../src/agent-api/handlers/ask.ts)
+  — both detect `multipart/form-data` and route through
+  `parseMultipartRequest`. File-lifecycle discipline: writes happen
+  BEFORE the DB transaction; any failure (zod validation, chat resolve,
+  ACL re-check, runner precheck, pool failure, DB throw, in-txn
+  replay) triggers `cleanupFiles` before return.
+- [src/main.ts](../src/main.ts) — `sweepUnreferencedAgentApiFiles`
+  wired onto the hourly timer (agent-api-gated); cleared on shutdown.
+- Tests (32 new):
+  - [test/agent-api/attachments.test.ts](../test/agent-api/attachments.test.ts)
+    — 14 tests: multipart happy paths, all rejection paths
+    (wrong content-type, count cap, per-file cap, content-length cap,
+    aggregate cap without Content-Length, bad MIME, disk cap), path
+    safety (`../../etc/passwd` ignored), `cleanupFiles` tolerates
+    missing files, orphan sweep (referenced/young/old matrix, missing
+    root).
+  - [test/agent-api/inject.multipart.test.ts](../test/agent-api/inject.multipart.test.ts)
+    — 7 integration tests: PDF happy path, file cleanup on bad-MIME /
+    missing-target / ACL-bypass / too-many-files, idempotent replay
+    disposes of second-call's new file, key NOT consumed by pre-commit
+    errors.
+  - [test/agent-api/ask.multipart.test.ts](../test/agent-api/ask.multipart.test.ts)
+    — 3 integration tests with real runner: PNG happy path (attachment
+    path on turn row, file on disk, runner sees `[Attached file: ...]`
+    suffix), bad MIME rejection cleanup, zod-after-parse cleanup.
+  - [test/agent-api/idempotency.test.ts](../test/agent-api/idempotency.test.ts)
+    — 8 tests: validator boundary cases, sweep deletes old / keeps
+    fresh, swallow-error wrapper.
+
+**Known gap:** multipart ask path with a happy-path attachment is
+wired but only lightly tested — the mock claude binary echoes its
+input rather than opening the file, so "runner actually reads the
+bytes" remains unverified. Real-claude E2E covers this in soak.
+
+---
+
 ## What's left
 
-### Immediate next chunk — Phase 5: Multipart + idempotency full (US-013, US-014)
+### Immediate next chunk — two options
 
-Phase 4b landed the JSON-body inject path + idempotency-in-transaction.
-Phase 5 widens to multipart request handling + formalizes the
-idempotency sweeper + adds an orphan-file sweep. See
-[impl plan §7](impl-agent-api.md) for full detail.
+**Option A — close the inject e2e gap** (~1 day)
+Add `test/integration/agent-api/inject.round-trip.test.ts` modeled on
+`test/integration/round-trip.test.ts`: seed user_chats, issue inject,
+verify main-runner dispatch → streaming → outbox → FakeTelegram
+delivery. Raises confidence on inject delivery from ~40% to ~80%
+without waiting for the CLI.
 
-1. [src/agent-api/attachments.ts](../src/agent-api/attachments.ts) — `parseMultipartRequest` with
-   per-file + aggregate + count caps + MIME allowlist + disk-usage cap;
-   gateway-controlled on-disk filenames under
-   `<data_dir>/attachments/<botId>/agentapi-<uuid>-<idx><ext>`; rollback on
-   DB failure OR idempotent replay (files were written optimistically);
-   orphan-file sweep (unreferenced >24h).
-2. [src/agent-api/idempotency.ts](../src/agent-api/idempotency.ts) — key format validator; the actual
-   dedup write is already in-transaction in `insertInjectTurn`; sweeper
-   timer wired into `main.ts` (already live for inject — just formalize).
-3. Wire multipart path through both `handleAsk` and `handleInject` —
-   current handlers only accept JSON bodies. On multipart, write files
-   to disk BEFORE opening the DB transaction; clean up on error or
-   idempotent replay (see §7.1 ordering discipline).
-4. **End-to-end for inject** — harder than ask because it runs through
-   the main runner + outbox + FakeTelegram. Either use the existing
-   integration harness in `test/integration/round-trip.test.ts` as a
-   template, or defer until Phase 6 (CLI) so we can use `torana inject`
-   against a real gateway.
+**Option B — keep breadth momentum** (Phase 2b or Phase 6)
+Phase 2b (Codex side-sessions) unblocks `torana ask` against non-
+claude bots. Phase 6 (CLI + skills) is what most users interact with
+and also provides a natural e2e harness.
 
-### After Phase 5 lands (widen)
+### Remaining phases
 
 1. **Phase 2b — CodexRunner side-sessions** ([impl plan §4.2](impl-agent-api.md))
    - Per-turn spawn of `codex exec [resume <threadId>] --json`; capture

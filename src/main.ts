@@ -17,6 +17,7 @@ import { StreamManager } from "./streaming.js";
 import { Bot } from "./core/bot.js";
 import { BotRegistry } from "./core/registry.js";
 import { sweepExpiredAttachments } from "./core/attachments.js";
+import { sweepUnreferencedAgentApiFiles } from "./agent-api/attachments.js";
 import { createServer, type Server } from "./server.js";
 import { WebhookTransport } from "./transport/webhook.js";
 import { PollingTransport } from "./transport/polling.js";
@@ -240,6 +241,30 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   void runSweeper();
   const attachmentSweeperTimer = setInterval(() => void runSweeper(), 60 * 60 * 1000);
 
+  // Agent-API orphan-file sweep: catches the crash window between a
+  // multipart write and the DB commit. Only relevant when agent-api is
+  // enabled; we still schedule the timer so an operator toggling the
+  // flag at runtime isn't surprised by a build-up.
+  const runOrphanSweep = async (): Promise<void> => {
+    if (!config.agent_api?.enabled) return;
+    try {
+      const result = await sweepUnreferencedAgentApiFiles(
+        db,
+        config.gateway.data_dir,
+        24 * 60 * 60 * 1000,
+      );
+      if (result.deleted > 0) {
+        log.info("agent-api orphan sweep", result);
+      }
+    } catch (err) {
+      log.warn("agent-api orphan sweep failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+  const orphanSweeperTimer = setInterval(() => void runOrphanSweep(), 60 * 60 * 1000);
+  (orphanSweeperTimer as unknown as { unref?: () => void }).unref?.();
+
   let shutdownStarted = false;
   const running: RunningGateway = {
     server,
@@ -266,6 +291,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       try {
         clearInterval(backlogTimer);
         clearInterval(attachmentSweeperTimer);
+        clearInterval(orphanSweeperTimer);
         if (agentApiIdempotencySweep) clearInterval(agentApiIdempotencySweep);
 
         // Unregister agent-api routes so new calls 404 before we tear down.
