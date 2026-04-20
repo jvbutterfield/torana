@@ -1068,7 +1068,7 @@ label assertion). Full suite 843 → **874 pass** / 4 skip / 0 fail.
 
 ---
 
-### Commit `<PHASE_2C_GAP_FILL_COMMIT_PLACEHOLDER>` — Phase 2c gap-fill (quality-review pass)
+### Commit `c2d96af` — Phase 2c gap-fill (quality-review pass)
 
 A critical re-audit of Phase 2c coverage identified 7 gaps — 2 critical,
 5 important — and filled them all. No production code changed; only
