@@ -1,5 +1,14 @@
 #!/usr/bin/env bun
-// torana CLI dispatch. Subcommands: start, doctor, validate, migrate, version.
+// torana CLI dispatch. Two surface areas:
+//
+//   Gateway (server-side): start, doctor, validate, migrate, version.
+//     Uses the legacy parseArgs() below; flags are global to the subcommand.
+//
+//   Agent-API client (added in Phase 6 / US-018): ask, inject, turns get,
+//     bots list. Each delegates to a module in `src/cli/` that returns a
+//     `Rendered` for testability. The dispatcher in `main()` peeks at argv[0]
+//     to choose between the two surfaces; the legacy parseArgs is preserved
+//     unmodified so existing test imports keep working.
 
 import { existsSync, statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
@@ -9,9 +18,27 @@ import { logger, setLogFormat, setLogLevel, setSecrets } from "./log.js";
 import { applyMigrations, planMigration } from "./db/migrate.js";
 import { startGateway } from "./main.js";
 import { runDoctor } from "./doctor.js";
+import {
+  AgentApiClient,
+  type AgentApiClientOptions,
+} from "./agent-api/client.js";
+import {
+  CliUsageError,
+  extractChain,
+  resolveCredentials,
+  type ResolvedCredentials,
+} from "./cli/shared/args.js";
+import { ExitCode } from "./cli/shared/exit.js";
+import { emit, type Rendered } from "./cli/shared/output.js";
+import { runAsk } from "./cli/ask.js";
+import { runInject } from "./cli/inject.js";
+import { runTurns } from "./cli/turns.js";
+import { runBots } from "./cli/bots.js";
 import pkg from "../package.json" with { type: "json" };
 
 const log = logger("cli");
+
+const AGENT_API_SUBCOMMANDS = new Set(["ask", "inject", "turns", "bots"]);
 
 interface ParsedArgs {
   subcommand: string;
@@ -80,6 +107,15 @@ function resolveConfigPath(explicit: string | null): string {
 }
 
 async function main(argv: string[]): Promise<void> {
+  // Agent-API surface routes through its own modules; flags differ from
+  // the legacy parseArgs spec, so we dispatch BEFORE parseArgs gets a
+  // chance to reject unknown flags like `--source` or `--session-id`.
+  const first = argv[0];
+  if (first && AGENT_API_SUBCOMMANDS.has(first)) {
+    const exit = await dispatchAgentApi(argv);
+    process.exit(exit);
+  }
+
   const args = parseArgs(argv);
 
   if (!args.subcommand || args.help) {
@@ -161,21 +197,162 @@ function printHelp(): void {
 
 Usage: torana <command> [options]
 
-Commands:
+Gateway commands:
   start        Run the gateway
   doctor       Validate config and check Telegram reachability
   validate     Offline config check (no Telegram, no DB)
   migrate      Apply pending DB migrations (--dry-run to preview)
   version      Print package + runtime version
 
-Options:
+Agent-API client commands (require --server + --token, or env equivalents):
+  ask <bot> <text>           Synchronous request/response against a bot
+  inject <bot> <text>        Push a system-injected message into a chat
+  turns get <id>             Fetch the current state of a turn
+  bots list                  List bots permitted by the configured token
+
+Gateway options:
   --config, -c <path>   Path to torana.yaml (defaults to $TORANA_CONFIG or ./torana.yaml)
   --auto-migrate        (start) Apply DB migrations automatically if stale
   --dry-run             (migrate) Print planned SQL without applying
   --format <text|json>  (doctor) Output format (default: text)
 
+Run \`torana <client-cmd> --help\` for per-subcommand options + exit codes.
+
 Docs: https://github.com/jvbutterfield/torana
 `);
+}
+
+// --- Agent-API dispatcher ---------------------------------------------------
+
+async function dispatchAgentApi(argv: string[]): Promise<number> {
+  try {
+    const { chain, rest } = extractChain(argv);
+    const cmd = chain[0]!;
+
+    // `ask` and `inject` take a single chain element; `turns` and `bots`
+    // require an action token (`get`, `list`).
+    switch (cmd) {
+      case "ask":
+        return await runWithClient(chain, rest, async (client) =>
+          runAsk({ argv: chain.slice(1).concat(rest) }, { client }),
+        );
+
+      case "inject":
+        return await runWithClient(chain, rest, async (client) =>
+          runInject({ argv: chain.slice(1).concat(rest) }, { client }),
+        );
+
+      case "turns": {
+        const action = chain[1];
+        if (!action) {
+          throw new CliUsageError("turns requires a subcommand (currently: get)");
+        }
+        return await runWithClient(chain, rest, async (client) =>
+          runTurns({ argv: rest, action }, { client }),
+        );
+      }
+
+      case "bots": {
+        const action = chain[1];
+        if (!action) {
+          throw new CliUsageError("bots requires a subcommand (currently: list)");
+        }
+        return await runWithClient(chain, rest, async (client) =>
+          runBots({ argv: rest, action }, { client }),
+        );
+      }
+
+      default:
+        throw new CliUsageError(`unknown agent-api subcommand '${cmd}'`);
+    }
+  } catch (err) {
+    if (err instanceof CliUsageError) {
+      process.stderr.write(`usage: ${err.message}\n`);
+      return ExitCode.badUsage;
+    }
+    process.stderr.write(
+      `error: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return ExitCode.internal;
+  }
+}
+
+/**
+ * Resolve credentials from rest-args, instantiate the client, run the
+ * subcommand body, then emit the rendered output. `chain` is forwarded
+ * to allow `--help` short-circuit detection BEFORE we demand credentials.
+ */
+async function runWithClient(
+  chain: string[],
+  rest: string[],
+  body: (client: AgentApiClient) => Promise<Rendered>,
+): Promise<number> {
+  // `--help` should never demand credentials. Inspect `rest` for it.
+  if (rest.includes("--help") || rest.includes("-h")) {
+    const r = await body(stubClient());
+    return emit(r);
+  }
+
+  const flagServer = takeOptionValue(rest, "--server");
+  const flagToken = takeOptionValue(rest, "--token");
+
+  let creds: ResolvedCredentials;
+  try {
+    creds = resolveCredentials({ flagServer, flagToken });
+  } catch (err) {
+    if (err instanceof CliUsageError) {
+      process.stderr.write(`usage: ${err.message}\n`);
+      return ExitCode.badUsage;
+    }
+    throw err;
+  }
+
+  const opts: AgentApiClientOptions = {
+    server: creds.server,
+    token: creds.token,
+  };
+  const client = new AgentApiClient(opts);
+
+  if (process.env.TORANA_DEBUG === "1" || rest.includes("--verbose")) {
+    process.stderr.write(`# credentials trace: ${creds.trace.join(", ")}\n`);
+  }
+
+  const r = await body(client);
+  return emit(r);
+}
+
+/**
+ * Look up `--name <value>` or `--name=value` in `argv`. We don't mutate
+ * the list — the per-subcommand parser will see and consume the same
+ * tokens. This is just a peek so `runWithClient` can resolve credentials
+ * without coupling to each subcommand's flag spec.
+ */
+function takeOptionValue(argv: string[], name: string): string | undefined {
+  for (let i = 0; i < argv.length; i += 1) {
+    const tok = argv[i]!;
+    if (tok === name) {
+      return argv[i + 1];
+    }
+    if (tok.startsWith(`${name}=`)) {
+      return tok.slice(name.length + 1);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Stand-in client used solely so `--help` can run without credential checks.
+ * Throws on any method call — `--help` short-circuits at flag-parse time.
+ */
+function stubClient(): AgentApiClient {
+  const stub = (() => {
+    throw new Error("stubClient.fetchImpl: --help should not call the API");
+  }) as unknown as typeof fetch;
+  return new AgentApiClient({
+    server: "http://help.invalid",
+    token: "help-only",
+    fetchImpl: stub,
+  });
 }
 
 function redactForPrint(config: unknown): unknown {
