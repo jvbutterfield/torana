@@ -233,15 +233,17 @@ describe("README.md — Agent API section", () => {
   });
 });
 
-describe("CHANGELOG.md — Unreleased entry", () => {
-  test("has an Unreleased section that mentions the Agent API", () => {
+describe("CHANGELOG.md — top-of-file Agent API entry", () => {
+  test("has an Unreleased header + a top version section that mentions the Agent API", () => {
     const body = read(CHANGELOG);
     const unreleasedIdx = body.indexOf("## [Unreleased]");
     expect(unreleasedIdx).toBeGreaterThanOrEqual(0);
-    // The Unreleased section should mention Agent API before the next
-    // version heading (## [1.0.0-rc.X]).
-    const nextVersion = body.indexOf("\n## [1.", unreleasedIdx);
-    const slice = nextVersion > 0 ? body.slice(unreleasedIdx, nextVersion) : body.slice(unreleasedIdx);
+    // The Agent-API entry may live in the [Unreleased] block pre-cut, or
+    // in the most recent version section post-cut. Allow either by
+    // scanning from [Unreleased] through the SECOND version heading.
+    const firstVersion = body.indexOf("\n## [1.", unreleasedIdx);
+    const secondVersion = firstVersion > 0 ? body.indexOf("\n## [1.", firstVersion + 5) : -1;
+    const slice = secondVersion > 0 ? body.slice(unreleasedIdx, secondVersion) : body.slice(unreleasedIdx);
     expect(slice).toContain("Agent API");
     expect(slice).toContain("side-session");
   });

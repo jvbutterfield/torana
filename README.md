@@ -9,7 +9,7 @@ Drop a YAML config, point it at Claude Code, Codex, or any subprocess — get a 
 [![CI](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml/badge.svg)](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Bun ≥ 1.3](https://img.shields.io/badge/bun-%E2%89%A5%201.3-black)](https://bun.sh)
-[![Tests: 675](https://img.shields.io/badge/tests-675%20passing-brightgreen)](#testing)
+[![Tests: 1142](https://img.shields.io/badge/tests-1142%20passing-brightgreen)](#testing)
 
 **torana** (Sanskrit: तोरण, *ceremonial gateway*) — the doorway between Telegram and your agents.
 
@@ -245,7 +245,9 @@ The dispatcher routes each update to its bot's runner independently. No special 
 | `torana validate` | Offline schema check — no Telegram, no DB |
 | `torana migrate` | Apply pending DB migrations (`--dry-run` to preview) |
 | `torana version` | Print package version + Bun runtime |
-| `torana ask` / `torana inject` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token` or `TORANA_SERVER`/`TORANA_TOKEN`). See [`docs/cli.md`](docs/cli.md) |
+| `torana ask` / `torana inject` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md) |
+| `torana config` | Manage the CLI profile store (`init` / `add-profile` / `list-profiles` / `remove-profile` / `show`). Stored at `$XDG_CONFIG_HOME/torana/config.toml`, mode `0600` |
+| `torana skills install --host=claude\|codex` | Copy the shipped `torana-ask` / `torana-inject` skills into a Claude Code or Codex installation |
 
 ---
 
@@ -278,9 +280,11 @@ If you need any of those, torana is the wrong tool and that's fine.
 
 ## Status
 
-**v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 675+ tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
+**v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 1142+ tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
 
 Recent:
+- **rc.5** — Agent API (`/v1/*` ask + inject + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
+- **rc.4** — Codex runner (`runner.type: codex`), `codex-jsonl` protocol for `command` runners, README rewrite
 - **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
 - **rc.2** — fixed published tarball missing migration SQL
 - **rc.1** — initial v1 candidate
@@ -292,11 +296,15 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 ## Testing
 
 ```sh
-bun test                           # unit + integration: 675+ tests, ~50s
-CODEX_E2E=1 bun test               # includes end-to-end tests against the live codex CLI
+bun test                           # unit + integration: 1142+ tests, ~60s
+CODEX_E2E=1 bun test               # + end-to-end tests against the live codex CLI
+AGENT_API_E2E=1 bun test test/e2e/agent-api/
+                                   # + Agent-API E2E matrix against real claude / codex binaries
+AGENT_API_SOAK=1 bun test test/soak/agent-api.test.ts
+                                   # + 24h pool/memory/leak soak (default duration; overrideable)
 ```
 
-The e2e tests require an authenticated `codex` binary and burn API quota, so they're opt-in. CI doesn't run them.
+The E2E and soak tests require authenticated `claude` / `codex` binaries and burn API quota, so they're opt-in. CI doesn't run them.
 
 ---
 

@@ -105,4 +105,25 @@ jobs:
               ./node_modules/.bin/torana version
               ./node_modules/.bin/torana validate --config /work/.github/ci-fixtures/torana.yaml
               ./node_modules/.bin/torana migrate --dry-run --config /work/.github/ci-fixtures/torana.yaml
+              # Agent-API CLI surface. No credentials needed — --help exits 0
+              # and exercises the bin shim + dispatch table for every agent-api
+              # subcommand, which is what this smoke is meant to catch. If any
+              # subcommand fails to resolve (missing export, broken bundle),
+              # this step fires before we ship.
+              ./node_modules/.bin/torana ask --help > /dev/null
+              ./node_modules/.bin/torana inject --help > /dev/null
+              ./node_modules/.bin/torana turns --help > /dev/null
+              ./node_modules/.bin/torana bots --help > /dev/null
+              ./node_modules/.bin/torana config --help > /dev/null
+              ./node_modules/.bin/torana skills --help > /dev/null
+              ./node_modules/.bin/torana doctor --help > /dev/null
+              # Verify the shipped skills + codex-plugin files landed where
+              # `torana skills install` expects them. A missing skill here
+              # would only manifest when a user tried to install — catch it
+              # at package time instead.
+              test -f ./node_modules/torana/skills/torana-ask/SKILL.md
+              test -f ./node_modules/torana/skills/torana-inject/SKILL.md
+              test -f ./node_modules/torana/codex-plugin/marketplace.json
+              test -f ./node_modules/torana/codex-plugin/skills/torana-ask/SKILL.md
+              test -f ./node_modules/torana/codex-plugin/skills/torana-inject/SKILL.md
             '

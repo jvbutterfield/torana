@@ -122,10 +122,21 @@ Synchronous request/response. Body (`application/json` or `multipart/form-data`)
 - `timeout_ms` — optional. Clamped to `[1000, ask.max_timeout_ms]`. Default
   `ask.default_timeout_ms`.
 
-Multipart requests use the same fields plus `file` parts (allowlisted MIME
-types, per-file and aggregate size caps). Files are staged under
-`<data_dir>/attachments/<bot_id>/agentapi-<uuid>-<idx><ext>` and cleaned up
-on every pre-commit failure path.
+Multipart requests use the same fields plus `file` parts (per-file and
+aggregate size caps; allowlisted MIME only). Files are staged under
+`<data_dir>/attachments/<bot_id>/agentapi-<uuid>-<idx><ext>` and cleaned
+up on every pre-commit failure path.
+
+Allowlisted MIME types (anything else returns
+`attachment_mime_not_allowed`):
+
+| `Content-Type` | Extension written to disk |
+|---|---|
+| `image/jpeg` | `.jpg` |
+| `image/png` | `.png` |
+| `image/webp` | `.webp` |
+| `image/gif` | `.gif` |
+| `application/pdf` | `.pdf` |
 
 **Responses:**
 
@@ -153,6 +164,16 @@ Push a message into an existing Telegram chat as if the user had typed it.
 Idempotency-Key: <A-Za-z0-9_->{16,128}      # required
 Content-Type: application/json
 ```
+
+The key must match `^[A-Za-z0-9_-]{16,128}$`. The 16-char lower bound
+pushes callers toward keys with enough entropy to resist accidental
+collision across retries and bots (a 32-char UUID without dashes or a
+base64url-encoded `randomBytes(12)` are both comfortably above the floor);
+the 128-char upper bound caps the size of the idempotency table row.
+Keys are scoped per `bot_id` — the same key used against a different bot
+inserts a fresh turn. Retention is controlled by
+`agent_api.inject.idempotency_retention_ms` (default 24h); rows older
+than that get swept hourly.
 
 ```json
 {

@@ -14,7 +14,29 @@ interface PackResult {
   files?: PackEntry[];
 }
 
-const REQUIRED = ["dist/db/schema.sql", "dist/db/migrations/0001_persona_to_bot_id.sql"];
+const REQUIRED = [
+  // Core schema + migrations — all read at runtime by the migration dispatcher.
+  "dist/db/schema.sql",
+  "dist/db/migrations/0001_persona_to_bot_id.sql",
+  "dist/db/migrations/0002_agent_api.sql",
+  "dist/db/migrations/0003_runner_session_resume.sql",
+  // Agent-API skills — `torana skills install` reads these at runtime from the
+  // installed package, not from a bundle, so they have to ship as real files.
+  "skills/torana-ask/SKILL.md",
+  "skills/torana-inject/SKILL.md",
+  // Codex plugin — Codex marketplace installs pull from these paths directly.
+  // The skill copies under codex-plugin/skills/ must remain byte-identical to
+  // skills/ — enforced at build-time by scripts/check-skill-parity.ts.
+  "codex-plugin/marketplace.json",
+  "codex-plugin/skills/torana-ask/SKILL.md",
+  "codex-plugin/skills/torana-inject/SKILL.md",
+  // Side-session runner example — referenced from docs/agent-api.md and the
+  // CommandRunner section of the runner docs as the canonical integration
+  // pattern for the claude-ndjson / codex-jsonl protocols.
+  "examples/side-session-runner/session-runner.ts",
+  "examples/side-session-runner/torana.yaml",
+  "examples/side-session-runner/README.md",
+];
 
 const raw = await $`npm pack --dry-run --json`.quiet().text();
 const parsed = JSON.parse(raw) as PackResult[];

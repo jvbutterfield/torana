@@ -111,8 +111,11 @@ Runs `R001..R003` against the remote gateway:
 | R002 | fail/warn | `GET /v1/bots` returns 200 with a non-empty list |
 | R003 | fail/skip | TLS chain validates (skipped on `http://`) |
 
-`--profile NAME` is reserved for the profile store landing in Phase 6b;
-until then the CLI exits 2 with an explanatory message.
+`--profile NAME` resolves the `(server, token)` pair from the CLI profile
+store (`$XDG_CONFIG_HOME/torana/config.toml`, mode `0600`) and runs the
+same remote probes. Flag and env values still win per the standard
+precedence (`flag > env > --profile NAME > default profile`). See the
+[`torana config`](#torana-config) section for profile management.
 
 Exits 1 if any check is `fail`; warnings don't fail the run.
 

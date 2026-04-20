@@ -1,6 +1,6 @@
 {
   "name": "torana",
-  "version": "1.0.0-rc.4",
+  "version": "1.0.0-rc.5",
   "description": "Call torana-hosted agents (ask) and inject external materials into user chats.",
   "homepage": "https://github.com/jvbutterfield/torana",
   "skills": {

@@ -33,13 +33,34 @@ side-session is event-isolated — events dispatched to
 versa. Built-ins that support them:
 
 - `ClaudeCodeRunner` — long-lived subprocess per session with its own
-  `--session-id` argv.
+  `--session-id` argv. The runner mints a UUID internally for the
+  `--session-id` value because Claude CLI 2.1+ rejects non-UUIDs; the
+  pool's public `session_id` is unaffected.
 - `CodexRunner` — per-turn spawn using `codex exec resume <threadId>`.
-- `CommandRunner` — **not** in v1 (protocol capability descriptors land in
-  Phase 2c).
+- `CommandRunner` — supported for the `claude-ndjson` and `codex-jsonl`
+  protocols. Each side-session runs the configured `cmd` as its own
+  long-lived subprocess with `TORANA_SESSION_ID=<session_id>` in env so
+  the wrapper can distinguish main-runner and side-session turns.
+  `jsonl-text` has no session semantics in its envelope and throws
+  `RunnerDoesNotSupportSideSessions` — use one of the other two protocols
+  or implement a custom runner. See
+  [`examples/side-session-runner/`](../examples/side-session-runner/) for
+  a reference wrapper.
 
 `session_id` format: `^[A-Za-z0-9_-]{1,64}$`. The pool mints ephemeral
 `eph-<uuid>` ids when the caller omits one.
+
+### `TORANA_SESSION_ID` — for external `command` runners
+
+When a `command` runner (protocol `claude-ndjson` or `codex-jsonl`) is
+spawned for a side-session, the subprocess receives
+`TORANA_SESSION_ID=<session_id>` in its environment. The main-runner
+subprocess does **not** have this variable set. Wrappers should branch on
+its presence when main-vs-side behaviour diverges — for example, to keep
+side-session state files separate, to tag logs, or to suppress any
+startup side effects that should only fire for the main worker. Event
+routing is per-subprocess (each side-session owns its own stdin/stdout
+pair), so you don't need to demultiplex events across sessions yourself.
 
 ## Event contract
 
