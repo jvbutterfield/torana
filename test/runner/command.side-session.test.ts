@@ -392,5 +392,215 @@ for (const protocol of ["claude-ndjson", "codex-jsonl"] as const) {
         /* nothing to stop — spawn failed */
       }
     });
+
+    test("stopSideSession on unknown id is silent (no throw)", async () => {
+      // Crash-safe contract: handler `finally` blocks call stopSideSession
+      // after the pool has already scrubbed the entry during shutdown or
+      // hard-TTL sweep; a throw here would mask the original error.
+      const r = newRunner(protocol);
+      await expect(r.stopSideSession("nonexistent", 500)).resolves.toBeUndefined();
+    });
+
+    test("stopSideSession is idempotent — concurrent second call coalesces", async () => {
+      // Phase 3 pool's shutdown races two `stopSideSession` calls against
+      // an ephemeral release; the runner must coalesce so the subprocess
+      // is SIGTERM'd/SIGKILL'd exactly once. Async functions wrap return
+      // values in new Promise instances so we can't assert reference
+      // equality on the outer promises; instead we assert behavioral
+      // coalescence: both calls resolve, neither throws, the entry is
+      // fully scrubbed, and a THIRD call on the now-unknown id is also
+      // silent (no throw).
+      const r = newRunner(protocol);
+      await r.start();
+      await r.startSideSession("s1");
+      const [ok1, ok2] = await Promise.all([
+        r.stopSideSession("s1", 1000).then(() => true).catch(() => false),
+        r.stopSideSession("s1", 1000).then(() => true).catch(() => false),
+      ]);
+      expect(ok1).toBe(true);
+      expect(ok2).toBe(true);
+      // Entry is gone.
+      expect(() => r.onSide("s1", "done", () => {})).toThrow(SideSessionNotFound);
+      // Third call on a now-unknown id must be silent.
+      await expect(r.stopSideSession("s1", 500)).resolves.toBeUndefined();
+      await r.stop(500);
+    }, 15_000);
   });
 }
+
+// ---------------------------------------------------------------------------
+// Additional startSideSession failure-mode coverage (claude-ndjson only —
+// the ready-gate + scrub-on-failure code path is protocol-independent).
+// ---------------------------------------------------------------------------
+
+describe("CommandRunner side-sessions — startSideSession failure modes", () => {
+  test("subprocess exits before emitting ready → startSideSession rejects + entry scrubbed", async () => {
+    // `crash-on-start` exits immediately with no stdout. `watchSideExit`
+    // must reject `readyPromise`, emit fatal on the side emitter, and
+    // startSideSession catches the rejection and scrubs the entry.
+    const r = new CommandRunner({
+      botId: "alpha",
+      config: makeConfig("claude-ndjson", NDJSON_MOCK, "crash-on-start"),
+      logDir: tmpDir,
+      sideStartupMs: 2000, // long enough that the exit rejects first
+    });
+    await expect(r.startSideSession("s1")).rejects.toThrow(/exited before ready/);
+    // Entry scrubbed: restart with same id succeeds and `onSide` no longer
+    // sees a phantom entry.
+    expect(() => r.onSide("s1", "done", () => {})).toThrow(SideSessionNotFound);
+  }, 15_000);
+
+  test("subprocess never emits ready → sideStartupMs fallback forces ready", async () => {
+    // `no-ready` stays alive but never emits the init event. After
+    // `sideStartupMs`, the runner promotes the entry to ready anyway so a
+    // wrapper that forgets the protocol's startup signal still works —
+    // callers would otherwise hang indefinitely.
+    const r = new CommandRunner({
+      botId: "alpha",
+      config: makeConfig("claude-ndjson", NDJSON_MOCK, "no-ready"),
+      logDir: tmpDir,
+      sideStartupMs: 150, // short so the test doesn't slow the suite
+    });
+    const beforeMs = Date.now();
+    await r.startSideSession("s1");
+    const elapsedMs = Date.now() - beforeMs;
+    // Readiness came from the fallback timer, not the parser — so the wait
+    // must have been at least ~sideStartupMs.
+    expect(elapsedMs).toBeGreaterThanOrEqual(100);
+
+    // The session is usable: send a turn, get an event back. no-ready mode
+    // still handles turn envelopes — it just skips the init.
+    const e = collectSide(r, "s1");
+    const res = r.sendSideTurn("s1", "t1", "after-fallback", []);
+    expect(res.accepted).toBe(true);
+    await waitFor(() => e.find((x) => x.kind === "done"), 5000);
+    await r.stopSideSession("s1", 500);
+  }, 15_000);
+});
+
+// ---------------------------------------------------------------------------
+// Side-turn attachments — both protocols use the same per-protocol encoder
+// as the main runner. Claude-ndjson appends "[Attached file: <path>]" to
+// the content; jsonl-text (used as codex-jsonl's outbound envelope) puts
+// attachments in a top-level `attachments` array.
+// ---------------------------------------------------------------------------
+
+describe("CommandRunner side-sessions — attachment forwarding", () => {
+  test("claude-ndjson: side-turn attachments surface in user envelope content", async () => {
+    const r = newRunner("claude-ndjson");
+    await r.start();
+    try {
+      await r.startSideSession("s1");
+      const e = collectSide(r, "s1");
+      const res = r.sendSideTurn("s1", "t1", "look", [
+        { kind: "document", path: "/tmp/attach-A.txt", bytes: 0 },
+        { kind: "photo", path: "/tmp/attach-B.png", bytes: 0 },
+      ]);
+      expect(res.accepted).toBe(true);
+      await waitFor(() => e.find((x) => x.kind === "done"), 5000);
+
+      // Side-subprocess log reflects the stdin payload (mock writes incoming
+      // traffic to its log via the runner's log pipe). Grep for the
+      // attachment paths to confirm encoding landed downstream.
+      const log = await Bun.file(
+        resolve(tmpDir, "alpha.side.s1.log"),
+      ).text();
+      const text = e.find((x) => x.kind === "text_delta") as
+        | { text: string }
+        | undefined;
+      // The mock's reply echoes the inbound `content` field, which for
+      // claude-ndjson includes "[Attached file: …]" lines appended by
+      // `encodeClaudeNdjsonTurn`.
+      expect(text?.text).toContain("[Attached file: /tmp/attach-A.txt]");
+      expect(text?.text).toContain("[Attached file: /tmp/attach-B.png]");
+      // Log should also contain one of the paths (any direction — either
+      // stdin replay or the stdout echo).
+      expect(log).toContain("/tmp/attach-A.txt");
+    } finally {
+      await r.stopSideSession("s1", 500);
+      await r.stop(500);
+    }
+  }, 15_000);
+
+  test("codex-jsonl: side-turn attachments surface in jsonl-text envelope", async () => {
+    // codex-jsonl CommandRunner encodes outbound turns with the jsonl-text
+    // envelope (current main-runner behavior); attachments are carried in
+    // a top-level `attachments: []` field, NOT inlined into text. The mock
+    // surfaces attachment paths into the reply so we can assert the wire
+    // carried them.
+    const r = newRunner("codex-jsonl");
+    await r.start();
+    try {
+      await r.startSideSession("s1");
+      const e = collectSide(r, "s1");
+      const res = r.sendSideTurn("s1", "t1", "doc", [
+        { kind: "document", path: "/tmp/codex-attach.txt", bytes: 0 },
+        { kind: "photo", path: "/tmp/codex-pic.png", bytes: 0 },
+      ]);
+      expect(res.accepted).toBe(true);
+      await waitFor(() => e.find((x) => x.kind === "done"), 5000);
+
+      const text = e.find((x) => x.kind === "text_delta") as
+        | { text: string }
+        | undefined;
+      expect(text?.text).toContain("doc");
+      // Both attachment paths must have reached the subprocess.
+      expect(text?.text).toContain("[Attached file: /tmp/codex-attach.txt]");
+      expect(text?.text).toContain("[Attached file: /tmp/codex-pic.png]");
+    } finally {
+      await r.stopSideSession("s1", 500);
+      await r.stop(500);
+    }
+  }, 15_000);
+});
+
+// ---------------------------------------------------------------------------
+// TORANA_SESSION_ID env var contract — explicit rather than implicit. Uses
+// the `reply-env` mock mode to surface the raw env var (or "unset").
+// ---------------------------------------------------------------------------
+
+describe("CommandRunner side-sessions — TORANA_SESSION_ID env var contract", () => {
+  test("side subprocess receives TORANA_SESSION_ID=<sessionId>", async () => {
+    const r = newRunner("claude-ndjson", "reply-env");
+    await r.start();
+    try {
+      await r.startSideSession("envtest");
+      const e = collectSide(r, "envtest");
+      r.sendSideTurn("envtest", "t1", "ping", []);
+      await waitFor(() => e.find((x) => x.kind === "done"), 5000);
+      const text = e.find((x) => x.kind === "text_delta") as
+        | { text: string }
+        | undefined;
+      expect(text?.text).toContain("env=envtest");
+    } finally {
+      await r.stopSideSession("envtest", 500);
+      await r.stop(500);
+    }
+  }, 15_000);
+
+  test("main subprocess does NOT receive TORANA_SESSION_ID", async () => {
+    // Main runner must not leak TORANA_SESSION_ID — a wrapper with dual
+    // behavior (separate state for main vs side) needs the env to be
+    // reliably absent on main.
+    const r = new CommandRunner({
+      botId: "alpha",
+      config: makeConfig("claude-ndjson", NDJSON_MOCK, "reply-env"),
+      logDir: tmpDir,
+      sideStartupMs: 500,
+    });
+    await r.start();
+    const main = collect(r);
+    try {
+      await waitFor(() => main.find((e) => e.kind === "ready"), 5000);
+      r.sendTurn("M1", "hello", []);
+      await waitFor(() => main.find((e) => e.kind === "done"), 5000);
+      const text = main.find((e) => e.kind === "text_delta") as
+        | { text: string }
+        | undefined;
+      // reply-env stamps "env=unset" when TORANA_SESSION_ID is absent.
+      expect(text?.text).toContain("env=unset");
+    } finally {
+      await r.stop(500);
+    }
+  }, 15_000);
+});

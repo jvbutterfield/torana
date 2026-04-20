@@ -40,7 +40,12 @@ async function main(): Promise<void> {
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      let env: { type: string; turn_id?: string; text?: string };
+      let env: {
+        type: string;
+        turn_id?: string;
+        text?: string;
+        attachments?: Array<{ path: string }>;
+      };
       try {
         env = JSON.parse(trimmed);
       } catch {
@@ -54,7 +59,18 @@ async function main(): Promise<void> {
       }
 
       const text = env.text ?? "";
-      const reply = `echo[${sessionId}]: ${text}`;
+      // Surface attachment paths in the reply so tests can assert that the
+      // outbound envelope's `attachments` field made it through the wire.
+      // Shape matches the claude-ndjson inline convention so tests reading
+      // either protocol see the same "[Attached file: …]" tag.
+      const attachTag = env.attachments?.length
+        ? env.attachments
+            .map((a) => `[Attached file: ${a.path}]`)
+            .join(" ")
+        : "";
+      const reply = attachTag
+        ? `echo[${sessionId}]: ${text} ${attachTag}`
+        : `echo[${sessionId}]: ${text}`;
 
       emit({ type: "thread.started", thread_id: `tid-${sessionId}-${turnCount}` });
       emit({ type: "turn.started" });

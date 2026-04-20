@@ -17,7 +17,7 @@ Remaining work is the pre-release E2E gates — no more implementation.
    last phase commit `b7ab18f` (Phase 2c).
    36 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **874 pass / 4 skip / 0 fail**. One test
+   - `bun test` — expect **894 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
      sendSideTurn is immediately accepted`) is mildly flaky under full
      suite runs due to `queueMicrotask` timing; re-run if it trips.
@@ -1065,6 +1065,63 @@ follow-ups:**
 **Phase 2c tests**: 31 new expectations (26 command.side-session + 1
 example-runner + 2 new C011 + 3 expanded drift-guard + 1 new C011
 label assertion). Full suite 843 → **874 pass** / 4 skip / 0 fail.
+
+---
+
+### Commit `<PHASE_2C_GAP_FILL_COMMIT_PLACEHOLDER>` — Phase 2c gap-fill (quality-review pass)
+
+A critical re-audit of Phase 2c coverage identified 7 gaps — 2 critical,
+5 important — and filled them all. No production code changed; only
+tests and mock fixtures.
+
+**Critical end-to-end coverage (the central v1 promise — ask through a
+custom runner):**
+
+- [test/agent-api/ask.command.test.ts](../test/agent-api/ask.command.test.ts)
+  (new) — 10 tests paralleling `ask.test.ts` (Claude) and
+  `ask.codex.test.ts` (Codex). For each of `claude-ndjson` and
+  `codex-jsonl`: ephemeral ask returns runner text (with
+  `TORANA_SESSION_ID` stamp verifying routing), keyed session reuses
+  pool entry across two turns, concurrent asks → `[200, 429]`
+  side_session_busy, `GET /v1/turns/:id` returns cached text. Plus
+  `jsonl-text` → 501 `runner_does_not_support_side_sessions` and a
+  claude-ndjson crash-on-turn → 503 runner_fatal.
+
+**Important unit-test coverage (edge cases a wrapper author will hit):**
+
+- [test/runner/command.side-session.test.ts](../test/runner/command.side-session.test.ts)
+  (expanded, +10 tests):
+  - `stopSideSession` on unknown id is silent no-op (called from
+    handler `finally` blocks after pool has scrubbed the entry).
+  - `stopSideSession` concurrent second call coalesces — both calls
+    resolve, entry fully scrubbed, third post-stop call also silent.
+    (Async wrapper prevents reference equality, so the assertion is
+    behavioral, not object-identity.)
+  - Subprocess exits before emitting ready → `startSideSession`
+    rejects with `/exited before ready/` and scrubs the entry. New
+    `crash-on-start` mock mode.
+  - `sideStartupMs` fallback — when the parser never emits a ready
+    event (the `no-ready` mode that previously existed but was
+    untested), the runner promotes to ready after the timeout and
+    the session handles turns normally. Wait-time assertion pins
+    the fallback actually ran.
+  - Attachments on side turns: `claude-ndjson` (inline
+    `[Attached file: <path>]` in content), `codex-jsonl` (top-level
+    `attachments[]` in the jsonl-text envelope). Mocks surface the
+    paths in replies so both protocols' wire-format paths are
+    verified end-to-end.
+  - Explicit `TORANA_SESSION_ID` env var contract: new `reply-env`
+    mock mode stamps the raw env value. Side subprocess receives
+    `env=<sessionId>`; main subprocess receives `env=unset` (absent).
+    Previously only asserted implicitly via session-label tags.
+
+- [test/runner/fixtures/command-ndjson-mock.ts](../test/runner/fixtures/command-ndjson-mock.ts)
+  + [test/runner/fixtures/command-codex-mock.ts](../test/runner/fixtures/command-codex-mock.ts)
+  — 2 new modes (`crash-on-start`, `reply-env`) + codex mock parses
+  outbound `attachments[]` so it can surface paths in replies.
+
+**Phase 2c gap-fill tests**: 20 new expectations (10 ask.command + 10
+unit). Full suite 874 → **894 pass** / 4 skip / 0 fail.
 
 ---
 

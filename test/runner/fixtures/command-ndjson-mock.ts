@@ -8,11 +8,17 @@
 //
 //   normal         — emit system init; for each inbound user envelope, emit
 //                    a text_delta of "echo: <text>" + a result (one turn).
+//   crash-on-start — exit 1 immediately; no stdout. Tests the
+//                    `startSideSession` rejection path when the subprocess
+//                    dies before emitting init.
 //   crash-on-turn  — ready, then exit 1 on first turn.
 //   slow-echo      — like normal but waits 500ms before result (for busy/429
 //                    tests that need to catch a session mid-turn).
 //   no-ready       — never emit the system init (tests the sideStartupMs
 //                    fallback that forces ready after the timeout).
+//   reply-env      — like normal, but also includes process.env.TORANA_SESSION_ID
+//                    verbatim in the reply text so tests can assert the env
+//                    var was (or was NOT) set for this subprocess.
 //
 // Env vars read:
 //   TORANA_SESSION_ID — if set, stamped on the `session_id` field of init
@@ -21,13 +27,18 @@
 export {}; // mark as module so top-level declarations are module-scoped
 
 const mode = process.argv[2] ?? "normal";
-const sessionId = process.env.TORANA_SESSION_ID ?? "main";
+const rawEnvSessionId = process.env.TORANA_SESSION_ID;
+const sessionId = rawEnvSessionId ?? "main";
 
 function emit(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
 async function main(): Promise<void> {
+  if (mode === "crash-on-start") {
+    process.exit(1);
+  }
+
   if (mode !== "no-ready") {
     emit({
       type: "system",
@@ -60,7 +71,13 @@ async function main(): Promise<void> {
       }
 
       const content = env.message?.content ?? "";
-      const reply = `echo[${sessionId}]: ${content}`;
+      // `reply-env` mode stamps the raw env var value ("unset" when
+      // absent) so tests can assert whether TORANA_SESSION_ID was set.
+      const envTag =
+        mode === "reply-env"
+          ? ` env=${rawEnvSessionId ?? "unset"}`
+          : "";
+      const reply = `echo[${sessionId}]: ${content}${envTag}`;
 
       emit({
         type: "stream_event",
