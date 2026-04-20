@@ -12,9 +12,9 @@ priority).
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (last phase commit `7967c93`, 20 commits ahead of `main` after this docs-polish lands).
+1. `git checkout feat/agent-api` (last phase commit `7967c93`; tip commit `76cab87` is the PRD-gap test pass, 21 commits ahead of `main`).
 2. Sanity-check before touching anything:
-   - `bun test` — expect **562 pass / 4 skip / 0 fail**.
+   - `bun test` — expect **613 pass / 4 skip / 0 fail**.
    - `bun x tsc --noEmit` — expect clean (no output).
 3. **Pick the next branch (durable note — Phase 2b just landed):**
    - **Phase 7 (recommended for release)** — metrics histograms, doctor
@@ -104,7 +104,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 562 pass / 4 skip / 0 fail.** Coverage at a glance:
+**Full test suite: 613 pass / 4 skip / 0 fail.** Coverage at a glance:
 
 - **Ask round-trip (Claude)** — JSON + multipart through real HTTP →
   bearer auth → `SideSessionPool` → `ClaudeCodeRunner` (mock binary)
@@ -536,6 +536,81 @@ Behavior chosen during implementation (not in plan):
   reads `entry.threadId`. Sync back-to-back sends inside a `done`
   handler can theoretically miss thread continuity; not seen in
   practice with realistic event-loop ordering. Acceptable for v1.
+
+---
+
+### Test-coverage gap-fill pass (`76cab87`)
+
+Audit of completed user stories vs PRD acceptance criteria surfaced
+several gaps. Filled in this pass (+51 tests, 562 → 613):
+
+- **invalid_timeout error code (US-009 spec divergence).** Added
+  `invalid_timeout` to [src/agent-api/errors.ts](../src/agent-api/errors.ts);
+  ask handler now emits it (rather than `invalid_body`) when the rejected
+  zod issue path is `timeout_ms`. Threaded through
+  [src/cli/shared/exit.ts](../src/cli/shared/exit.ts) (→ exit code 2).
+- **load.ts dead-code warning fix.** `enabled=true` with empty `tokens` was
+  a dead-code branch behind an early return; warning now fires. Aligns with
+  PRD US-016 C009 doctor check (which we'll wire in Phase 7).
+- **[test/agent-api/ask.gaps.test.ts](../test/agent-api/ask.gaps.test.ts)
+  (+9 tests).** invalid_timeout (over/under), `X-Torana-Retriable: false`
+  header on 500 runner_error, 202 in_progress timeout-then-poll
+  round-trip via slow-echo + orphan listener, 501 unsupported runner via
+  fake runner with `supportsSideSessions=false`, 429
+  `side_session_capacity` via per-bot+global=1 cap, runner_fatal teardown
+  → no zombie entry blocks next acquire, server-side persistence assert
+  for `source='agent_api_ask'` + token name + duration_ms.
+- **[test/agent-api/router.gaps.test.ts](../test/agent-api/router.gaps.test.ts)
+  (+14 tests).** CORS no-headers (Origin echo-back gets no
+  `Access-Control-*`), `mapAuthFailure` body fields (bot_id on 403
+  bot_not_permitted; scope on 403 scope_not_permitted), 410
+  `turn_result_expired` via injected fake clock at 25h, 23h59m boundary
+  still serves `done`, completed inject turn body has NO text field, 200
+  `failed` + error_text, 200 `failed` with `interrupted_by_gateway_restart`
+  fallback (NULL error_text via raw SQL), `GET /v1/bots/:id/sessions`
+  documented snapshot shape with state/inflight/ephemeral/timestamps,
+  `GET /sessions` requires ask scope (inject-only token → 403),
+  `DELETE /sessions/:id` 204 success then GET no longer lists it, 404
+  session_not_found body code.
+- **[test/config/load.agent-api.test.ts](../test/config/load.agent-api.test.ts)
+  (+15 tests).** SHA-256 hash computed at load + redaction set membership,
+  literal-token warning, `enabled=true`-no-tokens warning,
+  `enabled=false`-with-tokens warning, all `superRefine` failure paths
+  (duplicate name, unknown bot, empty scopes, unknown scope, empty
+  bot_ids, idle>hard, max_per_bot>max_global, default>max timeout),
+  multi-token redaction set integration.
+- **[test/agent-api/pool.test.ts](../test/agent-api/pool.test.ts) (+2
+  tests).** Global-LRU eviction across bots (the `total >= globalMax`
+  branch that per-bot LRU never reached), global cap with no
+  evictable entries → capacity.
+- **[test/runner/claude-code.side-session.test.ts](../test/runner/claude-code.side-session.test.ts)
+  (+1 test).** Side-session log file lands at
+  `<data_dir>/<bot_id>.side.<sessionId>.log` and contains the runner
+  stdio (Codex had 6 such assertions; Claude had none).
+- **[test/core/process-update.user-chats.test.ts](../test/core/process-update.user-chats.test.ts)
+  (+1 test).** Transaction atomicity: monkey-patches
+  `db.createTurn` to throw, asserts `user_chats` row was rolled back —
+  proves `upsertUserChat` is genuinely inside the same transaction.
+- **[test/agent-api/inject.source-regex.test.ts](../test/agent-api/inject.source-regex.test.ts)
+  (+8 tests).** Regex itself (lowercase/digit/_/- ok, uppercase/space/dot
+  rejected, 64 ok / 65 rejected) and HTTP-layer assertions: 64-char
+  source accepted at the cap, 65-char rejected, uppercase rejected
+  (PRD: lowercase only), dot rejected, empty rejected.
+- **[test/cli/exit.test.ts](../test/cli/exit.test.ts) (+1 test).**
+  `invalid_timeout → badUsage` exit code mapping.
+
+**Notes for the next session — confirmed-but-untested gaps left as
+follow-ups:**
+- Timing-safe constant-time token comparison: a meaningful microbench
+  test is fragile; trust the `crypto.timingSafeEqual` invocation in
+  [src/agent-api/auth.ts](../src/agent-api/auth.ts) and lock it in via
+  Phase 7 doctor check + a code review checklist instead.
+- Ask-side optional Idempotency-Key (PRD US-014) is not implemented —
+  the ask handler never reads the header. PRD says "optional on ask";
+  current behavior is "ignored on ask." Decide in Phase 7 whether to
+  implement or document the divergence.
+- Codex back-to-back send race in `done` handler (acknowledged in
+  Phase 2b commit): not regression-tested, intentional v1 limitation.
 
 ---
 
