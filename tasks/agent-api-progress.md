@@ -25,7 +25,7 @@ implementation.
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `<PIN>` (Phase 10 pin);
+   `4dd31a7` (Phase 10 pin);
    last implementation commit `fe3facf` (Phase 10 — Claude UUID
    fix in `src/runner/claude-code.ts` + E2E matrix + UUID regression
    test);
