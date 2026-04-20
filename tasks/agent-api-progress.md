@@ -11,8 +11,8 @@ core. Remaining work is breadth-wise: Codex/Command runners, Phase 6b
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (tip: `d2c99b0`, 13 commits ahead of `main`).
-2. `bun test` — expect **536 pass / 4 skip / 0 fail**.
+1. `git checkout feat/agent-api` (tip: `7967c93`, 15 commits ahead of `main`).
+2. `bun test` — expect **562 pass / 4 skip / 0 fail**.
 3. **Decision for next session:** pick from the three remaining branches.
    Phase 2b (Codex side-sessions, US-006) unblocks `torana ask` against
    non-Claude bots and is the clearest unblock. Phase 6b adds the
@@ -53,18 +53,20 @@ Conventions in use on this branch:
 | 4b e2e — Inject delivery round-trip | ✅ Complete (`d2c99b0`) | US-011 US-012 | FakeTelegram round-trip: HTTP user_id/chat_id, idempotency replay (no double-send), ACL re-check, scope check, CLI subprocess (6 tests) |
 | 5 — Cross-cutting (full) | ✅ Complete (`35b355d`) | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
-| 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
+| 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
 | 6b — CLI follow-ups + skills | ⏳ Pending | US-018 (rest) US-019 US-020 | Profile store, `@-` stdin, `skills install`, Codex plugin |
 | 7 — Observability + docs | ⏳ Pending | US-015 US-016 US-017 | Metrics histograms, doctor C009–C014 + R001–R003, docs/agent-api.md + cli.md + README |
 
 ---
 
-## What's done — feat/agent-api branch (13 commits)
+## What's done — feat/agent-api branch (15 commits)
 
 Commits (`git log --oneline feat/agent-api ^main`):
 
 ```
+7967c93 agent-api phase 2b: CodexRunner side-sessions (US-006)
+d7811c6 agent-api: pin inject e2e commit hash in progress tracker
 d2c99b0 agent-api: close inject e2e gap with FakeTelegram round-trip (US-011, US-012)
 1ca3cc4 agent-api: pin Phase 6 core commit hash in progress tracker
 f7aa077 agent-api phase 6 (core): CLI ask/inject/turns/bots + AgentApiClient (US-018)
@@ -82,7 +84,7 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 536 pass / 4 skip / 0 fail.** End-to-end round-trips:
+**Full test suite: 562 pass / 4 skip / 0 fail.** End-to-end round-trips:
 ask (JSON + multipart) through real HTTP → bearer auth →
 SideSessionPool → ClaudeCodeRunner (mock binary) → response body in
 [test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts) +
@@ -453,17 +455,60 @@ calls these out so the next session can pick up cleanly.
 
 ---
 
+### Commit `7967c93` — Phase 2b: Codex side-sessions (US-006)
+
+- [src/runner/codex.ts](../src/runner/codex.ts) — flips
+  `supportsSideSessions()` to true. New `CodexSideSession` per-id state
+  carries `threadId`, status, activeTurn, currentProc, log stream,
+  stopPromise, stderrBuffer. `startSideSession` validates id, opens a
+  per-side log file, emits ready via `queueMicrotask` — NO subprocess
+  spawned (Codex is per-turn). `sendSideTurn` spawns
+  `codex exec [resume <threadId>] --json` per call; `runSideTurn` pumps
+  stdout/stderr, awaits exit + flush, synthesizes error/fatal(auth) if
+  the subprocess exited without a terminal event. `buildSideArgs`
+  reads `entry.threadId` so each side session has independent
+  continuity from the main runner. `looksLikeAuthFailure` extracted to
+  a free function for reuse across the main + side paths.
+- [test/runner/fixtures/codex-mock.ts](../test/runner/fixtures/codex-mock.ts)
+  — adds `slow-echo` (500ms in-flight window for busy tests) and
+  `thread-late` (emits `turn.completed` BEFORE `thread.started` to
+  validate that the runner captures threadId via `parser.flush()`).
+- [test/runner/codex.side-session.test.ts](../test/runner/codex.side-session.test.ts)
+  — 20 tests in two describes: 12 in "side-sessions" (parity with
+  Claude's tests: id validation, double-start, ready timing,
+  cross-contamination, busy serialization, stop/restart, error
+  synthesis, fatal(auth), spawn-failure cleanup) + 8 in "threadId
+  resume continuity" (first turn no-resume → second turn passes
+  `exec resume <threadId>`, threadId is per-session, late
+  `thread.started` still captured, attachment routing, main-runner
+  reset doesn't affect side-session continuity).
+- [test/agent-api/ask.codex.test.ts](../test/agent-api/ask.codex.test.ts)
+  — 6 integration tests parallel to `ask.test.ts`: ephemeral ask
+  through Codex per-turn spawn, keyed session reuses threadId across
+  turns (verified via per-side log argv), concurrent `[200, 429]`
+  busy via slow-echo, turn.failed → 500 runner_error, auth-fail → 503
+  runner_fatal, GET /v1/turns/:id after Codex ask returns cached text.
+- [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
+  — flips Codex assertion to `supportsSideSessions() === true` and
+  asserts `sendSideTurn` for an unknown session returns
+  `{accepted:false, reason:"not_ready"}` rather than throwing.
+
+Behavior chosen during implementation (not in plan):
+- `dispatchSide` clears `entry.activeTurn`/promotes status to ready on
+  `done`/`error` (matching main runner). The "thread.started after
+  turn.completed" test inserts a brief `await` between turns so
+  `runSideTurn`'s exit-flush completes before the second `sendSideTurn`
+  reads `entry.threadId`. Sync back-to-back sends inside a `done`
+  handler can theoretically miss thread continuity; not seen in
+  practice with realistic event-loop ordering. Acceptable for v1.
+
+---
+
 ## What's left
 
-### Immediate next chunk — three open branches
+### Immediate next chunk — two open branches
 
-Inject e2e gap closed in `d2c99b0`. Pick from:
-
-**Phase 2b — Codex side-sessions (US-006)**
-Per-turn `codex exec [resume <threadId>] --json` spawn; capture
-`thread.started` event; reuse `threadId` on subsequent turns. Unblocks
-`torana ask` against non-Claude bots. Natural extension of the Phase
-2a work; reuses the `SideSessionPool` machinery unchanged.
+Phase 2b closed in `7967c93`. Pick from:
 
 **Phase 6b — CLI follow-ups + skills**
 Profile store (`~/.config/torana/config.toml`), `--file @-` stdin,
@@ -475,6 +520,10 @@ gateway-side risk.
 `AgentApiCounters` + histograms, doctor checks C009-C014 + R001-R003,
 `docs/agent-api.md` + `docs/cli.md` + README updates. The gating
 items for a release.
+
+(Phase 2c — CommandRunner side-sessions — also still pending but is
+lower-priority since it only matters for users with custom runners
+that speak `claude-ndjson` or `codex-jsonl` protocols.)
 
 ### Remaining phases
 
