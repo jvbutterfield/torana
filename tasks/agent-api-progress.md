@@ -2,41 +2,60 @@
 
 Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
-Approach: **thin end-to-end first** — Claude-ask + inject (JSON and
-multipart) round-trips are working and tested, and the four core CLI
-subcommands (`ask`, `inject`, `turns get`, `bots list`) ship in Phase 6
-core. Remaining work is breadth-wise: Codex/Command runners, Phase 6b
-(profile store, `@-` stdin, skills install, codex plugin), Phase 7
-(observability + docs).
+Approach: **thin end-to-end first** — Claude + Codex ask paths (JSON +
+multipart), inject path (with FakeTelegram delivery proof), and the
+four core CLI subcommands (`ask`, `inject`, `turns get`, `bots list`)
+all work today. Remaining work is breadth/polish: Phase 6b (profile
+store, `@-` stdin, skills install, codex plugin), Phase 7 (metrics +
+doctor + docs), and Phase 2c (CommandRunner side-sessions, lower
+priority).
 
 ## How to resume
 
-1. `git checkout feat/agent-api` (tip: `7967c93`, 15 commits ahead of `main`).
-2. `bun test` — expect **562 pass / 4 skip / 0 fail**.
-3. **Decision for next session:** pick from the three remaining branches.
-   Phase 2b (Codex side-sessions, US-006) unblocks `torana ask` against
-   non-Claude bots and is the clearest unblock. Phase 6b adds the
-   profile store + `@-` stdin + skills install + codex plugin (the
-   pieces deferred from Phase 6 core). Phase 7 finishes the release —
-   metrics, doctor checks C009-C014 + R001-R003, docs/agent-api.md +
-   docs/cli.md.
+1. `git checkout feat/agent-api` (last phase commit `7967c93`, 20 commits ahead of `main` after this docs-polish lands).
+2. Sanity-check before touching anything:
+   - `bun test` — expect **562 pass / 4 skip / 0 fail**.
+   - `bun x tsc --noEmit` — expect clean (no output).
+3. **Pick the next branch (durable note — Phase 2b just landed):**
+   - **Phase 7 (recommended for release)** — metrics histograms, doctor
+     checks C009–C014 + R001–R003, `docs/agent-api.md` + `docs/cli.md`
+     + README updates. The actual gating items for shipping v1; ~2 days.
+   - **Phase 6b (CLI polish)** — profile store
+     (`~/.config/torana/config.toml`), `--file @-` stdin, `torana skills
+     install --host=claude|codex`, codex plugin layout, `torana doctor
+     --profile X` remote checks. Pure UX; no gateway-side risk; ~1 day.
+   - **Phase 2c (CommandRunner side-sessions)** — protocol capability
+     descriptors; `claude-ndjson` long-lived + `codex-jsonl` per-turn +
+     `jsonl-text` unsupported. Only matters for users with custom
+     runners; safe to defer.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
-5. Commit cadence (durable — see memory): one phase commit, then a
-   small follow-up that pins the hash into this tracker. Do not
-   `--amend`.
+5. **Commit cadence** (durable — also recorded in auto-memory):
+   one phase commit with the `US-xxx` tag in the subject, then a small
+   follow-up that pins the new hash into this tracker. **Do not
+   `--amend`** — pre-commit hooks may fail and amending would clobber
+   prior work.
 
-Conventions in use on this branch:
-- One commit per phase, with the exact US-xxx tag in the subject line.
-- Test files colocated under `test/agent-api/` or `test/runner/`.
-- Handlers live in `src/agent-api/handlers/`.
-- bun:sqlite named-parameter binds use `$name` prefix (see
-  `allocateSyntheticInbound` for the pattern).
-- Agent-API DB writes use `db.transactionImmediate` (not `db.transaction`)
-  so concurrent writers don't race on `MIN(telegram_update_id)`.
-- Ask turns insert as `status='running'` so the dispatch loop never
-  picks them up; inject turns use `status='queued'`.
+### Conventions in use on this branch
+- One commit per phase, with the exact `US-xxx` tag in the subject line.
+- Test files colocated under `test/agent-api/`, `test/runner/`, or
+  `test/cli/` — never under `src/`.
+- Handlers live in `src/agent-api/handlers/`; CLI subcommands in
+  `src/cli/`; client lives at `src/agent-api/client.ts`.
+- `bun:sqlite` named-parameter binds use `$name` prefix (see
+  `allocateSyntheticInbound` for the pattern; `:name` doesn't work).
+- Agent-API DB writes use `db.transactionImmediate` (not
+  `db.transaction`) so concurrent writers don't race on
+  `MIN(telegram_update_id)`.
+- Ask turns insert as `status='running'` so the main dispatch loop
+  never picks them up; inject turns insert as `status='queued'` so the
+  loop does pick them up.
+- Side-session id format: `^[A-Za-z0-9_-]{1,64}$`. Ephemeral sessions
+  get `eph-<uuid>` prefix (test assertions rely on this — also
+  recorded in auto-memory).
+- CLI subcommand bodies return `Rendered { stdout, stderr, exitCode }`
+  so tests don't need to mock `process.stdout`.
 
 ---
 
@@ -60,11 +79,12 @@ Conventions in use on this branch:
 
 ---
 
-## What's done — feat/agent-api branch (15 commits)
+## What's done — feat/agent-api branch (19 commits)
 
-Commits (`git log --oneline feat/agent-api ^main`):
+Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
+97dd888 agent-api: pin Phase 2b commit hash in progress tracker
 7967c93 agent-api phase 2b: CodexRunner side-sessions (US-006)
 d7811c6 agent-api: pin inject e2e commit hash in progress tracker
 d2c99b0 agent-api: close inject e2e gap with FakeTelegram round-trip (US-011, US-012)
@@ -84,15 +104,30 @@ a8d3aa8 agent-api: rewrite progress tracker for session handoff
 c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ```
 
-**Full test suite: 562 pass / 4 skip / 0 fail.** End-to-end round-trips:
-ask (JSON + multipart) through real HTTP → bearer auth →
-SideSessionPool → ClaudeCodeRunner (mock binary) → response body in
-[test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts) +
-[test/agent-api/ask.multipart.test.ts](../test/agent-api/ask.multipart.test.ts);
-inject (JSON + multipart) through real HTTP → bearer auth → chat
-resolve → `insertInjectTurn` → queued row + attachment paths persisted
-in [test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts) +
-[test/agent-api/inject.multipart.test.ts](../test/agent-api/inject.multipart.test.ts).
+**Full test suite: 562 pass / 4 skip / 0 fail.** Coverage at a glance:
+
+- **Ask round-trip (Claude)** — JSON + multipart through real HTTP →
+  bearer auth → `SideSessionPool` → `ClaudeCodeRunner` (mock binary)
+  → response in [test/agent-api/ask.test.ts](../test/agent-api/ask.test.ts) +
+  [test/agent-api/ask.multipart.test.ts](../test/agent-api/ask.multipart.test.ts).
+- **Ask round-trip (Codex)** — full path through `CodexRunner`'s
+  per-turn-spawn architecture in
+  [test/agent-api/ask.codex.test.ts](../test/agent-api/ask.codex.test.ts);
+  threadId-resume continuity verified via per-side log argv.
+- **Inject persistence** — JSON + multipart through real HTTP → chat
+  resolve → `insertInjectTurn` → queued row + attachment paths in
+  [test/agent-api/inject.test.ts](../test/agent-api/inject.test.ts) +
+  [test/agent-api/inject.multipart.test.ts](../test/agent-api/inject.multipart.test.ts).
+- **Inject delivery** — full chain inject → dispatch → runner →
+  streaming → outbox → FakeTelegram in
+  [test/integration/agent-api/inject.round-trip.test.ts](../test/integration/agent-api/inject.round-trip.test.ts);
+  also covers idempotency replay (no double-send) + ACL re-check + a
+  CLI subprocess `torana inject` round-trip.
+- **CLI dispatcher** — subprocess round-trips for every subcommand in
+  [test/cli/dispatch.test.ts](../test/cli/dispatch.test.ts);
+  function-level + fake-client tests in
+  [test/cli/{ask,inject,turns,bots}.cmd.test.ts](../test/cli);
+  client transport in [test/agent-api/client.test.ts](../test/agent-api/client.test.ts).
 
 ---
 
@@ -506,100 +541,113 @@ Behavior chosen during implementation (not in plan):
 
 ## What's left
 
-### Immediate next chunk — two open branches
+Phases 1, 2a, 2b, 3, 4a, 4b (incl. e2e), 5, 6 core all done.
+Three branches remain — sized + ranked for next session:
 
-Phase 2b closed in `7967c93`. Pick from:
+### Phase 7 — Observability + docs (RECOMMENDED, ~2 days, release-gating)
 
-**Phase 6b — CLI follow-ups + skills**
-Profile store (`~/.config/torana/config.toml`), `--file @-` stdin,
-`torana skills install --host=claude|codex`, codex plugin layout,
-`torana doctor --profile X`. Pure user-experience polish; no
-gateway-side risk.
+[impl plan §9](impl-agent-api.md). The actual blockers for shipping
+`v1`. Three deliverables:
 
-**Phase 7 — Observability + docs**
-`AgentApiCounters` + histograms, doctor checks C009-C014 + R001-R003,
-`docs/agent-api.md` + `docs/cli.md` + README updates. The gating
-items for a release.
+- **Metrics** ([src/metrics.ts](../src/metrics.ts)):
+  `AgentApiCounters` + `AgentApiGauges` + minimal `HistogramState`
+  primitive; `incAgentApi`, `setAgentApiGauge`,
+  `observeAgentApiRequestDuration`, `observeAgentApiAcquireDuration`.
+  Extend `renderPrometheus`. Wire emission points into `pool.ts` +
+  handlers.
+- **Doctor checks** ([src/doctor.ts](../src/doctor.ts)): C009
+  (enabled-but-no-tokens, warn), C010 (unknown `bot_ids`, fail), C011
+  (ask-scope on non-side-session-capable runner, fail), C012 (empty
+  `secret_ref` after interpolation, fail), C013 (TTL/cap
+  defence-in-depth, fail), C014 (localhost binding warning, warn).
+  Plus R001–R003 (remote health / bots / TLS) under
+  `torana doctor --profile X`.
+- **Docs**: [docs/agent-api.md](../docs/agent-api.md) (~2000 words);
+  [docs/cli.md](../docs/cli.md) reference; updates to
+  `docs/security.md`, `docs/configuration.md`, `docs/runners.md`,
+  `docs/writing-a-runner.md`; [README.md](../README.md) non-goal
+  removal + feature list + Mermaid diagram. Add a CI link-check step;
+  verify `grep -rn "Agent-to-agent messaging"` → 0 matches.
 
-(Phase 2c — CommandRunner side-sessions — also still pending but is
-lower-priority since it only matters for users with custom runners
-that speak `claude-ndjson` or `codex-jsonl` protocols.)
+### Phase 6b — CLI follow-ups + skills (~1 day, pure UX polish)
 
-### Remaining phases
+[impl plan §8](impl-agent-api.md) — the pieces deferred from Phase 6
+core. No gateway-side risk; all changes live under `src/cli/`,
+`skills/`, `scripts/`, and `codex-plugin/`.
 
-1. **Phase 2b — CodexRunner side-sessions** ([impl plan §4.2](impl-agent-api.md))
-   - Per-turn spawn of `codex exec [resume <threadId>] --json`; capture
-     `thread.started` event; reuse `threadId` on subsequent turns.
+- **Profile store** at `~/.config/torana/config.toml` (Bun.TOML, file
+  mode 0600). Resolve precedence becomes `flag > env > profile > error`.
+  Phase 6 core's `resolveCredentials` already has the trace plumbing —
+  add a third source.
+- **`@-` stdin file support** for `torana ask --file @-` /
+  `torana inject --file @-`. Magic-byte MIME detection.
+- **`torana skills install --host=claude|codex`** — implements
+  [scripts/install-skills.ts](../scripts/install-skills.ts).
+  Targets: `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills`),
+  `~/.agents/skills/` (or `$XDG_DATA_HOME/agents/skills`).
+- **Skill files**:
+  [skills/torana-ask/SKILL.md](../skills/torana-ask/SKILL.md) +
+  [skills/torana-inject/SKILL.md](../skills/torana-inject/SKILL.md)
+  with `allow_implicit_invocation: true` frontmatter (Codex-specific;
+  Claude ignores).
+- **Codex plugin scaffold**: [codex-plugin/](../codex-plugin/) +
+  `marketplace.json`. Build script copies skills in (no symlinks so
+  the published tarball survives systems that don't preserve them).
+  [scripts/check-skill-parity.ts](../scripts/check-skill-parity.ts)
+  enforced via a top-level test.
 
-2. **Phase 2c — CommandRunner side-sessions** ([impl plan §4.3](impl-agent-api.md))
-   - Protocol capability descriptors; `claude-ndjson` → long-lived side session
-     with `session` envelope field; `codex-jsonl` → per-turn spawn; `jsonl-text`
-     → unsupported. Wire envelope tagging through the parser.
-   - Example runner at `examples/side-session-runner/`.
+### Phase 2c — CommandRunner side-sessions (lower priority, defer)
 
-3. **Phase 6 — CLI + skills** ([impl plan §8](impl-agent-api.md))
-   - Rewrite `src/cli.ts` as a dispatcher; split subcommands into `src/cli/`:
-     `ask.ts`, `inject.ts`, `turns.ts`, `bots.ts`, `config.ts`, `skills.ts`,
-     plus `shared/{args,output,exit}.ts`.
-   - [src/agent-api/client.ts](../src/agent-api/client.ts) — typed `AgentApiClient` (listBots, ask, inject,
-     getTurn, listSessions, deleteSession); re-export from package entry so
-     external TS code can import.
-   - `~/.config/torana/config.toml` profile store (Bun.TOML, mode 0600).
-   - `@-` stdin file support; auto-generated `--idempotency-key` for inject.
-   - [skills/torana-ask/SKILL.md](../skills/torana-ask/SKILL.md), [skills/torana-inject/SKILL.md](../skills/torana-inject/SKILL.md) — frontmatter
-     with `allow_implicit_invocation: true` (Codex-specific; Claude ignores).
-   - [codex-plugin/](../codex-plugin/) layout + `marketplace.json`; [scripts/install-skills.ts](../scripts/install-skills.ts);
-     [scripts/check-skill-parity.ts](../scripts/check-skill-parity.ts) enforced in CI.
+[impl plan §4.3](impl-agent-api.md). Only matters for users with
+custom runners speaking `claude-ndjson` or `codex-jsonl` protocols.
 
-4. **Phase 7 — Observability + doctor + docs** ([impl plan §9](impl-agent-api.md))
-    - [src/metrics.ts](../src/metrics.ts) — `AgentApiCounters` + `AgentApiGauges` + minimal
-      `HistogramState` primitive; `incAgentApi`, `setAgentApiGauge`,
-      `observeAgentApiRequestDuration`, `observeAgentApiAcquireDuration`.
-      `renderPrometheus` extended.
-    - [src/doctor.ts](../src/doctor.ts) — C009 (enabled-but-no-tokens, warn), C010 (unknown
-      bot_ids, fail), C011 (ask-scope on non-side-session-capable runner, fail),
-      C012 (empty secret_ref after interpolation, fail), C013 (TTL/cap
-      defence-in-depth, fail), C014 (localhost binding warning, warn);
-      R001–R003 (remote health / bots / TLS) under `torana doctor --profile`.
-    - [docs/agent-api.md](../docs/agent-api.md) ~2000 words; [docs/cli.md](../docs/cli.md) reference; update
-      `docs/security.md`, `docs/configuration.md`, `docs/runners.md`,
-      `docs/writing-a-runner.md`; [README.md](../README.md) non-goal removal + feature
-      list + Mermaid diagram.
-    - Link-check CI step; `grep -rn "Agent-to-agent messaging"` → 0 matches.
+- Protocol capability descriptors (`{sideSessions: boolean}` per
+  protocol). `jsonl-text` returns false; the other two return true.
+- `claude-ndjson` envelope gains a `session` field for multiplexing
+  (default `"main"` for backward compat).
+- `codex-jsonl` reuses Phase 2b machinery (per-entry threadId).
+- Example runner at `examples/side-session-runner/`.
 
-### Soak + security (pre-release)
+### Pre-release validation (after the three phases above)
 
-- `AGENT_API_E2E=1 bun test` against real claude + codex binaries.
+- `AGENT_API_E2E=1 bun test` against real `claude` + `codex` binaries.
 - `AGENT_API_SOAK=1 bun test` — 24h run.
-- Security matrix ([impl plan §12.5](impl-agent-api.md)) — 25+ tests across
-  auth, authz, input validation, resource exhaustion, injection, disclosure.
-- Error-path coverage matrix ([impl plan §12.10](impl-agent-api.md)) — every
-  error code in `src/agent-api/errors.ts` exercised by at least one test.
+- Security matrix ([impl plan §12.5](impl-agent-api.md)) — 25+ tests
+  across auth, authz, input validation, resource exhaustion,
+  injection, disclosure.
+- Error-path coverage matrix ([impl plan §12.10](impl-agent-api.md)) —
+  every error code in [src/agent-api/errors.ts](../src/agent-api/errors.ts)
+  exercised by at least one test.
 
-### Release
+### Release mechanics
 
-- CHANGELOG entry; bump version; extend `package.json` `files` to include
-  `skills/`, `codex-plugin/`, `scripts/install-skills.ts`.
-- Extend [scripts/build.ts](../scripts/build.ts) to copy skills into `codex-plugin/` and render
-  `plugin.json` with version.
+- CHANGELOG entry; bump version in [package.json](../package.json);
+  extend `package.json` `files` to include `skills/`, `codex-plugin/`,
+  `scripts/install-skills.ts`.
+- Extend [scripts/build.ts](../scripts/build.ts) to copy skills into
+  `codex-plugin/` and render `plugin.json` with the version.
 - Extend docker smoke test to probe skill files.
 
 ---
 
 ## Deferred decisions / open questions
 
-These surfaced during Phase 1 and want resolution before the related
-phase lands. Listed here so they don't get lost.
+Items still unresolved that the next session should be aware of.
+Resolved items have been scrubbed.
 
-- **Session-id sharing across tokens** ([impl plan §13 risk 12](impl-agent-api.md)) —
-  key is `(bot_id, session_id)`. If two callers use the same session_id they
-  share context. Doc-only fix in v1; may key by `(bot_id, token_name,
-  session_id)` in a future version.
-- **Claude CLI flag name** ([impl plan §13 risk 1](impl-agent-api.md)) — verify
-  `--session-id` vs `--session <id>` on the current `claude` binary during
-  Phase 2a; fall back to `CLAUDE_CONFIG_DIR` if needed.
-- **Bun.TOML availability** ([impl plan §15 q2](impl-agent-api.md)) — confirm
-  during Phase 6; add `@iarna/toml` only if the Bun version we target
-  doesn't ship it.
-- **Per-session concurrency=1** ([impl plan §5 rule 2](impl-agent-api.md)) —
-  fixed at 1 for v1; revisit if users hit 429 side_session_busy in practice.
+- **Session-id sharing across tokens** ([impl plan §13 risk 12](impl-agent-api.md))
+  — key is `(bot_id, session_id)`. If two callers use the same
+  `session_id` they share context. Doc-only fix in v1 (call out in
+  `docs/agent-api.md` during Phase 7); may key by
+  `(bot_id, token_name, session_id)` in a future version.
+- **Bun.TOML availability** ([impl plan §15 q2](impl-agent-api.md))
+  — confirm during Phase 6b before writing the profile-store loader;
+  add `@iarna/toml` only if the Bun version we target doesn't ship it.
+- **Per-session concurrency=1** ([impl plan §5 rule 2](impl-agent-api.md))
+  — fixed at 1 for v1; revisit if users hit 429 `side_session_busy`
+  in practice.
+- **Codex back-to-back send + threadId capture race** (Phase 2b
+  implementation note — see commit `7967c93` summary above) — sync
+  `sendSideTurn` inside a `done` handler can theoretically miss
+  thread continuity. Not seen in practice with realistic event-loop
+  ordering; revisit only if a real test surfaces it.
