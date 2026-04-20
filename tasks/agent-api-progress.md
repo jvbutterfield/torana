@@ -40,7 +40,7 @@ Conventions in use on this branch:
 | 3 — Side-session pool | ✅ Complete (`24aec5b`) | US-008 | LRU + idle/hard TTL + orphan listeners |
 | 4a — Ask + turns handlers | ✅ Complete (`94445a1`) | US-009 US-010 | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints |
 | — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
-| 4b — Inject path | ✅ Complete | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
+| 4b — Inject path | ✅ Complete (`b09f746`) | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
 | 5 — Cross-cutting (full) | ⏳ Next (recommended) | US-013 US-014 | Multipart attachments + formalize idempotency sweeper + orphan-file sweep |
 | 2b — CodexRunner side-sessions | ⏳ Pending | US-006 | Per-turn spawn with `codex exec resume` |
 | 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
@@ -54,7 +54,8 @@ Conventions in use on this branch:
 Commits (`git log --oneline feat/agent-api ^main`):
 
 ```
-<tip>   agent-api phase 4b: inject path (US-011, US-012)
+b09f746 agent-api phase 4b: inject path (US-011, US-012)
+a8d3aa8 agent-api: rewrite progress tracker for session handoff
 9c4a7e1 agent-api: update progress tracker — Phase 1–4a complete
 94445a1 agent-api phase 4a: ask + turns handlers (US-009, US-010)
 24aec5b agent-api phase 3: SideSessionPool (US-008)
