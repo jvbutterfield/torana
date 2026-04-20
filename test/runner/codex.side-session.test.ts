@@ -12,7 +12,7 @@
 // main runner's emitter, never on another side session's emitter.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -435,16 +435,22 @@ describe("CodexRunner side-sessions — threadId resume continuity", () => {
         8000,
       );
 
-      // Per-side log captures argv on each thread.started line.
+      // Per-side log captures argv on each thread.started line. The log
+      // is written via a WriteStream whose buffered writes can lag the
+      // `done` event by a few ms on slower runners (reliably on macOS
+      // CI). Poll disk until the second `thread.started` line has
+      // landed before asserting on the parsed contents.
       const logPath = resolve(tmpDir, "alpha.side.s1.log");
-      const content = await Bun.file(logPath).text();
-      const lines = content
-        .split("\n")
-        .filter((l) => l.includes('"thread.started"'))
-        .map(
-          (l) =>
-            JSON.parse(l) as { __argv?: string[]; __resuming?: boolean },
-        );
+      const lines = await waitFor(() => {
+        const parsed = readFileSync(logPath, "utf8")
+          .split("\n")
+          .filter((l) => l.includes('"thread.started"'))
+          .map(
+            (l) =>
+              JSON.parse(l) as { __argv?: string[]; __resuming?: boolean },
+          );
+        return parsed.length >= 2 ? parsed : undefined;
+      }, 2000);
       expect(lines.length).toBeGreaterThanOrEqual(2);
       expect(lines[0]!.__resuming).toBe(false);
       expect(lines[1]!.__resuming).toBe(true);
