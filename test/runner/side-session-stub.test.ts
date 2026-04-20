@@ -47,7 +47,7 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
     expect(r.supportsSideSessions()).toBe(true);
   });
 
-  test("CodexRunner reports unsupported", () => {
+  test("CodexRunner reports supported (Phase 2b real impl)", () => {
     const r = new CodexRunner({
       botId: "bot1",
       config: {
@@ -62,10 +62,13 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
       },
       logDir: "/tmp",
     });
-    expect(r.supportsSideSessions()).toBe(false);
-    expect(() => r.sendSideTurn("sid", "tid", "hi", [])).toThrow(
-      RunnerDoesNotSupportSideSessions,
-    );
+    expect(r.supportsSideSessions()).toBe(true);
+    // sendSideTurn for an unknown session must NOT throw — that's a hot
+    // path on the pool's busy/not_ready signaling axis.
+    expect(r.sendSideTurn("sid", "tid", "hi", [])).toEqual({
+      accepted: false,
+      reason: "not_ready",
+    });
   });
 
   test("CommandRunner reports unsupported", () => {

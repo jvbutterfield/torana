@@ -14,8 +14,15 @@ export {}; // mark as module so top-level declarations are module-scoped
 //                       the `exec resume <id>` invocation shape.
 //   slow             — sleep 200ms before emitting any events (used for stop()
 //                       graceful exit timing).
+//   slow-echo        — emit thread.started immediately, then sleep 500ms before
+//                       echoing the prompt + turn.completed. Lets concurrency
+//                       tests reliably catch a session in busy state.
 //   stubborn         — ignore SIGTERM (must be SIGKILLed).
 //   turn-failed      — emit thread.started + turn.failed instead of completed.
+//   thread-late      — invert the realistic-but-rare ordering: emit
+//                       turn.completed BEFORE thread.started, validating that
+//                       the runner captures threadId via parser.flush() rather
+//                       than relying on order.
 //
 // Note: the runner injects `--` and `-` style args + approval/sandbox flags +
 // the prompt sentinel `-`, so the mock reads the prompt from stdin. The first
@@ -117,7 +124,48 @@ async function main(): Promise<void> {
     return;
   }
 
+  // thread-late inverts the order so we can assert the runner captures
+  // threadId via parser.flush() at exit, not by relying on event ordering.
+  if (mode === "thread-late") {
+    const prompt = await readStdin();
+    emit({ type: "turn.started" });
+    emit({
+      type: "item.completed",
+      item: {
+        id: "msg1",
+        type: "agent_message",
+        text: `late: ${prompt.trim()}`,
+      },
+    });
+    emit({
+      type: "turn.completed",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    // Now — AFTER turn.completed — emit thread.started.
+    emit({ type: "thread.started", thread_id: "tid-late" });
+    return;
+  }
+
   emit({ type: "thread.started", thread_id: `tid-${process.pid}` });
+
+  if (mode === "slow-echo") {
+    const prompt = await readStdin();
+    await new Promise((r) => setTimeout(r, 500));
+    emit({ type: "turn.started" });
+    emit({
+      type: "item.completed",
+      item: {
+        id: "msg1",
+        type: "agent_message",
+        text: `echo: ${prompt.trim()}`,
+      },
+    });
+    emit({
+      type: "turn.completed",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+    return;
+  }
 
   const prompt = await readStdin();
 

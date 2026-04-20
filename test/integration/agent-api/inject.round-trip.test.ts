@@ -109,8 +109,8 @@ function makeConfig(opts: {
       tokens: opts.agentApiTokens.map((t) => ({
         name: t.name,
         secret_ref: `\${INLINE:${t.secret}}`,
-        bot_ids: t.bot_ids,
-        scopes: t.scopes,
+        bot_ids: [...t.bot_ids],
+        scopes: [...t.scopes],
       })),
       side_sessions: {
         idle_ttl_ms: 3_600_000,

@@ -29,8 +29,11 @@ import type { BotId, CodexRunnerConfig } from "../config/schema.js";
 import { logger, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
-  RunnerDoesNotSupportSideSessions,
+  InvalidSideSessionId,
   RunnerEventEmitter,
+  SIDE_SESSION_ID_REGEX,
+  SideSessionAlreadyExists,
+  SideSessionNotFound,
   type AgentRunner,
   type RunnerEvent,
   type RunnerEventHandler,
@@ -78,6 +81,26 @@ export interface CodexRunnerOptions {
   onThreadIdChanged?: (threadId: string | null) => void;
 }
 
+/**
+ * Per-side-session state. Codex is one-shot per turn, so `currentProc` is
+ * null between turns and `threadId` carries session continuity via
+ * `codex exec resume <threadId>` on subsequent invocations.
+ */
+interface CodexSideSession {
+  id: string;
+  emitter: RunnerEventEmitter;
+  threadId: string | null;
+  status: "ready" | "busy" | "stopping" | "stopped";
+  activeTurn: TurnId | null;
+  currentProc: Subprocess<"pipe", "pipe", "pipe"> | null;
+  logStream: WriteStream | null;
+  stopping: boolean;
+  stopPromise: Promise<void> | null;
+  /** Set by dispatchSide on the first done/error so watchSideExit can decide whether to synthesize. */
+  doneEmittedForCurrentTurn: boolean;
+  stderrBuffer: string[];
+}
+
 export class CodexRunner implements AgentRunner {
   readonly botId: BotId;
   private config: CodexRunnerConfig;
@@ -96,6 +119,10 @@ export class CodexRunner implements AgentRunner {
   private stderrBuffer: string[] = [];
   private protocolFlags: readonly string[];
   private onThreadIdChanged: ((threadId: string | null) => void) | null;
+
+  // Side-session state — separate subprocesses, separate emitters.
+  // Each turn spawns a fresh subprocess; thread_id resume carries continuity.
+  private sideSessions = new Map<string, CodexSideSession>();
 
   constructor(opts: CodexRunnerOptions) {
     this.botId = opts.botId;
@@ -130,35 +157,347 @@ export class CodexRunner implements AgentRunner {
     return true;
   }
 
-  // ---------- Side sessions (stub — full implementation in Phase 2) ----------
+  // ---------- Side sessions (US-006) ----------
 
   supportsSideSessions(): boolean {
-    return false;
+    return true;
   }
 
-  async startSideSession(_sessionId: string): Promise<void> {
-    throw new RunnerDoesNotSupportSideSessions();
+  /**
+   * Create a side-session entry. Unlike Claude, no subprocess is spawned —
+   * Codex is per-turn, so the entry just holds the threadId that will carry
+   * session continuity across turns. `ready` is emitted on the next
+   * microtask so callers can subscribe BEFORE the event fires.
+   */
+  async startSideSession(sessionId: string): Promise<void> {
+    if (!SIDE_SESSION_ID_REGEX.test(sessionId)) {
+      throw new InvalidSideSessionId(sessionId);
+    }
+    if (this.sideSessions.has(sessionId)) {
+      throw new SideSessionAlreadyExists(sessionId);
+    }
+    await this.ensureLogDir(this.logDir);
+
+    const entry: CodexSideSession = {
+      id: sessionId,
+      emitter: new RunnerEventEmitter(),
+      threadId: null,
+      status: "ready",
+      activeTurn: null,
+      currentProc: null,
+      logStream: createWriteStream(
+        resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
+        { flags: "a" },
+      ),
+      stopping: false,
+      stopPromise: null,
+      doneEmittedForCurrentTurn: false,
+      stderrBuffer: [],
+    };
+    this.sideSessions.set(sessionId, entry);
+    queueMicrotask(() => {
+      // The entry could have been stopped before the microtask fires; only
+      // emit ready if it's still in "ready" state.
+      if (this.sideSessions.get(sessionId) === entry && entry.status === "ready") {
+        entry.emitter.emit({ kind: "ready" });
+      }
+    });
   }
 
+  /**
+   * Spawn a fresh `codex exec [resume <threadId>] --json …` subprocess for
+   * this turn. Reuses the captured threadId on subsequent turns so the
+   * Codex CLI's session continuity semantics hold across calls.
+   */
   sendSideTurn(
-    _sessionId: string,
-    _turnId: TurnId,
-    _text: string,
-    _attachments: Attachment[],
+    sessionId: string,
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
   ): SendTurnResult {
-    throw new RunnerDoesNotSupportSideSessions();
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry || entry.status === "stopping" || entry.status === "stopped") {
+      return { accepted: false, reason: "not_ready" };
+    }
+    // Busy check BEFORE readiness — a session mid-turn must surface "busy",
+    // not "not_ready", so the pool can return 429 instead of 500.
+    if (entry.activeTurn !== null) {
+      return { accepted: false, reason: "busy" };
+    }
+    if (entry.status !== "ready") {
+      return { accepted: false, reason: "not_ready" };
+    }
+
+    // Skip non-image attachments with a warning; mirrors main runner.
+    const images: string[] = [];
+    for (const a of attachments) {
+      if (isImagePath(a.path)) {
+        images.push(a.path);
+      } else {
+        this.log.warn("skipping non-image attachment for codex side-session", {
+          session_id: sessionId,
+          path: a.path,
+          turn_id: turnId,
+        });
+      }
+    }
+
+    const args = this.buildSideArgs(entry, images);
+    const env = this.buildEnv();
+    let proc: Subprocess<"pipe", "pipe", "pipe">;
+    try {
+      proc = this.spawnImpl({
+        cmd: [this.config.cli_path, ...args],
+        cwd: this.config.cwd ?? process.cwd(),
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      }) as Subprocess<"pipe", "pipe", "pipe">;
+    } catch (err) {
+      this.log.error("side-session spawn failed", {
+        session_id: sessionId,
+        error: String(err),
+      });
+      return { accepted: false, reason: "not_ready" };
+    }
+
+    entry.activeTurn = turnId;
+    entry.status = "busy";
+    entry.currentProc = proc;
+    entry.doneEmittedForCurrentTurn = false;
+    entry.stderrBuffer = [];
+
+    // Pipe the prompt on stdin and end so `codex exec` knows it's complete.
+    try {
+      proc.stdin.write(text);
+      proc.stdin.end();
+    } catch (err) {
+      this.log.error("side-session stdin write failed", {
+        session_id: sessionId,
+        error: String(err),
+      });
+      // Spawned but stdin failed; let watchExit synthesize an error event.
+    }
+
+    void this.runSideTurn(entry, proc, turnId);
+    return { accepted: true, turnId };
   }
 
-  async stopSideSession(_sessionId: string, _graceMs?: number): Promise<void> {
-    throw new RunnerDoesNotSupportSideSessions();
+  async stopSideSession(sessionId: string, graceMs = 5000): Promise<void> {
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry) return;
+    if (entry.stopPromise) return entry.stopPromise;
+
+    entry.stopping = true;
+    entry.status = "stopping";
+    entry.stopPromise = (async () => {
+      const proc = entry.currentProc;
+      if (proc) {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        const killer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            /* ok */
+          }
+        }, graceMs);
+        (killer as unknown as { unref?: () => void }).unref?.();
+        try {
+          await proc.exited;
+        } catch {
+          /* ignore */
+        }
+        clearTimeout(killer);
+      }
+      try {
+        entry.logStream?.end();
+      } catch {
+        /* ok */
+      }
+      entry.currentProc = null;
+      entry.logStream = null;
+      entry.activeTurn = null;
+      entry.status = "stopped";
+      this.sideSessions.delete(sessionId);
+    })();
+    return entry.stopPromise;
   }
 
   onSide<E extends RunnerEventKind>(
-    _sessionId: string,
-    _event: E,
-    _handler: RunnerEventHandler<E>,
+    sessionId: string,
+    event: E,
+    handler: RunnerEventHandler<E>,
   ): Unsubscribe {
-    throw new RunnerDoesNotSupportSideSessions();
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry) throw new SideSessionNotFound(sessionId);
+    return entry.emitter.on(event, handler);
+  }
+
+  // --- side-session internals ---
+
+  /**
+   * Drive a single side-session turn from spawn to exit. Pumps stdout +
+   * stderr concurrently, awaits subprocess exit, awaits stream flushes,
+   * synthesizes an `error` event if the subprocess exited without ever
+   * emitting a terminal event, and finally clears `activeTurn`/promotes
+   * status back to `ready` (unless the entry was torn down meanwhile).
+   */
+  private async runSideTurn(
+    entry: CodexSideSession,
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+    turnId: TurnId,
+  ): Promise<void> {
+    const stdoutP = this.pumpCodexSideStdout(entry, proc);
+    const stderrP = this.pumpCodexSideStderr(entry, proc);
+    let exitCode: number;
+    try {
+      exitCode = await proc.exited;
+    } catch {
+      exitCode = -1;
+    }
+    await Promise.allSettled([stdoutP, stderrP]);
+
+    if (entry.currentProc === proc) entry.currentProc = null;
+
+    // If the subprocess exited without emitting done/error, synthesize one.
+    // Codex auth failures get the same special-case treatment as the main
+    // runner: surfaced as fatal(auth) so the bot supervisor can react.
+    if (entry.activeTurn === turnId && !entry.doneEmittedForCurrentTurn) {
+      const auth = looksLikeAuthFailure(entry.stderrBuffer);
+      if (entry.stopping) {
+        entry.activeTurn = null;
+        if (entry.status !== "stopped") entry.status = "stopped";
+      } else if (auth) {
+        entry.activeTurn = null;
+        if (entry.status === "busy") entry.status = "ready";
+        entry.emitter.emit({
+          kind: "fatal",
+          code: "auth",
+          message: `codex side-session subprocess exited with code ${exitCode}`,
+        });
+      } else {
+        entry.activeTurn = null;
+        if (entry.status === "busy") entry.status = "ready";
+        entry.emitter.emit({
+          kind: "error",
+          turnId,
+          message: `codex exited with code ${exitCode} before completing the turn`,
+          retriable: false,
+        });
+      }
+    } else if (entry.activeTurn === turnId) {
+      // Defensive: dispatchSide already cleared activeTurn on done/error,
+      // but if the parser somehow attached to a stale id, clear here.
+      entry.activeTurn = null;
+      if (entry.status === "busy") entry.status = "ready";
+    }
+  }
+
+  private async pumpCodexSideStdout(
+    entry: CodexSideSession,
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
+    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => entry.activeTurn,
+      onThreadStarted: (id) => {
+        if (this.config.pass_resume_flag) {
+          entry.threadId = id;
+        }
+      },
+    });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        entry.logStream?.write(chunk);
+        parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
+      }
+      parser.flush((ev) => this.dispatchSide(entry, ev));
+    } catch (err) {
+      if (!entry.stopping) {
+        this.log.warn("side-session stdout read error", {
+          session_id: entry.id,
+          error: String(err),
+        });
+      }
+    }
+  }
+
+  private async pumpCodexSideStderr(
+    entry: CodexSideSession,
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
+    const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        entry.logStream?.write(`[stderr] ${text}`);
+        for (const line of text.split("\n")) {
+          if (line.trim()) {
+            entry.stderrBuffer.push(line.trim());
+            if (entry.stderrBuffer.length > 50) entry.stderrBuffer.shift();
+          }
+        }
+      }
+    } catch {
+      /* expected on exit */
+    }
+  }
+
+  private dispatchSide(entry: CodexSideSession, ev: RunnerEvent): void {
+    if (ev.kind === "done" || ev.kind === "error") {
+      entry.doneEmittedForCurrentTurn = true;
+      entry.activeTurn = null;
+      if (entry.status === "busy") entry.status = "ready";
+    }
+    entry.emitter.emit(ev);
+  }
+
+  /**
+   * Build argv for a side-session turn. Mirrors `buildArgs` but reads
+   * `entry.threadId` instead of `this.currentThreadId`, and never appends
+   * `--continue` semantics (Codex doesn't have one).
+   */
+  private buildSideArgs(entry: CodexSideSession, images: string[]): string[] {
+    const args: string[] = [...this.protocolFlags];
+    args.push("exec");
+    const resuming = this.config.pass_resume_flag && entry.threadId !== null;
+    if (resuming) {
+      args.push("resume", entry.threadId!);
+    }
+    args.push("--json");
+
+    if (this.config.approval_mode === "full-auto") {
+      args.push("--full-auto");
+    } else if (this.config.approval_mode === "yolo") {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+      args.push("-c", `approval_policy=${this.config.approval_mode}`);
+    }
+    if (!resuming && this.config.approval_mode !== "yolo") {
+      args.push("--sandbox", this.config.sandbox);
+    }
+    args.push("--skip-git-repo-check");
+
+    if (this.config.model) args.push("--model", this.config.model);
+    args.push(...this.config.args);
+
+    for (const img of images) {
+      args.push("--image", img);
+    }
+    args.push("-");
+    return args;
   }
 
   async start(): Promise<void> {
@@ -518,16 +857,20 @@ export class CodexRunner implements AgentRunner {
   }
 
   private looksLikeAuthFailure(): boolean {
-    const blob = this.stderrBuffer.join(" ").toLowerCase();
-    return (
-      blob.includes("unauthorized") ||
-      blob.includes("authentication") ||
-      blob.includes("not logged in") ||
-      blob.includes("invalid api key") ||
-      blob.includes("api key") ||
-      blob.includes("openai_api_key")
-    );
+    return looksLikeAuthFailure(this.stderrBuffer);
   }
+}
+
+function looksLikeAuthFailure(stderrBuffer: readonly string[]): boolean {
+  const blob = stderrBuffer.join(" ").toLowerCase();
+  return (
+    blob.includes("unauthorized") ||
+    blob.includes("authentication") ||
+    blob.includes("not logged in") ||
+    blob.includes("invalid api key") ||
+    blob.includes("api key") ||
+    blob.includes("openai_api_key")
+  );
 }
 
 function isImagePath(p: string): boolean {
