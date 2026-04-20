@@ -107,15 +107,17 @@ jobs:
               ./node_modules/.bin/torana migrate --dry-run --config /work/.github/ci-fixtures/torana.yaml
               # Agent-API CLI surface. No credentials needed — --help exits 0
               # and exercises the bin shim + dispatch table for every agent-api
-              # subcommand, which is what this smoke is meant to catch. If any
-              # subcommand fails to resolve (missing export, broken bundle),
-              # this step fires before we ship.
+              # command, which is what this smoke is meant to catch. If a
+              # command fails to resolve (missing export, broken bundle), this
+              # step fires before we ship. Parent-only commands like `turns`,
+              # `bots`, `config`, and `skills` require a subcommand — we
+              # exercise one per parent to cover both dispatch levels.
               ./node_modules/.bin/torana ask --help > /dev/null
               ./node_modules/.bin/torana inject --help > /dev/null
-              ./node_modules/.bin/torana turns --help > /dev/null
-              ./node_modules/.bin/torana bots --help > /dev/null
-              ./node_modules/.bin/torana config --help > /dev/null
-              ./node_modules/.bin/torana skills --help > /dev/null
+              ./node_modules/.bin/torana turns get --help > /dev/null
+              ./node_modules/.bin/torana bots list --help > /dev/null
+              ./node_modules/.bin/torana config list-profiles --help > /dev/null
+              ./node_modules/.bin/torana skills install --help > /dev/null
               ./node_modules/.bin/torana doctor --help > /dev/null
               # Verify the shipped skills + codex-plugin files landed where
               # `torana skills install` expects them. A missing skill here
