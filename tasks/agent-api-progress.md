@@ -22,7 +22,7 @@ Remaining work before cutting 1.0.0 stable: publish rc.5, run full
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `<TIP>` (this tracker update);
+   `873d23c` (this tracker update);
    last pin commit `4dd31a7` (Phase 10 pin);
    last Phase-11 commit `36255f0` (§12.7 soak harness);
    last release-prep commit `952b0d8` (1.0.0-rc.5 release prep).
@@ -192,7 +192,7 @@ Remaining work before cutting 1.0.0 stable: publish rc.5, run full
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
-<TIP>   agent-api: pin Phase 11 + rc.5 hashes in progress tracker
+873d23c agent-api: pin Phase 11 + rc.5 hashes in progress tracker
 952b0d8 agent-api: 1.0.0-rc.5 release prep
 36255f0 agent-api phase 11: §12.7 soak harness (US-015)
 8bc4271 agent-api: replace tip-commit placeholder with 15be4a9
