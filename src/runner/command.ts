@@ -1,7 +1,16 @@
-// CommandRunner — spawns any subprocess and speaks one of the two built-in
-// line protocols (jsonl-text or claude-ndjson). Reset behavior depends on
-// `on_reset`: "signal" sends a reset envelope on stdin, "restart" kills and
-// respawns.
+// CommandRunner — spawns any subprocess and speaks one of the three built-in
+// line protocols (jsonl-text, claude-ndjson, codex-jsonl). Reset behavior
+// depends on `on_reset`: "signal" sends a reset envelope on stdin, "restart"
+// kills and respawns.
+//
+// Side-sessions (Phase 2c, US-007) are supported for `claude-ndjson` and
+// `codex-jsonl` protocols. Each side-session runs as its own long-lived
+// subprocess (the user's `cmd` re-spawned) with `TORANA_SESSION_ID=<id>` in
+// env so the user's wrapper can distinguish main vs side. Events parsed
+// from a side-session's stdout flow *only* to that session's emitter — never
+// to the main emitter, never to another side session. `jsonl-text` has no
+// session semantics and throws `RunnerDoesNotSupportSideSessions` from the
+// side-session methods.
 
 import { spawn, type Subprocess } from "bun";
 import { createWriteStream, type WriteStream } from "node:fs";
@@ -12,8 +21,12 @@ import type { BotId, CommandRunnerConfig } from "../config/schema.js";
 import { logger, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
+  InvalidSideSessionId,
   RunnerDoesNotSupportSideSessions,
   RunnerEventEmitter,
+  SIDE_SESSION_ID_REGEX,
+  SideSessionAlreadyExists,
+  SideSessionNotFound,
   type AgentRunner,
   type RunnerEvent,
   type RunnerEventHandler,
@@ -23,14 +36,40 @@ import {
   type TurnId,
   type Unsubscribe,
 } from "./types.js";
-import { createClaudeNdjsonParser } from "./protocols/claude-ndjson.js";
-import { createCodexJsonlParser } from "./protocols/codex-jsonl.js";
+import {
+  claudeNdjsonCapabilities,
+  createClaudeNdjsonParser,
+} from "./protocols/claude-ndjson.js";
+import {
+  codexJsonlCapabilities,
+  createCodexJsonlParser,
+} from "./protocols/codex-jsonl.js";
 import {
   createJsonlTextParser,
   encodeReset,
   encodeTurn,
+  jsonlTextCapabilities,
 } from "./protocols/jsonl-text.js";
-import { encodeClaudeNdjsonTurn } from "./protocols/shared.js";
+import {
+  encodeClaudeNdjsonTurn,
+  type ProtocolCapabilities,
+} from "./protocols/shared.js";
+
+const DEFAULT_SIDE_STARTUP_MS = 2_000;
+
+interface CommandSideSession {
+  id: string;
+  emitter: RunnerEventEmitter;
+  proc: Subprocess<"pipe", "pipe", "pipe"> | null;
+  logStream: WriteStream | null;
+  status: "starting" | "ready" | "busy" | "stopping" | "stopped";
+  activeTurn: TurnId | null;
+  stopping: boolean;
+  stopPromise: Promise<void> | null;
+  readyPromise: Promise<void> | null;
+  resolveReady: (() => void) | null;
+  rejectReady: ((err: Error) => void) | null;
+}
 
 export interface CommandRunnerOptions {
   botId: BotId;
@@ -38,6 +77,9 @@ export interface CommandRunnerOptions {
   logDir: string;
   spawnImpl?: typeof spawn;
   ensureLogDir?: (dir: string) => Promise<void>;
+  /** Test hook — fallback ms before forcing side-session ready if the parser
+   *  never emits an explicit ready event. */
+  sideStartupMs?: number;
 }
 
 export class CommandRunner implements AgentRunner {
@@ -54,6 +96,12 @@ export class CommandRunner implements AgentRunner {
   private status: RunnerStatus = "stopped";
   private activeTurn: TurnId | null = null;
   private stopping = false;
+  private sideStartupMs: number;
+
+  // Side-session state — one long-lived subprocess per (botId, sessionId),
+  // each with its own emitter. Events from a side subprocess are routed
+  // only to its emitter; never to the main emitter.
+  private sideSessions = new Map<string, CommandSideSession>();
 
   constructor(opts: CommandRunnerOptions) {
     this.botId = opts.botId;
@@ -66,6 +114,7 @@ export class CommandRunner implements AgentRunner {
         await mkdir(dir, { recursive: true });
       });
     this.log = logger("runner.command", { bot_id: opts.botId });
+    this.sideStartupMs = opts.sideStartupMs ?? DEFAULT_SIDE_STARTUP_MS;
   }
 
   on<E extends RunnerEventKind>(event: E, handler: RunnerEventHandler<E>): Unsubscribe {
@@ -80,35 +129,321 @@ export class CommandRunner implements AgentRunner {
     return true;
   }
 
-  // ---------- Side sessions (stub — full implementation in Phase 2) ----------
+  // ---------- Side sessions (Phase 2c / US-007) ----------
+  //
+  // A side-session runs the user's `cmd` in a dedicated long-lived
+  // subprocess with `TORANA_SESSION_ID=<id>` in env so the wrapper can
+  // distinguish main vs side. Events parsed from the side subprocess
+  // flow *only* to its emitter. For `jsonl-text` the concept has no
+  // meaning and the methods throw.
 
   supportsSideSessions(): boolean {
-    return false;
+    return this.protocolCapabilities().sideSessions;
   }
 
-  async startSideSession(_sessionId: string): Promise<void> {
-    throw new RunnerDoesNotSupportSideSessions();
+  async startSideSession(sessionId: string): Promise<void> {
+    this.requireSideSessionSupport();
+    if (!SIDE_SESSION_ID_REGEX.test(sessionId)) {
+      throw new InvalidSideSessionId(sessionId);
+    }
+    if (this.sideSessions.has(sessionId)) {
+      throw new SideSessionAlreadyExists(sessionId);
+    }
+
+    await this.ensureLogDir(this.logDir);
+
+    const entry: CommandSideSession = {
+      id: sessionId,
+      emitter: new RunnerEventEmitter(),
+      proc: null,
+      logStream: null,
+      status: "starting",
+      activeTurn: null,
+      stopping: false,
+      stopPromise: null,
+      readyPromise: null,
+      resolveReady: null,
+      rejectReady: null,
+    };
+    entry.readyPromise = new Promise<void>((resolve, reject) => {
+      entry.resolveReady = resolve;
+      entry.rejectReady = reject;
+    });
+    this.sideSessions.set(sessionId, entry);
+
+    try {
+      const env = this.buildEnv();
+      env.TORANA_SESSION_ID = sessionId;
+
+      entry.proc = this.spawnImpl({
+        cmd: this.config.cmd,
+        cwd: this.config.cwd ?? process.cwd(),
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env,
+      }) as Subprocess<"pipe", "pipe", "pipe">;
+      entry.logStream = createWriteStream(
+        resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
+        { flags: "a" },
+      );
+
+      void this.pumpSideStdout(entry);
+      void this.pumpSideStderr(entry);
+      void this.watchSideExit(entry);
+
+      // Ready gate: parser fires {kind:"ready"} from the protocol's startup
+      // signal, or we fall back after sideStartupMs so a wrapper that forgets
+      // the initial event doesn't strand the caller.
+      const timer = setTimeout(() => {
+        if (entry.status === "starting") {
+          entry.status = "ready";
+          entry.emitter.emit({ kind: "ready" });
+          entry.resolveReady?.();
+          entry.resolveReady = null;
+          entry.rejectReady = null;
+        }
+      }, this.sideStartupMs);
+      (timer as unknown as { unref?: () => void }).unref?.();
+
+      await entry.readyPromise;
+    } catch (err) {
+      // Spawn/setup failure: scrub the entry so pool retry works cleanly.
+      entry.status = "stopped";
+      try {
+        entry.proc?.kill();
+      } catch {
+        /* already dead */
+      }
+      try {
+        entry.logStream?.end();
+      } catch {
+        /* best-effort */
+      }
+      this.sideSessions.delete(sessionId);
+      throw err;
+    }
   }
 
   sendSideTurn(
-    _sessionId: string,
-    _turnId: TurnId,
-    _text: string,
-    _attachments: Attachment[],
+    sessionId: string,
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
   ): SendTurnResult {
-    throw new RunnerDoesNotSupportSideSessions();
+    this.requireSideSessionSupport();
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry || entry.status === "stopping" || entry.status === "stopped") {
+      return { accepted: false, reason: "not_ready" };
+    }
+    // Busy check BEFORE readiness — a session mid-turn surfaces "busy" so
+    // the pool can return 429 instead of 500 for legitimate contention.
+    if (entry.activeTurn !== null) {
+      return { accepted: false, reason: "busy" };
+    }
+    if (entry.status !== "ready" || !entry.proc) {
+      return { accepted: false, reason: "not_ready" };
+    }
+
+    // For claude-ndjson the user envelope has no turn_id field; for
+    // codex-jsonl we reuse the jsonl-text envelope (current CommandRunner
+    // main-runner behavior).
+    const payload =
+      this.config.protocol === "claude-ndjson"
+        ? encodeClaudeNdjsonTurn(text, attachments)
+        : encodeTurn(turnId, text, attachments);
+
+    try {
+      entry.proc.stdin.write(payload);
+      entry.proc.stdin.flush();
+    } catch (err) {
+      this.log.warn("side-session stdin write failed", {
+        session_id: sessionId,
+        error: String(err),
+      });
+      return { accepted: false, reason: "not_ready" };
+    }
+
+    entry.activeTurn = turnId;
+    entry.status = "busy";
+    return { accepted: true, turnId };
   }
 
-  async stopSideSession(_sessionId: string, _graceMs?: number): Promise<void> {
-    throw new RunnerDoesNotSupportSideSessions();
+  async stopSideSession(sessionId: string, graceMs = 5000): Promise<void> {
+    this.requireSideSessionSupport();
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry) return;
+    if (entry.stopPromise) return entry.stopPromise;
+
+    entry.stopping = true;
+    entry.status = "stopping";
+    entry.stopPromise = (async () => {
+      const proc = entry.proc;
+      if (proc) {
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          /* already dead */
+        }
+        const killer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {
+            /* ok */
+          }
+        }, graceMs);
+        (killer as unknown as { unref?: () => void }).unref?.();
+        try {
+          await proc.exited;
+        } catch {
+          /* ignore */
+        }
+        clearTimeout(killer);
+      }
+      try {
+        entry.logStream?.end();
+      } catch {
+        /* ok */
+      }
+      entry.proc = null;
+      entry.logStream = null;
+      entry.status = "stopped";
+      this.sideSessions.delete(sessionId);
+    })();
+    return entry.stopPromise;
   }
 
   onSide<E extends RunnerEventKind>(
-    _sessionId: string,
-    _event: E,
-    _handler: RunnerEventHandler<E>,
+    sessionId: string,
+    event: E,
+    handler: RunnerEventHandler<E>,
   ): Unsubscribe {
-    throw new RunnerDoesNotSupportSideSessions();
+    this.requireSideSessionSupport();
+    const entry = this.sideSessions.get(sessionId);
+    if (!entry) throw new SideSessionNotFound(sessionId);
+    return entry.emitter.on(event, handler);
+  }
+
+  private requireSideSessionSupport(): void {
+    if (!this.protocolCapabilities().sideSessions) {
+      throw new RunnerDoesNotSupportSideSessions(
+        `command runner with protocol '${this.config.protocol}' does not support side sessions`,
+      );
+    }
+  }
+
+  private protocolCapabilities(): ProtocolCapabilities {
+    switch (this.config.protocol) {
+      case "claude-ndjson":
+        return claudeNdjsonCapabilities;
+      case "codex-jsonl":
+        return codexJsonlCapabilities;
+      case "jsonl-text":
+        return jsonlTextCapabilities;
+      default:
+        // zod schema restricts protocol to the three above; default is
+        // defensive and matches the safe-by-default posture.
+        return { sideSessions: false };
+    }
+  }
+
+  private async pumpSideStdout(entry: CommandSideSession): Promise<void> {
+    const proc = entry.proc;
+    if (!proc) return;
+    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    const parser =
+      this.config.protocol === "claude-ndjson"
+        ? createClaudeNdjsonParser({ currentTurnId: () => entry.activeTurn })
+        : createCodexJsonlParser({ currentTurnId: () => entry.activeTurn });
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        entry.logStream?.write(chunk);
+        parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
+      }
+      parser.flush((ev) => this.dispatchSide(entry, ev));
+    } catch (err) {
+      if (!entry.stopping) {
+        this.log.warn("side-session stdout read error", {
+          session_id: entry.id,
+          error: String(err),
+        });
+      }
+    }
+  }
+
+  private async pumpSideStderr(entry: CommandSideSession): Promise<void> {
+    const proc = entry.proc;
+    if (!proc) return;
+    const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        entry.logStream?.write(`[stderr] ${text}`);
+      }
+    } catch {
+      /* expected on exit */
+    }
+  }
+
+  private async watchSideExit(entry: CommandSideSession): Promise<void> {
+    const proc = entry.proc;
+    if (!proc) return;
+    const code = await proc.exited;
+    if (entry.proc !== proc) return;
+    try {
+      entry.logStream?.end();
+    } catch {
+      /* ok */
+    }
+    entry.proc = null;
+    entry.logStream = null;
+
+    if (entry.stopping) {
+      // Expected teardown; stopSideSession handles state transitions.
+      return;
+    }
+
+    // Unexpected exit: route fatal to the side-session emitter only.
+    entry.status = "stopped";
+    entry.activeTurn = null;
+    if (entry.resolveReady) {
+      entry.rejectReady?.(
+        new Error(
+          `command side-session subprocess exited before ready (code=${code})`,
+        ),
+      );
+      entry.resolveReady = null;
+      entry.rejectReady = null;
+    }
+    entry.emitter.emit({
+      kind: "fatal",
+      code: "exit",
+      message: `command side-session subprocess exited with code ${code}`,
+    });
+  }
+
+  private dispatchSide(entry: CommandSideSession, ev: RunnerEvent): void {
+    if (ev.kind === "ready" && entry.status === "starting") {
+      entry.status = "ready";
+      entry.emitter.emit(ev);
+      entry.resolveReady?.();
+      entry.resolveReady = null;
+      entry.rejectReady = null;
+      return;
+    }
+    if (ev.kind === "done" || ev.kind === "error") {
+      entry.activeTurn = null;
+      if (entry.status === "busy") entry.status = "ready";
+    }
+    entry.emitter.emit(ev);
   }
 
   async start(): Promise<void> {

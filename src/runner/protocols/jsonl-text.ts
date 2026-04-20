@@ -8,9 +8,14 @@ import {
   extractUsage,
   normalizeStopReason,
   type LineBufferedParser,
+  type ProtocolCapabilities,
 } from "./shared.js";
 
 const log = logger("jsonl-text");
+
+export const jsonlTextCapabilities: ProtocolCapabilities = {
+  sideSessions: false,
+};
 
 export interface JsonlTextInput {
   type: "turn" | "reset";

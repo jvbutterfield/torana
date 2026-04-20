@@ -100,7 +100,7 @@ agent_api:
 });
 
 describe("doctor — C011 ask scope + side-session support", () => {
-  test("fail: ask scope on command runner (doesn't support side-sessions)", async () => {
+  test("fail: ask scope on command runner w/ jsonl-text (no side-session support)", async () => {
     const cfg = writeConfig(baseYaml(`
 agent_api:
   enabled: true
@@ -114,7 +114,71 @@ agent_api:
     const c011 = r.checks.find((c) => c.id === "C011");
     expect(c011?.status).toBe("fail");
     expect(c011?.detail).toContain("alpha");
-    expect(c011?.detail).toContain("command");
+    // Command runner protocol is surfaced in the offender label so operators
+    // can see the jsonl-text/claude-ndjson distinction.
+    expect(c011?.detail).toContain("command/jsonl-text");
+  });
+
+  test("ok: ask scope on command runner w/ claude-ndjson protocol (Phase 2c)", async () => {
+    const cfg = writeConfig(`
+version: 1
+gateway:
+  port: 3000
+  data_dir: ${tmpDir}
+  db_path: ${tmpDir}/gateway.db
+transport:
+  default_mode: polling
+access_control:
+  allowed_user_ids: [111]
+bots:
+  - id: alpha
+    token: BOTTOK:AAAAAA
+    runner:
+      type: command
+      cmd: ["bun", "${ECHO_RUNNER}"]
+      protocol: claude-ndjson
+agent_api:
+  enabled: true
+  tokens:
+    - name: caller
+      secret_ref: "super-secret-token-value-abcdefghij"
+      bot_ids: ["alpha"]
+      scopes: ["ask"]
+`);
+    const r = await doctor(cfg);
+    const c011 = r.checks.find((c) => c.id === "C011");
+    expect(c011?.status).toBe("ok");
+  });
+
+  test("ok: ask scope on command runner w/ codex-jsonl protocol (Phase 2c)", async () => {
+    const cfg = writeConfig(`
+version: 1
+gateway:
+  port: 3000
+  data_dir: ${tmpDir}
+  db_path: ${tmpDir}/gateway.db
+transport:
+  default_mode: polling
+access_control:
+  allowed_user_ids: [111]
+bots:
+  - id: alpha
+    token: BOTTOK:AAAAAA
+    runner:
+      type: command
+      cmd: ["bun", "${ECHO_RUNNER}"]
+      protocol: codex-jsonl
+agent_api:
+  enabled: true
+  tokens:
+    - name: caller
+      secret_ref: "super-secret-token-value-abcdefghij"
+      bot_ids: ["alpha"]
+      scopes: ["ask"]
+`);
+    const r = await doctor(cfg);
+    const c011 = r.checks.find((c) => c.id === "C011");
+    expect(c011?.status).toBe("ok");
   });
 
   test("ok: inject-only scope on command runner is fine", async () => {

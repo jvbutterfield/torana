@@ -9,9 +9,14 @@ import {
   extractUsage,
   normalizeStopReason,
   type LineBufferedParser,
+  type ProtocolCapabilities,
 } from "./shared.js";
 
 const log = logger("claude-ndjson");
+
+export const claudeNdjsonCapabilities: ProtocolCapabilities = {
+  sideSessions: true,
+};
 
 export interface ClaudeNdjsonParseOptions {
   /** The turn id currently in flight — attached to text/done/error events. */

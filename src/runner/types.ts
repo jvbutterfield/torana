@@ -106,7 +106,7 @@ export interface AgentRunner {
 }
 
 /**
- * Runner-type → side-session support, derived statically (without
+ * Runner config → side-session support, derived statically (without
  * instantiating a runner). Used by `torana doctor` C011 and by docs/help
  * text so there's a single place to update when a new runner flips its
  * support bit.
@@ -115,20 +115,29 @@ export interface AgentRunner {
  * each concrete runner:
  *   - `src/runner/claude-code.ts` returns true (Phase 2a).
  *   - `src/runner/codex.ts` returns true (Phase 2b).
- *   - `src/runner/command.ts` returns false in v1; Phase 2c will flip
- *     true for `claude-ndjson` / `codex-jsonl` via protocol capability
+ *   - `src/runner/command.ts` returns the protocol capability bit
+ *     (Phase 2c): `claude-ndjson` / `codex-jsonl` → true, `jsonl-text`
+ *     → false. Sourced from `src/runner/protocols/*.ts` capability
  *     descriptors.
  *
- * A config `runner.type` string maps deterministically to one of the
- * three, so this function is total.
+ * Accepts a structural subset of `RunnerConfig` so callers can pass
+ * either a full config object or a minimal `{ type, protocol? }` shape.
  */
-export function runnerTypeSupportsSideSessions(type: string): boolean {
-  switch (type) {
+export interface RunnerSideSessionShape {
+  type: string;
+  /** Only meaningful for `type === "command"`. */
+  protocol?: string;
+}
+
+export function runnerSupportsSideSessions(
+  runner: RunnerSideSessionShape,
+): boolean {
+  switch (runner.type) {
     case "claude-code":
     case "codex":
       return true;
     case "command":
-      return false;
+      return runner.protocol === "claude-ndjson" || runner.protocol === "codex-jsonl";
     default:
       return false;
   }

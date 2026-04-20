@@ -4,36 +4,37 @@ Branch: `feat/agent-api` (off `main`)
 Plan: [impl-agent-api.md](impl-agent-api.md) (2859 lines, 20 user stories)
 PRD: [prd-agent-api.md](prd-agent-api.md)
 
-**Status:** the CLI surface is now feature-complete for v1. Phases 1 → 7
-landed, plus the Phase-7 gap-fill, plus **Phase 6b** (CLI polish —
-profile store, `@-` stdin, `skills install`, Codex plugin, `doctor
---profile NAME` resolver). Remaining work is the optional **Phase 2c**
-CommandRunner side-session pass and the pre-release E2E gates.
+**Status:** all implementation phases landed. Phases 1 → 7 complete,
+plus the Phase-7 gap-fill, plus **Phase 6b** (CLI polish), plus
+**Phase 2c** (CommandRunner side-sessions for `claude-ndjson` /
+`codex-jsonl` protocols, with `jsonl-text` explicitly left unsupported).
+Remaining work is the pre-release E2E gates — no more implementation.
 
 ## How to resume
 
-1. `git checkout feat/agent-api` — tip commit `cd44c83` (Phase 6b
-   placeholder-fix polish); last phase commit `7b62e1c` (Phase 6b).
-   30 commits ahead of `main`.
+1. `git checkout feat/agent-api` — tip commit
+   `<PHASE_2C_PIN_COMMIT_PLACEHOLDER>` (Phase 2c pin-commit polish);
+   last phase commit `<PHASE_2C_COMMIT_PLACEHOLDER>` (Phase 2c).
+   32 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **843 pass / 4 skip / 0 fail**. One test
+   - `bun test` — expect **874 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
      sendSideTurn is immediately accepted`) is mildly flaky under full
      suite runs due to `queueMicrotask` timing; re-run if it trips.
    - `bun x tsc --noEmit` — expect clean (no output).
-3. **Pick the next branch** (ranked — first is recommended):
-   - **Phase 2c — CommandRunner side-sessions (defer-able).** Protocol
-     capability descriptors; `claude-ndjson` long-lived + `codex-jsonl`
-     per-turn + `jsonl-text` unsupported. Only matters for users with
-     custom runners. When this lands, flip the `command` entry in
-     `runnerTypeSupportsSideSessions` ([src/runner/types.ts](../src/runner/types.ts))
-     to `true` for the relevant protocols — the drift-guard test in
-     [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
-     will enforce the static map matches each runner's runtime answer.
-   - **Pre-release validation** (once 2c lands or is explicitly
-     deferred): `AGENT_API_E2E=1 bun test` against real `claude` +
-     `codex` binaries; a 24h `AGENT_API_SOAK=1` run; impl-plan §12.5
-     security matrix; impl-plan §12.10 error-path coverage matrix.
+3. **Remaining work** — only pre-release validation is left:
+   - `AGENT_API_E2E=1 bun test` against real `claude` + `codex` binaries.
+   - A 24h `AGENT_API_SOAK=1` run.
+   - Impl-plan §12.5 security matrix (25+ tests across auth, authz,
+     input validation, resource exhaustion, injection, disclosure).
+   - Impl-plan §12.10 error-path coverage matrix — every code in
+     [src/agent-api/errors.ts](../src/agent-api/errors.ts) exercised
+     by at least one test.
+   - Release mechanics: CHANGELOG entry, bump `package.json` version,
+     extend `package.json` `files` to include `skills/`,
+     `codex-plugin/`, `scripts/install-skills.ts`, and
+     `examples/side-session-runner/`; extend [scripts/build.ts](../scripts/build.ts)
+     and docker smoke.
 4. Every commit on this branch is self-contained — you can run tests
    at any point. If something's red, revert the tip commit; no rebase
    needed.
@@ -69,12 +70,27 @@ CommandRunner side-session pass and the pre-release E2E gates.
   `metrics` through explicitly — `metrics?: Metrics` is optional on
   purpose so tests stay lightweight, but the real wiring in
   [src/main.ts](../src/main.ts) must pass it.
-- **Runner-type → side-session capability** lives in one helper:
-  `runnerTypeSupportsSideSessions(type)` in
-  [src/runner/types.ts](../src/runner/types.ts). Doctor C011 reads it;
-  a drift-guard test pins each concrete runner's runtime
-  `supportsSideSessions()` to the static map's answer. Change both
-  together or the test fails.
+- **Runner → side-session capability** lives in one helper:
+  `runnerSupportsSideSessions(runner)` in
+  [src/runner/types.ts](../src/runner/types.ts). Takes a structural
+  `{type, protocol?}` shape so the command-runner answer can depend on
+  the configured protocol (Phase 2c). Doctor C011 reads it; a
+  drift-guard test in
+  [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
+  pins each concrete runner's runtime `supportsSideSessions()` to the
+  static answer for every protocol variant. Change both together or
+  the test fails.
+- **CommandRunner side-sessions** (Phase 2c) — each side-session runs
+  the user's `cmd` as its own long-lived subprocess with
+  `TORANA_SESSION_ID=<sessionId>` in env so the wrapper can distinguish
+  main vs side. Main subprocess has no `TORANA_SESSION_ID` set. Event
+  routing is per-subprocess (each side-session owns its own emitter).
+  Supported for `claude-ndjson` + `codex-jsonl`; `jsonl-text` has no
+  session semantics in its envelope and throws
+  `RunnerDoesNotSupportSideSessions` from all side-session methods.
+  Protocol capability descriptors live in
+  [src/runner/protocols/*.ts](../src/runner/protocols) so adding a new
+  protocol means one edit, not three.
 - **Histogram bucket sequence** is exported as `DURATION_BUCKETS_MS`
   from [src/metrics.ts](../src/metrics.ts). The doc-shape test parses
   the "Bucket sequence" line in [docs/agent-api.md](../docs/agent-api.md)
@@ -134,7 +150,7 @@ CommandRunner side-session pass and the pre-release E2E gates.
 | 5 — Cross-cutting (full) | ✅ Complete (`35b355d`) | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
 | 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
 | 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
-| 2c — CommandRunner side-sessions | ⏳ Pending | US-007 | Protocol capability descriptors |
+| 2c — CommandRunner side-sessions | ✅ Complete (`<PHASE_2C_COMMIT_PLACEHOLDER>`) | US-007 | Protocol capability descriptors (`claudeNdjsonCapabilities`/`codexJsonlCapabilities`/`jsonlTextCapabilities`); per-session subprocess spawn with `TORANA_SESSION_ID=<id>` env var; `runnerSupportsSideSessions` now protocol-aware; doctor C011 labels offender as `command/<protocol>`; `examples/side-session-runner/` (~60 lines Bun) demonstrates the pattern; **31 new tests** across `command.side-session.test.ts` (26), `example-side-session-runner.test.ts` (1), `side-session-stub.test.ts` (+3 cases), `doctor.agent-api.test.ts` (+2 C011 cases) |
 | 6b — CLI follow-ups + skills | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates |
 | 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
 | 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
@@ -956,56 +972,101 @@ follow-ups:**
 
 ---
 
+### Commit `<PHASE_2C_COMMIT_PLACEHOLDER>` — Phase 2c: CommandRunner side-sessions (US-007)
+
+- [src/runner/protocols/shared.ts](../src/runner/protocols/shared.ts)
+  — new `ProtocolCapabilities` interface (just `{ sideSessions: bool }`
+  for v1; room to grow).
+- [src/runner/protocols/claude-ndjson.ts](../src/runner/protocols/claude-ndjson.ts),
+  [src/runner/protocols/codex-jsonl.ts](../src/runner/protocols/codex-jsonl.ts),
+  [src/runner/protocols/jsonl-text.ts](../src/runner/protocols/jsonl-text.ts)
+  — each exports its own capability constant
+  (`claudeNdjsonCapabilities`, `codexJsonlCapabilities`,
+  `jsonlTextCapabilities`). Single source of truth; adding a new
+  protocol means one edit, not three.
+- [src/runner/types.ts](../src/runner/types.ts) — renamed
+  `runnerTypeSupportsSideSessions(type: string)` →
+  `runnerSupportsSideSessions(runner: RunnerSideSessionShape)`.
+  Accepts `{ type, protocol? }` so the command-runner answer can depend
+  on protocol (`claude-ndjson` / `codex-jsonl` → true; `jsonl-text` →
+  false). `claude-code` and `codex` remain unconditional true.
+- [src/runner/command.ts](../src/runner/command.ts) — real side-session
+  impl. Each side-session is its own long-lived subprocess running the
+  user's `cmd` with `TORANA_SESSION_ID=<id>` in env. Per-entry state
+  (`CommandSideSession`) carries its own emitter, proc, logStream,
+  status, activeTurn, stopPromise, readyPromise. Parser chosen per
+  protocol: `claude-ndjson` → `createClaudeNdjsonParser`; `codex-jsonl`
+  → `createCodexJsonlParser`. Ready gate: parser's startup signal OR
+  `sideStartupMs` fallback. `jsonl-text` throws
+  `RunnerDoesNotSupportSideSessions` via new
+  `requireSideSessionSupport()` guard at the head of every side method.
+  Spawn failure path scrubs the entry from `sideSessions` so pool
+  retry works cleanly. Unexpected subprocess exit → fatal on side
+  emitter only; main emitter is never signalled.
+- [src/doctor.ts](../src/doctor.ts) — C011 now maps `botId → runner`
+  (full config, not just type) and passes the runner through
+  `runnerSupportsSideSessions`. Offender label surfaces the protocol
+  for command runners: `command/jsonl-text` vs `command/claude-ndjson`.
+- [test/runner/fixtures/command-ndjson-mock.ts](../test/runner/fixtures/command-ndjson-mock.ts)
+  + [test/runner/fixtures/command-codex-mock.ts](../test/runner/fixtures/command-codex-mock.ts)
+  — new behavior-configurable mocks (modes: `normal`, `slow-echo`,
+  `crash-on-turn`, `no-ready`). Both stamp `TORANA_SESSION_ID` onto
+  replies so tests can see routing worked end-to-end.
+- [test/runner/command.side-session.test.ts](../test/runner/command.side-session.test.ts)
+  — 26 tests. `jsonl-text` block (2 tests): supports-false + all four
+  methods throw. Shared block iterated over both `claude-ndjson` and
+  `codex-jsonl` (12 tests × 2 = 24): supports-true, id validation,
+  double-start, onSide-before-start, happy path with disjoint-events
+  assertion, two-concurrent-sessions isolation, busy → 429, unknown
+  session → not_ready, stop+restart same id, fatal on crash, per-side
+  log file lands at `<data_dir>/<bot_id>.side.<sessionId>.log`,
+  spawn-failure scrubs phantom entry.
+- [examples/side-session-runner/](../examples/side-session-runner/)
+  — new example. `session-runner.ts` (~60 lines Bun) speaks
+  `claude-ndjson`, reads `TORANA_SESSION_ID`, stamps
+  `[<session>#<n>]` onto each reply. `torana.yaml` wires it up with an
+  agent-API `ask`-scope token. `README.md` includes a curl demo.
+- [test/runner/example-side-session-runner.test.ts](../test/runner/example-side-session-runner.test.ts)
+  — one e2e test: spawns the shipped example under `CommandRunner`,
+  drives one main-session turn + one side-session turn, asserts
+  disjoint event streams and correct `[main#…]` / `[demo#…]` tags.
+  Guards against drift between the published example and what the
+  protocol parser expects.
+- [test/runner/side-session-stub.test.ts](../test/runner/side-session-stub.test.ts)
+  — updated to the new `runnerSupportsSideSessions(config)` signature,
+  expanded drift guard iterates across all three command-runner
+  protocol variants, new cases confirm `command/claude-ndjson` and
+  `command/codex-jsonl` both report supported and return
+  `{accepted:false, reason:"not_ready"}` on unknown-session sends.
+- [test/cli/doctor.agent-api.test.ts](../test/cli/doctor.agent-api.test.ts)
+  — C011 test cases refreshed: fail message now asserts
+  `command/jsonl-text` shows in the offender label; two new tests
+  confirm `command/claude-ndjson` and `command/codex-jsonl` PASS C011.
+
+**Behavior chosen during implementation (not in plan):**
+- **No wire-format change.** Plan §4.3 mentioned adding a `session`
+  field to the `claude-ndjson` outbound envelope for multiplexing.
+  Skipped because the impl uses per-session subprocesses (Claude-style)
+  — the session tag would be unused. If a future user wants to
+  multiplex many sessions through a single subprocess, the capability
+  descriptor already says they can; the wire-format extension can
+  land incrementally without breaking existing wrappers.
+- **`TORANA_SESSION_ID` env var** is the handshake — simpler than
+  argv injection, no cmd parsing, works uniformly for both protocols.
+  Main subprocess doesn't set it; side subprocesses set it to the
+  session id. Wrappers can use it to tag state, database paths, etc.
+
+**Phase 2c tests**: 31 new expectations (26 command.side-session + 1
+example-runner + 2 new C011 + 3 expanded drift-guard + 1 new C011
+label assertion). Full suite 843 → **874 pass** / 4 skip / 0 fail.
+
+---
+
 ## What's left
 
-Phases 1, 2a, 2b, 3, 4a, 4b (incl. e2e), 5, 6 core, **and 7** all done.
-Two branches remain — sized + ranked for next session:
+All implementation phases landed — only pre-release validation remains.
 
-### Phase 6b — CLI follow-ups + skills (~1 day, pure UX polish)
-
-[impl plan §8](impl-agent-api.md) — the pieces deferred from Phase 6
-core. No gateway-side risk; all changes live under `src/cli/`,
-`skills/`, `scripts/`, and `codex-plugin/`.
-
-- **Profile store** at `~/.config/torana/config.toml` (Bun.TOML, file
-  mode 0600). Resolve precedence becomes `flag > env > profile > error`.
-  Phase 6 core's `resolveCredentials` already has the trace plumbing —
-  add a third source.
-- **`torana doctor --profile NAME` resolver.** Phase 7 already ships
-  the remote check runner (`runRemoteDoctor`) + the `--profile` flag
-  (CLI exits 2 with a pointer). Phase 6b just needs the
-  profile-name-to-(server, token) lookup that feeds into the existing
-  code path.
-- **`@-` stdin file support** for `torana ask --file @-` /
-  `torana inject --file @-`. Magic-byte MIME detection.
-- **`torana skills install --host=claude|codex`** — implements
-  [scripts/install-skills.ts](../scripts/install-skills.ts).
-  Targets: `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills`),
-  `~/.agents/skills/` (or `$XDG_DATA_HOME/agents/skills`).
-- **Skill files**:
-  [skills/torana-ask/SKILL.md](../skills/torana-ask/SKILL.md) +
-  [skills/torana-inject/SKILL.md](../skills/torana-inject/SKILL.md)
-  with `allow_implicit_invocation: true` frontmatter (Codex-specific;
-  Claude ignores).
-- **Codex plugin scaffold**: [codex-plugin/](../codex-plugin/) +
-  `marketplace.json`. Build script copies skills in (no symlinks so
-  the published tarball survives systems that don't preserve them).
-  [scripts/check-skill-parity.ts](../scripts/check-skill-parity.ts)
-  enforced via a top-level test.
-
-### Phase 2c — CommandRunner side-sessions (lower priority, defer)
-
-[impl plan §4.3](impl-agent-api.md). Only matters for users with
-custom runners speaking `claude-ndjson` or `codex-jsonl` protocols.
-
-- Protocol capability descriptors (`{sideSessions: boolean}` per
-  protocol). `jsonl-text` returns false; the other two return true.
-- `claude-ndjson` envelope gains a `session` field for multiplexing
-  (default `"main"` for backward compat).
-- `codex-jsonl` reuses Phase 2b machinery (per-entry threadId).
-- Example runner at `examples/side-session-runner/`.
-
-### Pre-release validation (after the three phases above)
+### Pre-release validation
 
 - `AGENT_API_E2E=1 bun test` against real `claude` + `codex` binaries.
 - `AGENT_API_SOAK=1 bun test` — 24h run.

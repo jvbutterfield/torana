@@ -1,7 +1,14 @@
-// Phase 1 runner stub: every runner reports supportsSideSessions()=false
-// and throws RunnerDoesNotSupportSideSessions from the other methods.
-// Phase 2 will flip supportsSideSessions() to true for each and replace
-// the throws with real implementations.
+// Cross-runner side-session support + id validation contract.
+//
+// Phases 2a (claude-code), 2b (codex), and 2c (command) each implemented
+// side-sessions for their runner. This file guards two invariants:
+//   1. Each runner's runtime `supportsSideSessions()` matches the static
+//      `runnerSupportsSideSessions(config)` answer exported from
+//      `src/runner/types.ts` — the "drift guard". Doctor C011 and docs
+//      both read the static helper; if they diverge the test fails.
+//   2. Per-protocol capability bits for the `command` runner are
+//      correctly plumbed (`claude-ndjson`/`codex-jsonl` → true,
+//      `jsonl-text` → false).
 
 import { describe, expect, test } from "bun:test";
 import { ClaudeCodeRunner } from "../../src/runner/claude-code.js";
@@ -11,7 +18,7 @@ import {
   InvalidSideSessionId,
   RunnerDoesNotSupportSideSessions,
   SIDE_SESSION_ID_REGEX,
-  runnerTypeSupportsSideSessions,
+  runnerSupportsSideSessions,
   validateSideSessionId,
 } from "../../src/runner/types.js";
 
@@ -72,7 +79,7 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
     });
   });
 
-  test("CommandRunner reports unsupported", () => {
+  test("CommandRunner (jsonl-text) reports unsupported and throws", () => {
     const r = new CommandRunner({
       botId: "bot1",
       config: {
@@ -89,22 +96,73 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
       RunnerDoesNotSupportSideSessions,
     );
   });
+
+  test("CommandRunner (claude-ndjson) reports supported (Phase 2c)", () => {
+    const r = new CommandRunner({
+      botId: "bot1",
+      config: {
+        type: "command",
+        cmd: ["echo"],
+        protocol: "claude-ndjson",
+        env: {},
+        on_reset: "signal",
+      },
+      logDir: "/tmp",
+    });
+    expect(r.supportsSideSessions()).toBe(true);
+    // Unknown session returns not_ready, not throws — hot path on the
+    // pool's busy/not_ready signaling axis (same contract as Codex).
+    expect(r.sendSideTurn("sid", "tid", "hi", [])).toEqual({
+      accepted: false,
+      reason: "not_ready",
+    });
+  });
+
+  test("CommandRunner (codex-jsonl) reports supported (Phase 2c)", () => {
+    const r = new CommandRunner({
+      botId: "bot1",
+      config: {
+        type: "command",
+        cmd: ["echo"],
+        protocol: "codex-jsonl",
+        env: {},
+        on_reset: "signal",
+      },
+      logDir: "/tmp",
+    });
+    expect(r.supportsSideSessions()).toBe(true);
+    expect(r.sendSideTurn("sid", "tid", "hi", [])).toEqual({
+      accepted: false,
+      reason: "not_ready",
+    });
+  });
 });
 
-describe("runnerTypeSupportsSideSessions — static mapping", () => {
-  test("claude-code + codex → true; command → false", () => {
-    expect(runnerTypeSupportsSideSessions("claude-code")).toBe(true);
-    expect(runnerTypeSupportsSideSessions("codex")).toBe(true);
-    expect(runnerTypeSupportsSideSessions("command")).toBe(false);
+describe("runnerSupportsSideSessions — static mapping", () => {
+  test("claude-code + codex → true; command depends on protocol", () => {
+    expect(runnerSupportsSideSessions({ type: "claude-code" })).toBe(true);
+    expect(runnerSupportsSideSessions({ type: "codex" })).toBe(true);
+    expect(
+      runnerSupportsSideSessions({ type: "command", protocol: "claude-ndjson" }),
+    ).toBe(true);
+    expect(
+      runnerSupportsSideSessions({ type: "command", protocol: "codex-jsonl" }),
+    ).toBe(true);
+    expect(
+      runnerSupportsSideSessions({ type: "command", protocol: "jsonl-text" }),
+    ).toBe(false);
+    // Missing protocol on command → conservative false (shouldn't happen via
+    // zod but defence in depth).
+    expect(runnerSupportsSideSessions({ type: "command" })).toBe(false);
   });
   test("unknown runner types default to false (safe-by-default)", () => {
-    expect(runnerTypeSupportsSideSessions("made-up")).toBe(false);
-    expect(runnerTypeSupportsSideSessions("")).toBe(false);
+    expect(runnerSupportsSideSessions({ type: "made-up" })).toBe(false);
+    expect(runnerSupportsSideSessions({ type: "" })).toBe(false);
   });
   test("static mapping agrees with each runner's supportsSideSessions() runtime value", () => {
     // Guard against drift between doctor C011's check and the runtime
-    // impl. If claude-code or codex is ever changed to return false, the
-    // runtime vs static answer will diverge here.
+    // impl. If any runner ever changes its answer, the runtime and static
+    // answers will diverge here.
     const claude = new ClaudeCodeRunner({
       botId: "bot1",
       config: {
@@ -116,7 +174,7 @@ describe("runnerTypeSupportsSideSessions — static mapping", () => {
       },
       logDir: "/tmp",
     });
-    expect(runnerTypeSupportsSideSessions("claude-code")).toBe(
+    expect(runnerSupportsSideSessions({ type: "claude-code" })).toBe(
       claude.supportsSideSessions(),
     );
 
@@ -134,19 +192,25 @@ describe("runnerTypeSupportsSideSessions — static mapping", () => {
       },
       logDir: "/tmp",
     });
-    expect(runnerTypeSupportsSideSessions("codex")).toBe(codex.supportsSideSessions());
+    expect(runnerSupportsSideSessions({ type: "codex" })).toBe(
+      codex.supportsSideSessions(),
+    );
 
-    const cmd = new CommandRunner({
-      botId: "bot1",
-      config: {
-        type: "command",
-        cmd: ["echo"],
-        protocol: "jsonl-text",
-        env: {},
-        on_reset: "signal",
-      },
-      logDir: "/tmp",
-    });
-    expect(runnerTypeSupportsSideSessions("command")).toBe(cmd.supportsSideSessions());
+    for (const protocol of ["claude-ndjson", "codex-jsonl", "jsonl-text"] as const) {
+      const cmd = new CommandRunner({
+        botId: "bot1",
+        config: {
+          type: "command",
+          cmd: ["echo"],
+          protocol,
+          env: {},
+          on_reset: "signal",
+        },
+        logDir: "/tmp",
+      });
+      expect(runnerSupportsSideSessions({ type: "command", protocol })).toBe(
+        cmd.supportsSideSessions(),
+      );
+    }
   });
 });

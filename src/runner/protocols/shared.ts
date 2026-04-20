@@ -6,6 +6,17 @@ import type { RunnerEvent } from "../types.js";
 
 const log = logger("protocol");
 
+/**
+ * Per-protocol capability descriptor. Consumed by `CommandRunner` (Phase 2c)
+ * to decide whether the `supportsSideSessions()` bit is on and by
+ * `runnerSupportsSideSessions(runner)` in [src/runner/types.ts] to resolve
+ * the static answer without instantiating a runner. Each protocol module
+ * exports its own constant so adding a new protocol only requires one edit.
+ */
+export interface ProtocolCapabilities {
+  sideSessions: boolean;
+}
+
 export type StopReason = "end_turn" | "max_tokens" | "stop_sequence" | "tool_use";
 
 export function normalizeStopReason(raw: unknown): StopReason | undefined {
