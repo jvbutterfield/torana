@@ -7,20 +7,24 @@ PRD: [prd-agent-api.md](prd-agent-api.md)
 **Status:** all implementation phases landed. Phases 1 → 7 complete,
 plus the Phase-7 gap-fill, plus **Phase 6b** (CLI polish), plus
 **Phase 2c** (CommandRunner side-sessions for `claude-ndjson` /
-`codex-jsonl` protocols, with `jsonl-text` explicitly left unsupported)
+`codex-jsonl` protocols, with `jsonl-text` explicitly left unsupported),
 plus a **Phase 2c gap-fill** that closed 7 coverage gaps with 20 more
-tests. Full suite: **894 pass / 4 skip / 0 fail.** Remaining work is
-the pre-release E2E gates — no more implementation.
+tests, plus **Phase 8** (§12.10 error-path coverage matrix — 1 gap
+closed in `src/server.ts` + 93 new tests including a drift-guard that
+enforces the matrix going forward). Full suite: **987 pass / 4 skip /
+0 fail.** Remaining work is the pre-release E2E gates — no more
+implementation.
 
 ## How to resume
 
 1. `git checkout feat/agent-api` — tip commit
-   `ffa709f` (Phase 2c gap-fill pin);
-   last implementation commit `b7ab18f` (Phase 2c);
-   last test commit `c2d96af` (Phase 2c gap-fill).
-   39 commits ahead of `main`.
+   `<PIN>` (Phase 8 pin);
+   last implementation commit `<PHASE8>` (Phase 8 — `src/server.ts`
+   canonical 405 body for `/v1/*`);
+   last test commit `<PHASE8>` (Phase 8 added 93 tests).
+   41 commits ahead of `main`.
 2. Sanity-check before touching anything:
-   - `bun test` — expect **894 pass / 4 skip / 0 fail**. One test
+   - `bun test` — expect **987 pass / 4 skip / 0 fail**. One test
      (`CodexRunner side-sessions > after startSideSession resolves,
      sendSideTurn is immediately accepted`) is mildly flaky under full
      suite runs due to `queueMicrotask` timing; re-run if it trips.
@@ -30,9 +34,7 @@ the pre-release E2E gates — no more implementation.
    - A 24h `AGENT_API_SOAK=1` run.
    - Impl-plan §12.5 security matrix (25+ tests across auth, authz,
      input validation, resource exhaustion, injection, disclosure).
-   - Impl-plan §12.10 error-path coverage matrix — every code in
-     [src/agent-api/errors.ts](../src/agent-api/errors.ts) exercised
-     by at least one test.
+   - ~~Impl-plan §12.10 error-path coverage matrix~~ ✅ done in Phase 8.
    - Release mechanics: CHANGELOG entry, bump `package.json` version,
      extend `package.json` `files` to include `skills/`,
      `codex-plugin/`, `scripts/install-skills.ts`, and
@@ -158,6 +160,7 @@ the pre-release E2E gates — no more implementation.
 | 6b — CLI follow-ups + skills | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates |
 | 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
 | 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
+| 8 — §12.10 error-path coverage matrix | ✅ Complete (`<PIN>`) | US-015 | Closed the one gap in §12.10: `method_not_allowed` had zero emission sites + zero test assertions. Fix in `src/server.ts` — `/v1/*` paths now return canonical JSON `{error, message}` on 405 (non-`/v1/*` paths keep the plain-text 405 for backwards compat — no agent-api coupling at the transport layer). **93 new tests**: 6 in `test/server/router.method.test.ts` (PUT/PATCH against /v1/*, unregistered /v1 path, non-/v1 plain-text preserved, statusFor drift-guard, GET 200 no-regression) + 87 in `test/agent-api/errors.coverage.test.ts` (the matrix drift-guard itself: 29 codes × 3 invariants — `statusFor` returns a valid 4xx/5xx, emitted from ≥1 src file, asserted by ≥1 test). The coverage test parses `STATUS_MAP` out of `errors.ts` so new codes are auto-included; `method_not_allowed` is whitelisted to `src/server.ts` since its emission site is at the transport layer. Full suite: **987 pass / 4 skip / 0 fail**. |
 
 ---
 

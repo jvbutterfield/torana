@@ -137,6 +137,15 @@ export function createServer(opts: ServerOptions): Server {
             ? (req.method as HttpMethod)
             : null;
         if (!method) {
+          if (url.pathname.startsWith("/v1/")) {
+            return new Response(
+              JSON.stringify({
+                error: "method_not_allowed",
+                message: "method not allowed for this route",
+              }),
+              { status: 405, headers: { "Content-Type": "application/json" } },
+            );
+          }
           return new Response("Method Not Allowed", { status: 405 });
         }
 
