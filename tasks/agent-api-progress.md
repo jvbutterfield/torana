@@ -145,7 +145,7 @@ CommandRunner side-session pass and the pre-release E2E gates.
 Commits (`git log --oneline feat/agent-api ^main`, oldest at bottom):
 
 ```
-<pin>   agent-api: pin Phase 6b commit hash in progress tracker
+73a043d agent-api: pin Phase 6b commit hash in progress tracker
 7b62e1c agent-api phase 6b: profile store + @- stdin + skills + codex plugin (US-018, US-019, US-020)
 b3536ac agent-api: polish progress tracker for next-session handoff
 26236cd agent-api: pin Phase 7 gap-fill commit hash in progress tracker
