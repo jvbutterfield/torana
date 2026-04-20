@@ -151,6 +151,91 @@ describe("SideSessionPool: acquire", () => {
   });
 });
 
+describe("SideSessionPool: global LRU eviction across bots", () => {
+  test("global cap full → evicts an idle entry from any bot", async () => {
+    // PRD US-008: "If `max_per_bot` or `max_global` reached: LRU-evict the
+    // oldest idle entry for that bot (or globally)." Exercises the
+    // `total >= globalMax` branch in pool.ts:301-306, which the per-bot
+    // LRU test does not reach.
+    const r1 = new FakeRunner("bot1");
+    const r2 = new FakeRunner("bot2");
+    const bot1Cfg = makeTestBotConfig("bot1");
+    const bot2Cfg = makeTestBotConfig("bot2");
+    const cfg = makeTestConfig([bot1Cfg, bot2Cfg]);
+    cfg.agent_api.enabled = true;
+    cfg.agent_api.side_sessions = {
+      idle_ttl_ms: 60_000,
+      hard_ttl_ms: 600_000,
+      max_per_bot: 2,
+      max_global: 2,
+    };
+    let now = 1_000_000;
+    const pool = new SideSessionPool({
+      config: cfg,
+      db,
+      registry: fakeRegistry(
+        new Map([
+          ["bot1", r1],
+          ["bot2", r2],
+        ]),
+      ) as never,
+      clock: () => now,
+    });
+
+    // Fill global cap with one bot1 idle entry and one bot2 idle entry.
+    await pool.acquire("bot1", "b1-old");
+    pool.release("bot1", "b1-old");
+    now += 1000;
+    await pool.acquire("bot2", "b2-newer");
+    pool.release("bot2", "b2-newer");
+    now += 1000;
+
+    // Acquire on bot2 again with a new id — must evict the global LRU
+    // (which is bot1's b1-old) even though bot2 is the requesting bot.
+    const r = await pool.acquire("bot2", "b2-fresh");
+    expect(r.kind).toBe("ok");
+    await new Promise((res) => setTimeout(res, 20));
+    const bot1Ids = pool.listForBot("bot1").map((s) => s.sessionId);
+    const bot2Ids = pool.listForBot("bot2").map((s) => s.sessionId);
+    expect(bot1Ids).not.toContain("b1-old");
+    expect(bot2Ids).toContain("b2-fresh");
+    // The global cap is still respected.
+    expect(bot1Ids.length + bot2Ids.length).toBeLessThanOrEqual(2);
+  });
+
+  test("global cap full with NO evictable entries → capacity", async () => {
+    // Both slots inflight on different bots → no idle entry to evict
+    // anywhere → 429 capacity from the global branch.
+    const r1 = new FakeRunner("bot1");
+    const r2 = new FakeRunner("bot2");
+    const bot1Cfg = makeTestBotConfig("bot1");
+    const bot2Cfg = makeTestBotConfig("bot2");
+    const cfg = makeTestConfig([bot1Cfg, bot2Cfg]);
+    cfg.agent_api.enabled = true;
+    cfg.agent_api.side_sessions = {
+      idle_ttl_ms: 60_000,
+      hard_ttl_ms: 600_000,
+      max_per_bot: 2,
+      max_global: 2,
+    };
+    const pool = new SideSessionPool({
+      config: cfg,
+      db,
+      registry: fakeRegistry(
+        new Map([
+          ["bot1", r1],
+          ["bot2", r2],
+        ]),
+      ) as never,
+    });
+    // Hold both slots inflight (no release).
+    await pool.acquire("bot1", "b1-busy");
+    await pool.acquire("bot2", "b2-busy");
+    const r = await pool.acquire("bot2", "b2-fresh");
+    expect(r.kind).toBe("capacity");
+  });
+});
+
 describe("SideSessionPool: caps + LRU", () => {
   test("per-bot cap with no idle entries → capacity", async () => {
     const runner = new FakeRunner("bot1");

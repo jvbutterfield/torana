@@ -56,6 +56,9 @@ describe("exitCodeFor — bad-usage axis", () => {
   test("invalid_idempotency_key → badUsage", () => {
     expect(exitCodeFor("invalid_idempotency_key")).toBe(ExitCode.badUsage);
   });
+  test("invalid_timeout → badUsage", () => {
+    expect(exitCodeFor("invalid_timeout")).toBe(ExitCode.badUsage);
+  });
   test("attachment_mime_not_allowed → badUsage", () => {
     expect(exitCodeFor("attachment_mime_not_allowed")).toBe(ExitCode.badUsage);
   });

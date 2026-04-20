@@ -55,6 +55,7 @@ export function exitCodeFor(code: ErrorKind, status?: number): ExitCodeValue {
       return ExitCode.capacity;
 
     case "invalid_body":
+    case "invalid_timeout":
     case "missing_target":
     case "missing_idempotency_key":
     case "invalid_idempotency_key":

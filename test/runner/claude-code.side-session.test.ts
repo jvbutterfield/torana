@@ -246,6 +246,33 @@ describe("ClaudeCodeRunner side-sessions", () => {
     }
   });
 
+  test("side log file lands at <data_dir>/<bot_id>.side.<sessionId>.log (US-005)", async () => {
+    // PRD US-005: "Each side-session gets its own log file at
+    // <data_dir>/logs/<bot_id>.side.<sessionId>.log using the same writer
+    // the main runner uses." Codex has 6 explicit log-path assertions;
+    // Claude had none until this test landed.
+    const r = newRunner();
+    await r.start();
+    try {
+      await r.startSideSession("logged-1");
+      const sideEvents = collectSide(r, "logged-1");
+      const send = r.sendSideTurn("logged-1", "log-turn", "log-me", []);
+      expect(send.accepted).toBe(true);
+      await waitFor(() => sideEvents.find((e) => e.kind === "done"), 5000);
+
+      const logPath = resolve(tmpDir, "alpha.side.logged-1.log");
+      const file = Bun.file(logPath);
+      expect(await file.exists()).toBe(true);
+      const text = await file.text();
+      // Log captures the runner stdio — at minimum the echo response.
+      expect(text.length).toBeGreaterThan(0);
+      expect(text).toContain("echo: log-me");
+    } finally {
+      await r.stopSideSession("logged-1", 500);
+      await r.stop(500);
+    }
+  });
+
   test("spawn failure leaves no phantom entry in the sideSessions map", async () => {
     const r = new ClaudeCodeRunner({
       botId: "alpha",

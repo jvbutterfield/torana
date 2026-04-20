@@ -261,8 +261,10 @@ function resolveAgentApiTokens(
   warnings: string[],
 ): ResolvedAgentApiToken[] {
   const out: ResolvedAgentApiToken[] = [];
-  if (!config.agent_api?.tokens?.length) return out;
+  if (!config.agent_api) return out;
 
+  // Two warnings — fired BEFORE the empty-tokens early return so an enabled
+  // block with no tokens still nudges the operator (PRD US-016 C009).
   if (config.agent_api.enabled === false && config.agent_api.tokens.length > 0) {
     warnings.push(
       "agent_api.tokens defined but agent_api.enabled=false — tokens are inert until enabled",
@@ -273,6 +275,8 @@ function resolveAgentApiTokens(
       "agent_api.enabled=true but no tokens defined — no callers will be able to authenticate",
     );
   }
+
+  if (!config.agent_api.tokens.length) return out;
 
   for (const tok of config.agent_api.tokens) {
     const hash = createHash("sha256").update(tok.secret_ref, "utf8").digest();

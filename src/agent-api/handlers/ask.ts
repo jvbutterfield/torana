@@ -72,7 +72,11 @@ export function handleAsk(deps: AskDeps): AuthedHandler {
     const parsed = AskBodySchema.safeParse(bodyRaw);
     if (!parsed.success) {
       await cleanupFiles(attachments.map((a) => a.path));
-      return errorResponse("invalid_body", parsed.error.issues[0]?.message);
+      const issue = parsed.error.issues[0];
+      if (issue?.path?.[0] === "timeout_ms") {
+        return errorResponse("invalid_timeout", issue.message);
+      }
+      return errorResponse("invalid_body", issue?.message);
     }
     const body = parsed.data;
 

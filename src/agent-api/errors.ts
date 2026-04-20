@@ -10,6 +10,7 @@ export type AgentApiErrorCode =
   | "scope_not_permitted"
   | "unknown_bot"
   | "invalid_body"
+  | "invalid_timeout"
   | "missing_target"
   | "missing_idempotency_key"
   | "invalid_idempotency_key"
@@ -40,6 +41,7 @@ const STATUS_MAP: Record<AgentApiErrorCode, number> = {
   scope_not_permitted: 403,
   unknown_bot: 404,
   invalid_body: 400,
+  invalid_timeout: 400,
   missing_target: 400,
   missing_idempotency_key: 400,
   invalid_idempotency_key: 400,
@@ -122,6 +124,8 @@ function defaultMessage(code: AgentApiErrorCode): string {
       return "no bot with that id";
     case "invalid_body":
       return "request body failed validation";
+    case "invalid_timeout":
+      return "timeout_ms is outside the allowed range (1000–300000)";
     case "missing_target":
       return "inject requires either user_id or chat_id";
     case "missing_idempotency_key":

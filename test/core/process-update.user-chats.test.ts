@@ -122,6 +122,51 @@ describe("processUpdate writes user_chats", () => {
     expect(row!.chat_id).toBe(777);
   });
 
+  test("transaction atomicity: if createTurn throws, user_chats is NOT persisted", async () => {
+    // PRD US-002 + US-011: upsertUserChat must run inside the same
+    // transaction as insertUpdate/createTurn so a downstream throw rolls
+    // back the user_chats write. Monkey-patch createTurn to throw and
+    // verify nothing was committed.
+    const config = makeTestConfig([makeTestBotConfig("alpha")], {
+      gateway: {
+        port: 3000,
+        data_dir: tmpDir,
+        db_path: join(tmpDir, "gateway.db"),
+        log_level: "info",
+      },
+    });
+    const fake = new FakeTelegram();
+
+    // Save the real implementation, then monkey-patch to fail mid-transaction.
+    const realCreateTurn = db.createTurn.bind(db);
+    db.createTurn = (() => {
+      throw new Error("simulated DB failure mid-transaction");
+    }) as typeof db.createTurn;
+
+    let threw: unknown = null;
+    try {
+      await processUpdate(
+        {
+          config,
+          db,
+          botConfig: config.bots[0],
+          telegram: fake as unknown as TelegramClient,
+        },
+        update(1, 555, 111_222_333),
+      );
+    } catch (err) {
+      threw = err;
+    }
+    expect(threw).not.toBeNull();
+
+    // Restore so we can inspect normal state with a real query.
+    db.createTurn = realCreateTurn;
+
+    // The transaction rolled back — user_chats has no row for this user.
+    const row = db.getLastChatForUser("alpha", "111222333");
+    expect(row).toBeNull();
+  });
+
   test("unauthorized sender is NOT recorded in user_chats", async () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
       gateway: {
