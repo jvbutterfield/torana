@@ -125,6 +125,7 @@ describe("runInject — happy path", () => {
     const reader = async () => ({
       data: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
       mime: "application/pdf",
+      filename: "alert.pdf",
     });
     await runInject(
       {

@@ -28,6 +28,10 @@
   "main": "dist/main.js",
   "files": [
     "dist/",
+    "skills/",
+    "codex-plugin/",
+    "scripts/install-skills.ts",
+    "scripts/check-skill-parity.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

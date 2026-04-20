@@ -112,6 +112,7 @@ describe("runAsk — happy path", () => {
     const reader = async (_path: string) => ({
       data: new Uint8Array([1, 2, 3]),
       mime: "image/png",
+      filename: "x.png",
     });
     await runAsk(
       { argv: ["alpha", "look", "--file", "/tmp/x.png"] },

@@ -7,6 +7,7 @@
 //   torana ask reviewer "summarize PR 42"
 //   torana ask --session-id review-123 reviewer "what about the tests?"
 //   torana ask --file /tmp/diff.png reviewer "what does this look like?"
+//   cat diff.png | torana ask --file @- reviewer "review this patch"
 
 import { basename } from "node:path";
 
@@ -47,7 +48,7 @@ Options:
   --token  T            Bearer token (env: TORANA_TOKEN)
   --session-id ID       Reuse a keyed side-session by id
   --timeout-ms N        Per-call timeout in ms (default 60000, max 300000)
-  --file PATH           Attach a file (repeat for multiple files)
+  --file PATH           Attach a file (repeat for multiple files; use @- for stdin)
   --json                Emit JSON instead of human-formatted output
   -h, --help            Show this help
 
@@ -71,8 +72,11 @@ export interface AskCliInput {
 export interface AskRunDeps {
   /** Factory for a client. CLI passes the real one; tests inject a fake. */
   client: AgentApiClient;
-  /** Reads a file from disk (overridable for tests). */
-  readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string }>;
+  /**
+   * Reads a file from disk or stdin (overridable for tests). The path is
+   * `@-` to request stdin bytes.
+   */
+  readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
 }
 
 export async function runAsk(
@@ -107,11 +111,27 @@ export async function runAsk(
         ? fileFlag
         : [];
 
+  let stdinSeen = 0;
+  for (const p of filePaths) {
+    if (p === "@-") {
+      stdinSeen += 1;
+      if (stdinSeen > 1) {
+        throw new CliUsageError(
+          "--file @- may be given at most once (stdin can only be consumed once per invocation)",
+        );
+      }
+    }
+  }
+
   const reader = deps.readFile ?? readFileForUpload;
   const files: FileUpload[] = [];
   for (const p of filePaths) {
-    const { data, mime } = await reader(p);
-    files.push({ data, filename: basename(p), contentType: mime });
+    const { data, mime, filename } = await reader(p);
+    files.push({
+      data,
+      filename: p === "@-" ? filename : basename(p),
+      contentType: mime,
+    });
   }
 
   const wantJson = flags.json === true;

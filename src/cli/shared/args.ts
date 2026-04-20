@@ -12,8 +12,11 @@
 // `--flag=value`) are both supported. Repeated value flags accumulate
 // into an array (used for `--file`).
 //
-// Precedence for `server` and `token`: explicit flag > env > error. The
-// profile/config-file layer is Phase 6b.
+// Precedence for `server` and `token`:
+//   explicit flag > env > named profile > default profile > error
+// The profile layer loads `~/.config/torana/config.toml` via
+// `src/cli/shared/profile.ts`. Callers pass in a loaded `ProfileState` (or
+// omit it to bypass the profile layer entirely — useful in tests).
 
 export type FlagKind = "bool" | "value" | "values";
 
@@ -172,6 +175,10 @@ export interface CredentialSource {
   flagServer?: string;
   /** Explicit `--token` value. */
   flagToken?: string;
+  /** Explicit `--profile NAME`. */
+  profileName?: string;
+  /** Loaded profile store (optional). Bypassed when undefined. */
+  profiles?: import("./profile.js").ProfileState;
   /** Environment snapshot. Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
 }
@@ -179,13 +186,21 @@ export interface CredentialSource {
 export interface ResolvedCredentials {
   server: string;
   token: string;
-  /** `["flag", "env"]` etc. Useful for `--verbose` / TORANA_DEBUG. */
+  /** Individual resolution steps, e.g. `["server:flag","token:profile:prod"]`. */
   trace: string[];
+  /** Which profile, if any, contributed to the resolution. */
+  profile?: string;
 }
 
 /**
- * Resolve `server` + `token` from flag → env. Throws CliUsageError if
- * either is missing. Profile/config-file layer is Phase 6b.
+ * Resolve `server` + `token` with precedence:
+ *   flag  >  env  >  named profile (--profile NAME or equivalent)  >
+ *   default profile  >  error.
+ *
+ * `server` and `token` are resolved independently — you can pull `server`
+ * from a profile while overriding `token` via `--token` on the command line.
+ * Trace entries annotate *which* layer each came from so
+ * `TORANA_DEBUG=1` can print them.
  */
 export function resolveCredentials(
   src: CredentialSource,
@@ -193,15 +208,47 @@ export function resolveCredentials(
   const env = src.env ?? process.env;
   const trace: string[] = [];
 
+  const profiles = src.profiles;
+  let chosenProfileName: string | undefined;
+  let chosenProfile: import("./profile.js").Profile | undefined;
+  if (profiles !== undefined) {
+    if (src.profileName !== undefined) {
+      const p = profiles.profiles[src.profileName];
+      if (!p) {
+        const known = Object.keys(profiles.profiles).sort().join(", ") || "(none)";
+        throw new CliUsageError(
+          `profile '${src.profileName}' not found (known: ${known})`,
+        );
+      }
+      chosenProfileName = src.profileName;
+      chosenProfile = p;
+    } else if (profiles.defaultProfile) {
+      const p = profiles.profiles[profiles.defaultProfile];
+      if (p) {
+        chosenProfileName = profiles.defaultProfile;
+        chosenProfile = p;
+      }
+    }
+  } else if (src.profileName !== undefined) {
+    // Caller passed --profile NAME but didn't load a profile store. This is
+    // always a programming error — the dispatcher should have loaded one.
+    throw new CliUsageError(
+      `--profile ${src.profileName} requested but no profile store is available`,
+    );
+  }
+
   let server: string | undefined = src.flagServer;
   if (server) trace.push("server:flag");
   else if (env.TORANA_SERVER) {
     server = env.TORANA_SERVER;
     trace.push("server:env");
+  } else if (chosenProfile) {
+    server = chosenProfile.server;
+    trace.push(`server:profile:${chosenProfileName}`);
   }
   if (!server) {
     throw new CliUsageError(
-      "--server <url> required (or set TORANA_SERVER env)",
+      "--server <url> required (or set TORANA_SERVER env, or configure a profile with `torana config add-profile`)",
     );
   }
 
@@ -210,14 +257,36 @@ export function resolveCredentials(
   else if (env.TORANA_TOKEN) {
     token = env.TORANA_TOKEN;
     trace.push("token:env");
+  } else if (chosenProfile) {
+    token = chosenProfile.token;
+    trace.push(`token:profile:${chosenProfileName}`);
   }
   if (!token) {
     throw new CliUsageError(
-      "--token <secret> required (or set TORANA_TOKEN env)",
+      "--token <secret> required (or set TORANA_TOKEN env, or configure a profile with `torana config add-profile`)",
     );
   }
 
-  return { server, token, trace };
+  return {
+    server,
+    token,
+    trace,
+    profile: chosenProfileName,
+  };
+}
+
+/**
+ * Emit `trace` to stderr when `TORANA_DEBUG=1` or `verbose=true`. Used by
+ * subcommands + doctor so users can see which layer supplied each credential
+ * when diagnosing config surprises.
+ */
+export function traceLines(
+  trace: string[],
+  opts: { verbose?: boolean; env?: NodeJS.ProcessEnv } = {},
+): string[] {
+  const env = opts.env ?? process.env;
+  if (!opts.verbose && env.TORANA_DEBUG !== "1") return [];
+  return [`# credentials resolved: ${trace.join(", ")}`];
 }
 
 /**
@@ -238,6 +307,14 @@ export function parseCommand(
 export const COMMON_FLAGS: Record<string, FlagSpec> = {
   server: { kind: "value", describe: "Torana server URL (env: TORANA_SERVER)" },
   token: { kind: "value", describe: "Bearer token (env: TORANA_TOKEN)" },
+  profile: {
+    kind: "value",
+    describe: "Use a named profile from the config store",
+  },
+  verbose: {
+    kind: "bool",
+    describe: "Print credential resolution trace to stderr",
+  },
   json: { kind: "bool", describe: "Emit JSON instead of human-formatted output" },
   help: { kind: "bool", short: "h", describe: "Show help for this subcommand" },
 };

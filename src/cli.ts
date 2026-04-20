@@ -34,11 +34,26 @@ import { runAsk } from "./cli/ask.js";
 import { runInject } from "./cli/inject.js";
 import { runTurns } from "./cli/turns.js";
 import { runBots } from "./cli/bots.js";
+import { runConfig } from "./cli/config.js";
+import { runSkills } from "./cli/skills.js";
+import {
+  defaultProfilesPath,
+  loadProfiles,
+  ProfileStoreError,
+  type ProfileState,
+} from "./cli/shared/profile.js";
 import pkg from "../package.json" with { type: "json" };
 
 const log = logger("cli");
 
-const AGENT_API_SUBCOMMANDS = new Set(["ask", "inject", "turns", "bots"]);
+const AGENT_API_SUBCOMMANDS = new Set([
+  "ask",
+  "inject",
+  "turns",
+  "bots",
+  "config",
+  "skills",
+]);
 
 interface ParsedArgs {
   subcommand: string;
@@ -155,20 +170,48 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "doctor": {
-      // Remote mode: `--server URL --token TOK` runs R001..R003 without
-      // touching the local config. Phase 6b will add `--profile NAME` as
-      // sugar that resolves to the same --server/--token pair from the
-      // profile store. Until then, we accept --profile but treat its
-      // absence of a store as a fatal "not implemented yet".
-      const remote = args.server ?? process.env.TORANA_SERVER ?? null;
-      const remoteToken = args.token ?? process.env.TORANA_TOKEN ?? null;
-      if (args.profile) {
-        // Profile store isn't shipped yet — Phase 6b will wire it in.
-        console.error(
-          `doctor: --profile is reserved for the upcoming profile store (Phase 6b); for now pass --server URL --token TOKEN`,
-        );
-        process.exit(2);
+      // Three modes:
+      //   1. `--profile NAME`    → resolve (server,token) from profile store,
+      //                             then R001..R003 remote probes.
+      //   2. `--server URL --token TOK` (or TORANA_* env) → remote probes.
+      //   3. no flags             → local config-based doctor
+      //                             (C001..C014, reads torana.yaml).
+      // Precedence when combining flags is the standard flag > env > profile.
+      let profiles: ProfileState | undefined;
+      if (args.profile || process.env.TORANA_DEBUG === "1") {
+        try {
+          const p = defaultProfilesPath(process.env);
+          const loaded = loadProfiles(p);
+          profiles = loaded.state;
+          for (const w of loaded.warnings) console.error(`warning: ${w}`);
+        } catch (err) {
+          if (err instanceof ProfileStoreError && args.profile) {
+            console.error(`doctor: ${err.message}`);
+            process.exit(2);
+          }
+          // If `--profile` wasn't requested, a missing/broken store is not
+          // fatal — the user may just want the flag/env path.
+        }
       }
+
+      let remote = args.server ?? process.env.TORANA_SERVER ?? null;
+      let remoteToken = args.token ?? process.env.TORANA_TOKEN ?? null;
+      if (args.profile) {
+        if (!profiles) {
+          console.error(`doctor: --profile requested but no profile store available`);
+          process.exit(2);
+        }
+        const p = profiles.profiles[args.profile];
+        if (!p) {
+          const known = Object.keys(profiles.profiles).sort().join(", ") || "(none)";
+          console.error(`doctor: profile '${args.profile}' not found (known: ${known})`);
+          process.exit(2);
+        }
+        // Flag/env still win per precedence, but fill any gap from profile.
+        remote = remote ?? p.server;
+        remoteToken = remoteToken ?? p.token;
+      }
+
       let result: { checks: DoctorCheck[] };
       if (remote) {
         if (!remoteToken) {
@@ -252,11 +295,13 @@ Gateway commands:
   migrate      Apply pending DB migrations (--dry-run to preview)
   version      Print package + runtime version
 
-Agent-API client commands (require --server + --token, or env equivalents):
+Agent-API client commands (require --server + --token, env equivalents, or a profile):
   ask <bot> <text>           Synchronous request/response against a bot
   inject <bot> <text>        Push a system-injected message into a chat
   turns get <id>             Fetch the current state of a turn
   bots list                  List bots permitted by the configured token
+  config <sub>               Manage the CLI profile store (~/.config/torana/config.toml)
+  skills install --host=H    Install skill packages into Claude Code / Codex
 
 Gateway options:
   --config, -c <path>   Path to torana.yaml (defaults to $TORANA_CONFIG or ./torana.yaml)
@@ -265,7 +310,7 @@ Gateway options:
   --format <text|json>  (doctor) Output format (default: text)
   --server <url>        (doctor) Run remote R001..R003 probes against <url>
   --token <tok>         (doctor) Bearer token for remote probe
-  --profile <name>      (doctor) [Phase 6b] Resolve --server + --token from profile store
+  --profile <name>      (doctor) Resolve --server + --token from the profile store
 
 Run \`torana <client-cmd> --help\` for per-subcommand options + exit codes.
 
@@ -281,8 +326,22 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
     const cmd = chain[0]!;
 
     // `ask` and `inject` take a single chain element; `turns` and `bots`
-    // require an action token (`get`, `list`).
+    // require an action token (`get`, `list`). `config` and `skills` are
+    // local-only — they don't contact the API and shouldn't demand creds.
     switch (cmd) {
+      case "config": {
+        // `torana config <sub>` — pass the full chain-minus-"config" plus rest.
+        const inner = chain.slice(1).concat(rest);
+        const r = runConfig(inner);
+        return emit(r);
+      }
+
+      case "skills": {
+        const inner = chain.slice(1).concat(rest);
+        const r = await runSkills(inner);
+        return emit(r);
+      }
+
       case "ask":
         return await runWithClient(chain, rest, async (client) =>
           runAsk({ argv: chain.slice(1).concat(rest) }, { client }),
@@ -346,10 +405,38 @@ async function runWithClient(
 
   const flagServer = takeOptionValue(rest, "--server");
   const flagToken = takeOptionValue(rest, "--token");
+  const flagProfile = takeOptionValue(rest, "--profile");
+
+  // Load profile store if the user referenced --profile or if one exists
+  // on disk (for default-profile fallback). Missing-file is not an error;
+  // parse errors *are* fatal per §8.1 error model.
+  let profiles: ProfileState | undefined;
+  try {
+    const p = defaultProfilesPath(process.env);
+    const loaded = loadProfiles(p);
+    profiles = loaded.state;
+    for (const w of loaded.warnings) process.stderr.write(`warning: ${w}\n`);
+  } catch (err) {
+    if (err instanceof ProfileStoreError) {
+      // platform_unsupported or parse_error. Only fatal if the user asked
+      // for `--profile` explicitly; otherwise fall through to flag/env.
+      if (flagProfile !== undefined || err.code === "parse_error") {
+        process.stderr.write(`error: ${err.message}\n`);
+        return ExitCode.badUsage;
+      }
+    } else {
+      throw err;
+    }
+  }
 
   let creds: ResolvedCredentials;
   try {
-    creds = resolveCredentials({ flagServer, flagToken });
+    creds = resolveCredentials({
+      flagServer,
+      flagToken,
+      profileName: flagProfile,
+      profiles,
+    });
   } catch (err) {
     if (err instanceof CliUsageError) {
       process.stderr.write(`usage: ${err.message}\n`);

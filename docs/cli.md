@@ -19,9 +19,14 @@ This doc is exhaustive. For higher-level architecture see
   `--name=VALUE`. Short aliases (`-c`, `-h`) exist for a subset.
 - **Config resolution.** Gateway commands need a config path. Precedence:
   `--config PATH` → `$TORANA_CONFIG` → `./torana.yaml` → `./torana.config.yaml`.
-- **Credential resolution (agent-api commands).** `--server`/`--token` flags
-  override `$TORANA_SERVER`/`$TORANA_TOKEN` env vars. Both sources must
-  yield a value — there's no "default localhost" behavior.
+- **Credential resolution (agent-api commands).** Precedence is
+  `--server`/`--token` flags → `$TORANA_SERVER`/`$TORANA_TOKEN` env →
+  named profile (`--profile NAME`, from
+  `$XDG_CONFIG_HOME/torana/config.toml`; mode 0600) → default profile.
+  `server` and `token` are resolved independently, so you can pin one
+  via the flag and read the other from a profile. There's no "default
+  localhost" behavior — if nothing supplies a value, the command exits
+  with bad-usage (code 2).
 - **Debug.** `TORANA_DEBUG=1` or `--verbose` prints the credential
   resolution trace on stderr.
 - **Help.** `--help` / `-h` on any subcommand short-circuits before any
@@ -162,7 +167,8 @@ Options:
 | `--token TOK` | Bearer token. Env: `TORANA_TOKEN`. |
 | `--session-id ID` | Reuse a keyed side-session (`^[A-Za-z0-9_-]{1,64}$`). Omit for ephemeral. |
 | `--timeout-ms N` | Clamp to `[1000, ask.max_timeout_ms]`. Default 60000. |
-| `--file PATH` | Attach a file. Repeatable. |
+| `--file PATH` | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call. |
+| `--profile NAME` | Resolve `--server` + `--token` from the profile store. |
 | `--json` | JSON output instead of human text. |
 | `-h, --help` | Print help. |
 
@@ -191,7 +197,8 @@ Options:
 | `--chat-id ID` | Alternative target (must already be associated with the bot). |
 | `--source LABEL` | Lowercase `[a-z0-9_-]{1,64}` — required. Appears in the `[system-injected from "<label>"]` marker. |
 | `--idempotency-key K` | Explicit key. If omitted, one is auto-generated and printed as a `#`-prefixed comment on stderr so you can reuse it on retry. |
-| `--file PATH` | Attach a file. Repeatable. |
+| `--file PATH` | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call. |
+| `--profile NAME` | Resolve `--server` + `--token` from the profile store. |
 | `--json` | JSON output instead of human text. |
 | `-h, --help` | Print help. |
 
@@ -220,6 +227,38 @@ torana bots list [options]
 Prints a table (or JSON with `--json`) of `bot_id`, `runner_type`,
 `supports_side_sessions`.
 
+### `torana config`
+
+Manage the CLI profile store at `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600).
+
+| Subcommand | Purpose |
+|---|---|
+| `init` | Create an empty profile file (idempotent on existing). |
+| `add-profile <name> --server URL --token TOK [--default]` | Upsert a profile. First profile becomes default automatically; `--default` promotes an existing profile. Rejects `${VAR}`-style placeholders — pass the real secret. |
+| `list-profiles [--json]` | Table or JSON; tokens are redacted (first 4 chars + `*`). |
+| `remove-profile <name>` | Idempotent removal; if the default is removed, the alphabetically first remaining profile becomes the new default. |
+| `show [<name>] [--json] [--reveal-token]` | Print one or all profiles. Tokens redacted unless `--reveal-token`. |
+
+The file is always written with `0600`; `chmod` is re-applied on every
+write. Wider perms on load emit a warning on stderr but don't fail.
+
+### `torana skills install`
+
+Install skill packages for Claude Code and/or Codex.
+
+```
+torana skills install --host=<claude|codex>[,host...] [--force] [--dry-run]
+```
+
+Paths:
+
+- `claude` → `$CLAUDE_CONFIG_DIR/skills` (else `~/.claude/skills`)
+- `codex`  → `$XDG_DATA_HOME/agents/skills` (else `~/.agents/skills`)
+
+Default refuses to overwrite files that differ from the shipped source;
+`--force` overwrites; `--dry-run` prints actions without writing. Exits
+`1` when at least one target was refused, `0` otherwise.
+
 ---
 
 ## Environment variables
@@ -230,6 +269,9 @@ Prints a table (or JSON with `--json`) of `bot_id`, `runner_type`,
 | `TORANA_SERVER` | Agent-API commands | Gateway URL |
 | `TORANA_TOKEN` | Agent-API commands | Bearer token |
 | `TORANA_DEBUG` | All | `1` enables credential-resolution trace on stderr |
+| `XDG_CONFIG_HOME` | Agent-API commands | Override the profile-store parent dir (defaults to `~/.config`). |
+| `CLAUDE_CONFIG_DIR` | `skills install` | Override the Claude Code skills target (defaults to `~/.claude`). |
+| `XDG_DATA_HOME` | `skills install` | Override the Codex skills target (defaults to `~/.agents`). |
 
 ---
 

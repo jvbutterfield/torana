@@ -9,6 +9,7 @@
 import { $ } from "bun";
 import { mkdirSync, readdirSync, copyFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { syncSkills, checkParity } from "./check-skill-parity.js";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const srcDb = join(repoRoot, "src", "db");
@@ -52,6 +53,19 @@ for (const t of verifyTargets) {
   }
 }
 
+// 5. Sync skill parity (codex-plugin/skills/*/SKILL.md ← skills/*/SKILL.md)
+//    and verify — fail hard if parity is broken after the copy (catches
+//    readonly-fs weirdness on CI).
+syncSkills(repoRoot);
+const parity = checkParity(repoRoot);
+if (!parity.ok) {
+  console.error("build: skill parity check failed after syncSkills");
+  for (const e of parity.entries) {
+    if (e.drift) console.error(`  ${e.skill}: ${e.drift}`);
+  }
+  process.exit(1);
+}
+
 console.log(
-  `build: bundled dist/cli.js + copied schema.sql and ${migrationFiles.length} migration(s) to dist/db/`,
+  `build: bundled dist/cli.js + copied schema.sql and ${migrationFiles.length} migration(s) to dist/db/ + synced ${parity.entries.length} skills`,
 );

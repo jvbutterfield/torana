@@ -128,7 +128,7 @@ describe("CLI parseArgs", () => {
     expect(a.token).toBe("tok");
   });
 
-  test("parses --profile (reserved for Phase 6b)", () => {
+  test("parses --profile", () => {
     const a = parseArgs(["doctor", "--profile", "prod"]);
     expect(a.profile).toBe("prod");
   });
@@ -408,10 +408,21 @@ describe("CLI doctor (subprocess)", () => {
     expect(exitCode).not.toBe(0);
   }, 20_000);
 
-  test("--profile exits 2 until Phase 6b profile store ships", async () => {
-    const { exitCode, stderr } = await runCli(["doctor", "--profile", "prod"]);
-    expect(exitCode).toBe(2);
-    expect(stderr).toContain("Phase 6b");
+  test("--profile with an empty profile store exits 2", async () => {
+    // Override XDG_CONFIG_HOME to an empty tmpdir so we don't touch the
+    // developer's real ~/.config/torana during `bun test`. Phase 6b's
+    // doctor path should report 'profile not found' cleanly.
+    const xdg = mkdtempSync(join(tmpdir(), "torana-cli-empty-xdg-"));
+    try {
+      const { exitCode, stderr } = await runCli(
+        ["doctor", "--profile", "prod"],
+        { env: { XDG_CONFIG_HOME: xdg } },
+      );
+      expect(exitCode).toBe(2);
+      expect(stderr).toMatch(/profile 'prod' not found|no profile store available/);
+    } finally {
+      rmSync(xdg, { recursive: true, force: true });
+    }
   }, 15_000);
 
   test("--server without --token exits 2", async () => {

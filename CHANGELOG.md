@@ -28,9 +28,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   per session — no cross-contamination with the main Telegram runner.
   `CommandRunner` side-sessions land in Phase 2c.
 - **CLI agent-api client.** `torana ask`, `torana inject`, `torana turns get`,
-  `torana bots list` — all require `--server` / `--token` (or
-  `TORANA_SERVER` / `TORANA_TOKEN`). Stable exit codes (0/1/2/3/4/5/6/7) for
-  scripting. See [docs/cli.md](docs/cli.md).
+  `torana bots list` — support `--server` / `--token`, `TORANA_SERVER` /
+  `TORANA_TOKEN` env, and named profiles (see below). Stable exit codes
+  (0/1/2/3/4/5/6/7) for scripting. See [docs/cli.md](docs/cli.md).
+- **CLI profile store.** `torana config init | add-profile | list-profiles |
+  remove-profile | show` manages a TOML file at
+  `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600). Every agent-api
+  subcommand resolves credentials with the precedence
+  `flag > env > --profile NAME > default profile`. `torana doctor
+  --profile NAME` runs the R001..R003 remote probes against the resolved
+  server.
+- **`--file @-` on `torana ask` / `torana inject`.** Reads attachment bytes
+  from stdin with magic-byte MIME detection (PNG, JPEG, GIF, WebP, PDF;
+  unknown → `application/octet-stream`). Mixable with real-path `--file`;
+  a second `@-` on the same call is a usage error.
+- **Skills + Codex plugin.** `skills/torana-ask/SKILL.md` and
+  `skills/torana-inject/SKILL.md` ship with the package. `torana skills
+  install --host=claude|codex` copies them into
+  `$CLAUDE_CONFIG_DIR/skills` / `$XDG_DATA_HOME/agents/skills` (default
+  refuses on divergence; `--force` overwrites). `codex-plugin/` contains
+  a manifest + marketplace.json entry for one-line Codex install; a
+  `scripts/check-skill-parity.ts` CI gate guarantees byte-identical
+  source/plugin skill files.
 - **Prometheus metrics for Agent API.** Counters (`torana_agent_api_requests_total`,
   `…_inject_idempotent_replays_total`, `…_side_sessions_started_total`,
   `…_side_session_evictions_total`, `…_side_session_capacity_rejected_total`),
@@ -43,7 +62,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   deployment-posture reminder). `torana doctor --server URL --token TOK`
   runs three remote probes against a running gateway (`GET /v1/health`,
   `GET /v1/bots` with caller auth, TLS validation on `https://`).
-  `--profile NAME` lands in Phase 6b.
+  `torana doctor --profile NAME` resolves the (server, token) pair from
+  the CLI profile store and runs the same remote probes.
 - **SQLite schema v2.** New tables `user_chats`, `agent_api_idempotency`,
   `side_sessions` plus seven nullable columns on `turns`. Migration v1→v2
   is automatic with `torana start --auto-migrate` (snapshot taken at

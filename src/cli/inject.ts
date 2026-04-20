@@ -54,7 +54,7 @@ Options:
   --chat-id ID          Chat id to inject into (alternative to --user-id)
   --source LABEL        Required source label (lowercase, [a-z0-9_-]{1,64})
   --idempotency-key K   Idempotency key (auto-generated if omitted)
-  --file PATH           Attach a file (repeat for multiple files)
+  --file PATH           Attach a file (repeat for multiple files; use @- for stdin)
   --json                Emit JSON instead of human-formatted output
   -h, --help            Show this help
 
@@ -75,10 +75,9 @@ export interface InjectCliInput {
 
 export interface InjectRunDeps {
   client: AgentApiClient;
-  readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string }>;
+  readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
   /** Override key generator for tests. */
   generateKey?: () => string;
-  /** Where to emit the auto-generated key notice (defaults to stderr lines). */
 }
 
 export async function runInject(
@@ -134,11 +133,27 @@ export async function runInject(
         ? fileFlag
         : [];
 
+  let stdinSeen = 0;
+  for (const p of filePaths) {
+    if (p === "@-") {
+      stdinSeen += 1;
+      if (stdinSeen > 1) {
+        throw new CliUsageError(
+          "--file @- may be given at most once (stdin can only be consumed once per invocation)",
+        );
+      }
+    }
+  }
+
   const reader = deps.readFile ?? readFileForUpload;
   const files: FileUpload[] = [];
   for (const p of filePaths) {
-    const { data, mime } = await reader(p);
-    files.push({ data, filename: basename(p), contentType: mime });
+    const { data, mime, filename } = await reader(p);
+    files.push({
+      data,
+      filename: p === "@-" ? filename : basename(p),
+      contentType: mime,
+    });
   }
 
   const wantJson = flags.json === true;
