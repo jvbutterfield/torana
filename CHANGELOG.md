@@ -10,8 +10,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- **Renamed `inject` scope to `send`.** The Agent-API scope formerly named
-  `inject` is now `send`, affecting:
+- **Agent API: renamed the `inject` scope to `send`.** The side-session
+  architecture and every other Agent API surface are unchanged; this is a
+  pure rename. The scope formerly named `inject` is now `send`, affecting:
   - HTTP route: `POST /v1/bots/:id/inject` → `POST /v1/bots/:id/send`
   - CLI command: `torana inject` → `torana send`
   - Token scope value: `scopes: ["inject"]` → `scopes: ["send"]`
