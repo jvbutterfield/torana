@@ -4,7 +4,7 @@
 //   Gateway (server-side): start, doctor, validate, migrate, version.
 //     Uses the legacy parseArgs() below; flags are global to the subcommand.
 //
-//   Agent-API client (added in Phase 6 / US-018): ask, inject, turns get,
+//   Agent-API client (added in Phase 6 / US-018): ask, send, turns get,
 //     bots list. Each delegates to a module in `src/cli/` that returns a
 //     `Rendered` for testability. The dispatcher in `main()` peeks at argv[0]
 //     to choose between the two surfaces; the legacy parseArgs is preserved
@@ -31,7 +31,7 @@ import {
 import { ExitCode } from "./cli/shared/exit.js";
 import { emit, type Rendered } from "./cli/shared/output.js";
 import { runAsk } from "./cli/ask.js";
-import { runInject } from "./cli/inject.js";
+import { runSend } from "./cli/send.js";
 import { runTurns } from "./cli/turns.js";
 import { runBots } from "./cli/bots.js";
 import { runConfig } from "./cli/config.js";
@@ -48,7 +48,7 @@ const log = logger("cli");
 
 const AGENT_API_SUBCOMMANDS = new Set([
   "ask",
-  "inject",
+  "send",
   "turns",
   "bots",
   "config",
@@ -297,7 +297,7 @@ Gateway commands:
 
 Agent-API client commands (require --server + --token, env equivalents, or a profile):
   ask <bot> <text>           Synchronous request/response against a bot
-  inject <bot> <text>        Push a system-injected message into a chat
+  send <bot> <text>          Push a system message into a chat
   turns get <id>             Fetch the current state of a turn
   bots list                  List bots permitted by the configured token
   config <sub>               Manage the CLI profile store (~/.config/torana/config.toml)
@@ -325,7 +325,7 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
     const { chain, rest } = extractChain(argv);
     const cmd = chain[0]!;
 
-    // `ask` and `inject` take a single chain element; `turns` and `bots`
+    // `ask` and `send` take a single chain element; `turns` and `bots`
     // require an action token (`get`, `list`). `config` and `skills` are
     // local-only — they don't contact the API and shouldn't demand creds.
     switch (cmd) {
@@ -347,9 +347,9 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
           runAsk({ argv: chain.slice(1).concat(rest) }, { client }),
         );
 
-      case "inject":
+      case "send":
         return await runWithClient(chain, rest, async (client) =>
-          runInject({ argv: chain.slice(1).concat(rest) }, { client }),
+          runSend({ argv: chain.slice(1).concat(rest) }, { client }),
         );
 
       case "turns": {

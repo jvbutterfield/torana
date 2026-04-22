@@ -104,7 +104,7 @@ Full details: [`docs/runners.md`](docs/runners.md).
 torana ships a bearer-authenticated HTTP surface that lets *other* processes — other agents, scripts, cron jobs, CI — drive the bots that torana owns. Two modes:
 
 - **`ask`** — synchronous request/response against a bot's runner in a **side-session** (an isolated subprocess with its own conversation context, separate from Telegram traffic). The gateway pools side-sessions with idle + hard TTLs, per-bot + global caps, and automatic LRU eviction.
-- **`inject`** — post a `[system-injected from "<source>"]`-marker-wrapped message into an existing Telegram chat so the runner responds as if the user had typed it. Idempotent, ACL-re-checked.
+- **`send`** — post a `[system-message from "<source>"]`-marker-wrapped message into an existing Telegram chat so the runner responds as if the user had typed it. Idempotent, ACL-re-checked.
 
 Enable it per-config:
 
@@ -115,14 +115,14 @@ agent_api:
     - name: ci-reviewer
       secret_ref: ${TORANA_CI_TOKEN}
       bot_ids: ["reviewer"]
-      scopes: ["ask", "inject"]
+      scopes: ["ask", "send"]
 ```
 
 Then call it from anywhere:
 
 ```sh
 torana ask reviewer "what's wrong with this PR?" --server https://gw --token $TOK
-torana inject reviewer --user-id 111222333 "heads up: CI failed" --source ci
+torana send reviewer --user-id 111222333 "heads up: CI failed" --source ci
 ```
 
 See [`docs/agent-api.md`](docs/agent-api.md) for the full protocol + [`docs/cli.md`](docs/cli.md) for every flag. Protected by SHA-256 hashed bearer tokens, `C009..C014` doctor checks, and the `R001..R003` remote-probe subset of `torana doctor --server URL --token TOK`.
@@ -138,7 +138,7 @@ flowchart LR
     subgraph torana[torana process]
       direction LR
       T[Transport<br/>webhook or polling]
-      A[Agent API<br/>/v1/bots/:id/ask<br/>/v1/bots/:id/inject]
+      A[Agent API<br/>/v1/bots/:id/ask<br/>/v1/bots/:id/send]
       D[Dispatcher<br/>+ dedup + ACL]
       P[Side-session pool<br/>LRU + TTL]
       B1[Bot: reviewer]
@@ -245,9 +245,9 @@ The dispatcher routes each update to its bot's runner independently. No special 
 | `torana validate` | Offline schema check — no Telegram, no DB |
 | `torana migrate` | Apply pending DB migrations (`--dry-run` to preview) |
 | `torana version` | Print package version + Bun runtime |
-| `torana ask` / `torana inject` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md) |
+| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md) |
 | `torana config` | Manage the CLI profile store (`init` / `add-profile` / `list-profiles` / `remove-profile` / `show`). Stored at `$XDG_CONFIG_HOME/torana/config.toml`, mode `0600` |
-| `torana skills install --host=claude\|codex` | Copy the shipped `torana-ask` / `torana-inject` skills into a Claude Code or Codex installation |
+| `torana skills install --host=claude\|codex` | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation |
 
 ---
 
@@ -283,7 +283,7 @@ If you need any of those, torana is the wrong tool and that's fine.
 **v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 1142+ tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
 
 Recent:
-- **rc.5** — Agent API (`/v1/*` ask + inject + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
+- **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
 - **rc.4** — Codex runner (`runner.type: codex`), `codex-jsonl` protocol for `command` runners, README rewrite
 - **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
 - **rc.2** — fixed published tarball missing migration SQL
@@ -316,7 +316,7 @@ The E2E and soak tests require authenticated `claude` / `codex` binaries and bur
 - [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own runner
 - [`docs/security.md`](docs/security.md) — threat model, ACL, secrets
 - [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
-- [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, inject, side-sessions, tokens)
+- [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, send, side-sessions, tokens)
 - [`docs/cli.md`](docs/cli.md) — CLI reference, flag-by-flag
 
 ---

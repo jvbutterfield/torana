@@ -17,7 +17,7 @@ export const AskBodySchema = z
 
 export type AskBody = z.infer<typeof AskBodySchema>;
 
-export const InjectBodySchema = z
+export const SendBodySchema = z
   .object({
     text: z.string().min(1).max(64 * 1024),
     source: z.string().regex(SOURCE_LABEL_RE),
@@ -30,7 +30,7 @@ export const InjectBodySchema = z
     path: ["user_id"],
   });
 
-export type InjectBody = z.infer<typeof InjectBodySchema>;
+export type SendBody = z.infer<typeof SendBodySchema>;
 
 export function validateIdempotencyKey(
   key: string | null,

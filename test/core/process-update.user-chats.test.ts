@@ -1,5 +1,5 @@
 // processUpdate writes user_chats rows on authorized inbound messages.
-// These rows are the ground truth for the agent-api inject handler's
+// These rows are the ground truth for the agent-api send handler's
 // user_id → chat_id resolution.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";

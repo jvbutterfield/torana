@@ -1,5 +1,5 @@
-// `torana inject <bot_id> <text>` — push a system-injected message into a
-// user's chat. Always async (202). Auto-generates an idempotency key on
+// `torana send <bot_id> <text>` — push a system message into a user's
+// chat. Always async (202). Auto-generates an idempotency key on
 // stderr if `--idempotency-key` is omitted (callers SHOULD reuse the
 // printed value if they retry).
 
@@ -18,15 +18,15 @@ import { readFileForUpload } from "./shared/files.js";
 import { renderJson, renderText, type Rendered } from "./shared/output.js";
 import { renderError } from "./ask.js";
 
-const INJECT_FLAGS: Record<string, FlagSpec> = {
+const SEND_FLAGS: Record<string, FlagSpec> = {
   ...COMMON_FLAGS,
   "user-id": {
     kind: "value",
-    describe: "Telegram user id to inject into (or use --chat-id)",
+    describe: "Telegram user id to send to (or use --chat-id)",
   },
   "chat-id": {
     kind: "value",
-    describe: "Chat id to inject into (or use --user-id)",
+    describe: "Chat id to send to (or use --user-id)",
   },
   source: {
     kind: "value",
@@ -42,16 +42,16 @@ const INJECT_FLAGS: Record<string, FlagSpec> = {
   },
 };
 
-export const INJECT_HELP = `Usage: torana inject [options] --source LABEL <bot_id> <text>
+export const SEND_HELP = `Usage: torana send [options] --source LABEL <bot_id> <text>
 
-Push a system-injected message into a user's chat. Always returns 202;
+Push a system message into a user's chat. Always returns 202;
 poll \`torana turns get <id>\` for delivery status.
 
 Options:
   --server URL          Torana server URL (env: TORANA_SERVER)
   --token  T            Bearer token (env: TORANA_TOKEN)
-  --user-id ID          Telegram user id to inject into
-  --chat-id ID          Chat id to inject into (alternative to --user-id)
+  --user-id ID          Telegram user id to send to
+  --chat-id ID          Chat id to send to (alternative to --user-id)
   --source LABEL        Required source label (lowercase, [a-z0-9_-]{1,64})
   --idempotency-key K   Idempotency key (auto-generated if omitted)
   --file PATH           Attach a file (repeat for multiple files; use @- for stdin)
@@ -67,35 +67,35 @@ Exit codes:
   7  capacity
 
 Example:
-  $ torana inject --source calendar --user-id 12345 reviewer "9am standup"`;
+  $ torana send --source calendar --user-id 12345 reviewer "9am standup"`;
 
-export interface InjectCliInput {
+export interface SendCliInput {
   argv: string[];
 }
 
-export interface InjectRunDeps {
+export interface SendRunDeps {
   client: AgentApiClient;
   readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
   /** Override key generator for tests. */
   generateKey?: () => string;
 }
 
-export async function runInject(
-  input: InjectCliInput,
-  deps: InjectRunDeps,
+export async function runSend(
+  input: SendCliInput,
+  deps: SendRunDeps,
 ): Promise<Rendered> {
-  const { positional, flags } = parseFlags(input.argv, INJECT_FLAGS);
+  const { positional, flags } = parseFlags(input.argv, SEND_FLAGS);
 
   if (flags.help === true) {
-    return renderText([INJECT_HELP], ExitCode.success);
+    return renderText([SEND_HELP], ExitCode.success);
   }
 
   if (positional.length < 2) {
-    throw new CliUsageError("inject requires <bot_id> and <text>");
+    throw new CliUsageError("send requires <bot_id> and <text>");
   }
   if (positional.length > 2) {
     throw new CliUsageError(
-      `inject takes exactly two positional args; got ${positional.length}`,
+      `send takes exactly two positional args; got ${positional.length}`,
     );
   }
   const botId = positional[0]!;
@@ -167,7 +167,7 @@ export async function runInject(
 
   let response;
   try {
-    response = await deps.client.inject(
+    response = await deps.client.send(
       botId,
       {
         text,

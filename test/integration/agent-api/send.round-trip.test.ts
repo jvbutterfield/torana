@@ -1,19 +1,19 @@
-// End-to-end inject delivery test: agent-api inject → dispatch loop →
+// End-to-end send delivery test: agent-api send → dispatch loop →
 // runner → streaming → outbox → FakeTelegram.
 //
 // Phase 4b proved the database row lands and dispatchFor is called.
 // Phase 5 proved multipart attachments persist. Neither test wired the
 // dispatch path through to a Telegram delivery, so a regression in the
-// inject → main-runner handoff would not have been caught. This file
+// send → main-runner handoff would not have been caught. This file
 // closes that gap.
 //
 // Coverage:
-//   - HTTP inject by user_id (after a real first DM populates user_chats)
-//   - HTTP inject by chat_id (resolved against user_chats)
-//   - The runner sees the marker-wrapped text (`[system-injected from "src"]\n\n…`)
+//   - HTTP send by user_id (after a real first DM populates user_chats)
+//   - HTTP send by chat_id (resolved against user_chats)
+//   - The runner sees the marker-wrapped text (`[system-message from "src"]\n\n…`)
 //   - Idempotency replay does NOT trigger a second Telegram delivery
-//   - ACL re-check rejects inject for an unauthorized user (no delivery)
-//   - CLI subprocess `torana inject` round-trips through to FakeTelegram
+//   - ACL re-check rejects send for an unauthorized user (no delivery)
+//   - CLI subprocess `torana send` round-trips through to FakeTelegram
 //     (parallel coverage to test/cli/dispatch.test.ts which only exercised ask)
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -45,7 +45,7 @@ function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "inject")[]): ResolvedAgentApiToken {
+function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -118,7 +118,7 @@ function makeConfig(opts: {
         max_per_bot: 8,
         max_global: 64,
       },
-      inject: { idempotency_retention_ms: 86_400_000 },
+      send: { idempotency_retention_ms: 86_400_000 },
       ask: {
         default_timeout_ms: 60_000,
         max_timeout_ms: 300_000,
@@ -174,7 +174,7 @@ function telegramHasEchoOf(fake: FakeTelegram, botId: string, needle: string): b
 // for deltas, rather than trying to deduplicate after the fact.
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "torana-inject-e2e-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "torana-send-e2e-"));
 });
 
 afterEach(async () => {
@@ -196,7 +196,7 @@ afterEach(async () => {
  */
 async function bootstrap(opts: {
   agentApiSecret: string;
-  scopes: ("ask" | "inject")[];
+  scopes: ("ask" | "send")[];
   seedUserChat?: boolean;
 }): Promise<{
   fake: FakeTelegram;
@@ -204,7 +204,7 @@ async function bootstrap(opts: {
   port: number;
   config: Config;
 }> {
-  const botToken = "TOK_INJECT_E2E:" + opts.agentApiSecret.slice(-8);
+  const botToken = "TOK_SEND_E2E:" + opts.agentApiSecret.slice(-8);
   fake = new FakeTelegram({ bots: { [botToken]: "alpha" } });
   const apiBase = await fake.start();
   const port = await findFreePort();
@@ -235,15 +235,15 @@ async function bootstrap(opts: {
   return { fake: fake!, base: `http://127.0.0.1:${port}`, port, config };
 }
 
-describe("inject e2e — HTTP path", () => {
-  test("inject by user_id → marker-wrapped text reaches Telegram", async () => {
-    const secret = "tok-inject-e2e-userid-123";
+describe("send e2e — HTTP path", () => {
+  test("send by user_id → marker-wrapped text reaches Telegram", async () => {
+    const secret = "tok-send-e2e-userid-123";
     const { fake: tg, base } = await bootstrap({
       agentApiSecret: secret,
-      scopes: ["inject"],
+      scopes: ["send"],
     });
 
-    const r = await fetch(`${base}/v1/bots/alpha/inject`, {
+    const r = await fetch(`${base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -260,34 +260,34 @@ describe("inject e2e — HTTP path", () => {
     const body = (await r.json()) as { turn_id: number; status: string };
     expect(body.turn_id).toBeGreaterThan(0);
 
-    // The runner echoes back its input. Inject wraps the prompt with the
-    // marker before passing it to insertInjectTurn → dispatch → runner.
+    // The runner echoes back its input. Send wraps the prompt with the
+    // marker before passing it to insertSendTurn → dispatch → runner.
     // Our test-runner echoes what it sees, so the Telegram-bound text will
-    // be `echo: [system-injected from "calendar"]\n\nping from agent-api`.
+    // be `echo: [system-message from "calendar"]\n\nping from agent-api`.
     await tg.waitFor(
       () =>
         telegramHasEchoOf(
           tg,
           "alpha",
-          'echo: [system-injected from "calendar"]',
+          'echo: [system-message from "calendar"]',
         ),
       { timeoutMs: 12_000 },
     );
     expect(telegramHasEchoOf(tg, "alpha", "ping from agent-api")).toBe(true);
 
-    // Sanity: the inbound first-DM echo and the inject echo are distinct
+    // Sanity: the inbound first-DM echo and the send echo are distinct
     // deliveries — at least two sendMessage calls landed.
     expect(tg.callsFor("alpha", "sendMessage").length).toBeGreaterThanOrEqual(2);
   }, 25_000);
 
-  test("inject by chat_id → resolves through user_chats and delivers", async () => {
-    const secret = "tok-inject-e2e-chatid-456";
+  test("send by chat_id → resolves through user_chats and delivers", async () => {
+    const secret = "tok-send-e2e-chatid-456";
     const { fake: tg, base } = await bootstrap({
       agentApiSecret: secret,
-      scopes: ["inject"],
+      scopes: ["send"],
     });
 
-    const r = await fetch(`${base}/v1/bots/alpha/inject`, {
+    const r = await fetch(`${base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -304,21 +304,21 @@ describe("inject e2e — HTTP path", () => {
 
     await tg.waitFor(
       () =>
-        telegramHasEchoOf(tg, "alpha", 'echo: [system-injected from "monitor"]') &&
+        telegramHasEchoOf(tg, "alpha", 'echo: [system-message from "monitor"]') &&
         telegramHasEchoOf(tg, "alpha", "by chat id"),
       { timeoutMs: 12_000 },
     );
   }, 25_000);
 
   test("idempotency replay: second call returns same turn_id, no second delivery", async () => {
-    const secret = "tok-inject-e2e-replay-789";
+    const secret = "tok-send-e2e-replay-789";
     const { fake: tg, base } = await bootstrap({
       agentApiSecret: secret,
-      scopes: ["inject"],
+      scopes: ["send"],
     });
     const key = "replay-key-zzzzzzzzzzzzzzzz";
 
-    const first = await fetch(`${base}/v1/bots/alpha/inject`, {
+    const first = await fetch(`${base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -350,7 +350,7 @@ describe("inject e2e — HTTP path", () => {
 
     // Retry with the SAME key. Per §6.4 the body is ignored on replay; we
     // pass a different body to prove that.
-    const second = await fetch(`${base}/v1/bots/alpha/inject`, {
+    const second = await fetch(`${base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -378,14 +378,14 @@ describe("inject e2e — HTTP path", () => {
     expect(telegramHasEchoOf(tg, "alpha", "this should be ignored")).toBe(false);
   }, 30_000);
 
-  test("ACL re-check: inject for unauthorized user → 403, no delivery", async () => {
-    const secret = "tok-inject-e2e-acl-1234";
+  test("ACL re-check: send for unauthorized user → 403, no delivery", async () => {
+    const secret = "tok-send-e2e-acl-1234";
     const { fake: tg, base } = await bootstrap({
       agentApiSecret: secret,
-      scopes: ["inject"],
+      scopes: ["send"],
     });
 
-    const r = await fetch(`${base}/v1/bots/alpha/inject`, {
+    const r = await fetch(`${base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -412,14 +412,14 @@ describe("inject e2e — HTTP path", () => {
     expect(telegramHasEchoOf(tg, "alpha", "should not deliver")).toBe(false);
   }, 20_000);
 
-  test("scope check: ask-only token rejected on inject route", async () => {
-    const secret = "tok-inject-e2e-scope-555";
+  test("scope check: ask-only token rejected on send route", async () => {
+    const secret = "tok-send-e2e-scope-555";
     const { fake: tg, base } = await bootstrap({
       agentApiSecret: secret,
       scopes: ["ask"], // wrong scope
     });
 
-    const r = await fetch(`${base}/v1/bots/alpha/inject`, {
+    const r = await fetch(`${base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -440,12 +440,12 @@ describe("inject e2e — HTTP path", () => {
   }, 20_000);
 });
 
-describe("inject e2e — CLI subprocess path", () => {
-  test("torana inject ... reaches FakeTelegram via the production code path", async () => {
-    const secret = "tok-inject-e2e-cli-666";
+describe("send e2e — CLI subprocess path", () => {
+  test("torana send ... reaches FakeTelegram via the production code path", async () => {
+    const secret = "tok-send-e2e-cli-666";
     const { fake: tg, base } = await bootstrap({
       agentApiSecret: secret,
-      scopes: ["inject"],
+      scopes: ["send"],
     });
 
     // Exercise the dispatcher → CLI → AgentApiClient → handler → dispatch →
@@ -455,7 +455,7 @@ describe("inject e2e — CLI subprocess path", () => {
         "bun",
         "run",
         CLI_ENTRY,
-        "inject",
+        "send",
         "alpha",
         "from-cli",
         "--source",
@@ -485,7 +485,7 @@ describe("inject e2e — CLI subprocess path", () => {
 
     await tg.waitFor(
       () =>
-        telegramHasEchoOf(tg, "alpha", 'echo: [system-injected from "calendar"]') &&
+        telegramHasEchoOf(tg, "alpha", 'echo: [system-message from "calendar"]') &&
         telegramHasEchoOf(tg, "alpha", "from-cli"),
       { timeoutMs: 15_000 },
     );

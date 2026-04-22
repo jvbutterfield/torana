@@ -55,9 +55,9 @@ describe("agent-api/auth: authorize", () => {
   });
 
   test("wrong scope → scope_not_permitted", () => {
-    expect(authorize(token, "bot1", "inject")).toEqual({
+    expect(authorize(token, "bot1", "send")).toEqual({
       kind: "scope_not_permitted",
-      scope: "inject",
+      scope: "send",
     });
   });
 

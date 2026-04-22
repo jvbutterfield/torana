@@ -1,4 +1,4 @@
-// §12.5.5: an attacker sends inject with a chat_id that is NOT
+// §12.5.5: an attacker sends send with a chat_id that is NOT
 // associated with this bot — the chat belongs to a different bot
 // or was never observed. Expected: 403 chat_not_permitted (not
 // 200 — that would leak a cross-bot DM channel).
@@ -13,17 +13,17 @@ afterEach(async () => {
   if (h) await h.close();
 });
 
-describe("§12.5.5 inject-attack.chat-forgery", () => {
+describe("§12.5.5 send-attack.chat-forgery", () => {
   const secret = "chat-forge-secret-value-abcd1234";
   const token = mkToken("cos", secret, {
     bot_ids: ["bot1"],
-    scopes: ["inject"],
+    scopes: ["send"],
   });
 
   test("chat_id never associated with bot1 → 403 chat_not_permitted", async () => {
     h = startHarness({ tokens: [token] });
     // No user_chats rows have been seeded; chat_id 4242 is unknown.
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -40,7 +40,7 @@ describe("§12.5.5 inject-attack.chat-forgery", () => {
     h = startHarness({ botIds: ["bot1", "bot2"], tokens: [token] });
     // User 111 opened bot2 (but not bot1).
     h.db.upsertUserChat("bot2", "111", 5555);
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -56,7 +56,7 @@ describe("§12.5.5 inject-attack.chat-forgery", () => {
   test("response body does not leak information about which bot owns the chat", async () => {
     h = startHarness({ botIds: ["bot1", "bot2"], tokens: [token] });
     h.db.upsertUserChat("bot2", "111", 5555);
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,

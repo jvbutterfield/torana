@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS turns (
   last_output_at         TEXT,
   error_text             TEXT,
   -- Agent API columns (NULL for telegram-origin rows).
-  source                 TEXT,                                 -- telegram | agent_api_ask | agent_api_inject
+  source                 TEXT,                                 -- telegram | agent_api_ask | agent_api_send
   agent_api_token_name   TEXT,
   agent_api_source_label TEXT,
   final_text             TEXT,

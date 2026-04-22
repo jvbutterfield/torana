@@ -49,7 +49,7 @@ function seedIdempotencyRows(count: number): void {
   inner
     .prepare(
       `INSERT INTO turns (id, bot_id, chat_id, source_update_id, status, attachment_paths_json, source)
-       VALUES (1, 'bot1', 1, 1, 'completed', '[]', 'agent_api_inject')`,
+       VALUES (1, 'bot1', 1, 1, 'completed', '[]', 'agent_api_send')`,
     )
     .run();
 

@@ -3,7 +3,7 @@
 // Uses an injected fetchImpl that records calls so we can assert URL,
 // method, headers, and body without spinning up an HTTP server. The
 // authoritative integration coverage is in the existing handler tests
-// (test/agent-api/{ask,inject,router}.test.ts) — these tests pin the
+// (test/agent-api/{ask,send,router}.test.ts) — these tests pin the
 // client shim's request construction + response parsing.
 
 import { describe, expect, test } from "bun:test";
@@ -257,13 +257,13 @@ describe("AgentApiClient.ask", () => {
   });
 });
 
-describe("AgentApiClient.inject", () => {
+describe("AgentApiClient.send", () => {
   test("Idempotency-Key header sent + 202 parsed", async () => {
     const { fetchImpl, calls } = recordingFetch(() =>
       jsonResponse(202, { turn_id: 42, status: "queued" }),
     );
     const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
-    const r = await c.inject(
+    const r = await c.send(
       "alpha",
       { text: "9am standup", source: "calendar", user_id: "12345" },
       { idempotencyKey: "abcd-1234-efgh-5678-zzzz" },
@@ -272,7 +272,7 @@ describe("AgentApiClient.inject", () => {
     expect(r.status).toBe("queued");
 
     const call = calls[0]!;
-    expect(call.url).toBe("http://x/v1/bots/alpha/inject");
+    expect(call.url).toBe("http://x/v1/bots/alpha/send");
     expect(call.headers["Idempotency-Key"]).toBe("abcd-1234-efgh-5678-zzzz");
     expect(JSON.parse(call.body as string)).toEqual({
       text: "9am standup",
@@ -281,12 +281,12 @@ describe("AgentApiClient.inject", () => {
     });
   });
 
-  test("multipart inject preserves Idempotency-Key header", async () => {
+  test("multipart send preserves Idempotency-Key header", async () => {
     const { fetchImpl, calls } = recordingFetch(() =>
       jsonResponse(202, { turn_id: 1, status: "queued" }),
     );
     const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
-    await c.inject(
+    await c.send(
       "alpha",
       { text: "see attached", source: "monitor", chat_id: 7 },
       {
@@ -317,7 +317,7 @@ describe("AgentApiClient.inject", () => {
     );
     const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
     try {
-      await c.inject(
+      await c.send(
         "alpha",
         { text: "x", source: "src", user_id: "1" },
         { idempotencyKey: "0123456789abcdef" },

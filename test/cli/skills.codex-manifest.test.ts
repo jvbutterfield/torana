@@ -25,7 +25,7 @@ describe("codex-plugin/.codex-plugin/plugin.json", () => {
 
   test("declares both skills with correct paths", () => {
     expect(parsed.skills["torana-ask"].path).toBe("skills/torana-ask");
-    expect(parsed.skills["torana-inject"].path).toBe("skills/torana-inject");
+    expect(parsed.skills["torana-send"].path).toBe("skills/torana-send");
   });
 
   test("has description + homepage (Codex surfaces these in the UI)", () => {
@@ -62,7 +62,7 @@ describe("codex-plugin/marketplace.json", () => {
 });
 
 describe("skills SKILL.md frontmatter", () => {
-  for (const skill of ["torana-ask", "torana-inject"]) {
+  for (const skill of ["torana-ask", "torana-send"]) {
     test(`${skill}: frontmatter declares allow_implicit_invocation: true`, () => {
       const text = readFileSync(join(REPO_ROOT, "skills", skill, "SKILL.md"), "utf-8");
       expect(text.startsWith("---\n")).toBe(true);

@@ -6,6 +6,36 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.6] - 2026-04-21
+
+### Changed
+
+- **Agent API: renamed the `inject` scope to `send`.** The side-session
+  architecture and every other Agent API surface are unchanged; this is a
+  pure rename. The scope formerly named `inject` is now `send`, affecting:
+  - HTTP route: `POST /v1/bots/:id/inject` → `POST /v1/bots/:id/send`
+  - CLI command: `torana inject` → `torana send`
+  - Token scope value: `scopes: ["inject"]` → `scopes: ["send"]`
+  - Config key: `agent_api.inject.*` → `agent_api.send.*`
+  - Skill package: `torana-inject` → `torana-send`
+  - Marker text visible to the runner: `[system-injected from "<source>"]`
+    → `[system-message from "<source>"]`
+  - Prometheus labels: `mode="inject"` → `mode="send"` and
+    `torana_agent_api_inject_idempotent_replays_total` →
+    `torana_agent_api_send_idempotent_replays_total`
+  - DB turn `source` column: `agent_api_inject` → `agent_api_send` (new
+    turns only; historical rows retain the old value — queries that filter
+    by source must update)
+  - Client SDK: `client.inject()` → `client.send()`;
+    `InjectRequest`/`InjectResponse` → `SendRequest`/`SendResponse`
+
+  This is a breaking change with no alias. Since rc.5 is the only rc
+  published to npm (on the `rc` dist-tag, not `latest`), operators
+  upgrading must update their `torana.yaml`, any scripts calling the CLI,
+  and any Prometheus dashboards. The route/scope/marker are the visible
+  changes; the bot's runner now sees `[system-message from …]` prefixes
+  instead of `[system-injected from …]`.
+
 ## [1.0.0-rc.5] - 2026-04-20
 
 ### Upgrade notes

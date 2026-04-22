@@ -1,4 +1,4 @@
-// `torana ask --file @-` / `torana inject --file @-` integration at the
+// `torana ask --file @-` / `torana send --file @-` integration at the
 // subcommand layer. We inject a stub `readFile` so stdin I/O doesn't
 // escape the test process, then assert:
 //   - stdin bytes reach the request as an attachment
@@ -8,7 +8,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { runAsk } from "../../src/cli/ask.js";
-import { runInject } from "../../src/cli/inject.js";
+import { runSend } from "../../src/cli/send.js";
 import type { AgentApiClient, FileUpload } from "../../src/agent-api/client.js";
 
 function clientStub(overrides: Partial<AgentApiClient> = {}): AgentApiClient {
@@ -20,10 +20,10 @@ function clientStub(overrides: Partial<AgentApiClient> = {}): AgentApiClient {
       session_id: "eph-x",
       text: "ok",
     })) as AgentApiClient["ask"],
-    inject: (async () => ({
+    send: (async () => ({
       turn_id: 1,
       status: "queued",
-    })) as AgentApiClient["inject"],
+    })) as AgentApiClient["send"],
   };
   return { ...base, ...overrides } as AgentApiClient;
 }
@@ -111,11 +111,11 @@ describe("ask --file @-", () => {
   });
 });
 
-describe("inject --file @-", () => {
+describe("send --file @-", () => {
   test("stdin bytes reach the client as a single attachment", async () => {
     let captured: FileUpload[] | undefined;
     const client = clientStub({
-      inject: async (_b, _body, opts) => {
+      send: async (_b, _body, opts) => {
         captured = opts.files;
         return { turn_id: 7, status: "queued" };
       },
@@ -123,7 +123,7 @@ describe("inject --file @-", () => {
     const read = readerByPath({
       "@-": { data: new Uint8Array([0x25, 0x50, 0x44, 0x46]), mime: "application/pdf", filename: "stdin.pdf" },
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -146,9 +146,9 @@ describe("inject --file @-", () => {
 
   test("auto-generated idempotency-key is surfaced on stderr", async () => {
     const client = clientStub({
-      inject: async () => ({ turn_id: 1, status: "queued" }),
+      send: async () => ({ turn_id: 1, status: "queued" }),
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -168,9 +168,9 @@ describe("inject --file @-", () => {
 
   test("caller-supplied idempotency-key suppresses the auto notice", async () => {
     const client = clientStub({
-      inject: async () => ({ turn_id: 1, status: "queued" }),
+      send: async () => ({ turn_id: 1, status: "queued" }),
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -196,7 +196,7 @@ describe("inject --file @-", () => {
     });
     let caught: unknown;
     try {
-      await runInject(
+      await runSend(
         {
           argv: [
             "alpha",

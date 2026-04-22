@@ -113,7 +113,7 @@ jobs:
               # `bots`, `config`, and `skills` require a subcommand — we
               # exercise one per parent to cover both dispatch levels.
               ./node_modules/.bin/torana ask --help > /dev/null
-              ./node_modules/.bin/torana inject --help > /dev/null
+              ./node_modules/.bin/torana send --help > /dev/null
               ./node_modules/.bin/torana turns get --help > /dev/null
               ./node_modules/.bin/torana bots list --help > /dev/null
               ./node_modules/.bin/torana config list-profiles --help > /dev/null
@@ -124,8 +124,8 @@ jobs:
               # would only manifest when a user tried to install — catch it
               # at package time instead.
               test -f ./node_modules/torana/skills/torana-ask/SKILL.md
-              test -f ./node_modules/torana/skills/torana-inject/SKILL.md
+              test -f ./node_modules/torana/skills/torana-send/SKILL.md
               test -f ./node_modules/torana/codex-plugin/marketplace.json
               test -f ./node_modules/torana/codex-plugin/skills/torana-ask/SKILL.md
-              test -f ./node_modules/torana/codex-plugin/skills/torana-inject/SKILL.md
+              test -f ./node_modules/torana/codex-plugin/skills/torana-send/SKILL.md
             '

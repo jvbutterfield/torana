@@ -43,11 +43,11 @@ export interface AgentApiCounters {
   ask_requests_5xx: number;
   /** 202 responses where the ask handler handed off to the orphan listener. */
   ask_timeouts_total: number;
-  inject_requests_total: number;
-  inject_requests_2xx: number;
-  inject_requests_4xx: number;
-  inject_requests_5xx: number;
-  inject_idempotent_replays_total: number;
+  send_requests_total: number;
+  send_requests_2xx: number;
+  send_requests_4xx: number;
+  send_requests_5xx: number;
+  send_idempotent_replays_total: number;
   side_sessions_started_total: number;
   side_session_evictions_idle: number;
   side_session_evictions_hard: number;
@@ -116,11 +116,11 @@ function zeroAgentApiCounters(): AgentApiCounters {
     ask_requests_4xx: 0,
     ask_requests_5xx: 0,
     ask_timeouts_total: 0,
-    inject_requests_total: 0,
-    inject_requests_2xx: 0,
-    inject_requests_4xx: 0,
-    inject_requests_5xx: 0,
-    inject_idempotent_replays_total: 0,
+    send_requests_total: 0,
+    send_requests_2xx: 0,
+    send_requests_4xx: 0,
+    send_requests_5xx: 0,
+    send_idempotent_replays_total: 0,
     side_sessions_started_total: 0,
     side_session_evictions_idle: 0,
     side_session_evictions_hard: 0,
@@ -164,7 +164,7 @@ function observe(h: HistogramState, v: number): void {
 }
 
 export type AcquireOutcome = "reuse" | "spawn" | "capacity" | "busy";
-export type AskRoute = "ask" | "inject";
+export type AskRoute = "ask" | "send";
 export type EvictionReason = "idle" | "hard" | "lru";
 
 export class Metrics {
@@ -353,23 +353,23 @@ export class Metrics {
           `torana_agent_api_requests_total{bot_id="${botId}",mode="ask",outcome="timeout"} ${c.ask_timeouts_total}`,
         );
         lines.push(
-          `torana_agent_api_requests_total{bot_id="${botId}",mode="inject",outcome="2xx"} ${c.inject_requests_2xx}`,
+          `torana_agent_api_requests_total{bot_id="${botId}",mode="send",outcome="2xx"} ${c.send_requests_2xx}`,
         );
         lines.push(
-          `torana_agent_api_requests_total{bot_id="${botId}",mode="inject",outcome="4xx"} ${c.inject_requests_4xx}`,
+          `torana_agent_api_requests_total{bot_id="${botId}",mode="send",outcome="4xx"} ${c.send_requests_4xx}`,
         );
         lines.push(
-          `torana_agent_api_requests_total{bot_id="${botId}",mode="inject",outcome="5xx"} ${c.inject_requests_5xx}`,
+          `torana_agent_api_requests_total{bot_id="${botId}",mode="send",outcome="5xx"} ${c.send_requests_5xx}`,
         );
       }
 
       lines.push(
-        "# HELP torana_agent_api_inject_idempotent_replays_total Inject requests served from the idempotency cache.",
+        "# HELP torana_agent_api_send_idempotent_replays_total Send requests served from the idempotency cache.",
       );
-      lines.push("# TYPE torana_agent_api_inject_idempotent_replays_total counter");
+      lines.push("# TYPE torana_agent_api_send_idempotent_replays_total counter");
       for (const [botId, c] of this.agentApi) {
         lines.push(
-          `torana_agent_api_inject_idempotent_replays_total{bot_id="${botId}"} ${c.inject_idempotent_replays_total}`,
+          `torana_agent_api_send_idempotent_replays_total{bot_id="${botId}"} ${c.send_idempotent_replays_total}`,
         );
       }
 

@@ -9,7 +9,7 @@
 //   field names.
 // - `fetchImpl` is injectable so tests can route through a fake without
 //   spinning up a server (and so the real CLI can use globalThis.fetch).
-// - No retry logic: ask is non-idempotent without a session_id, and inject
+// - No retry logic: ask is non-idempotent without a session_id, and send
 //   uses an explicit Idempotency-Key. Retry is the caller's call.
 //
 // Error mapping: every non-2xx response body of the form `{error: <code>,
@@ -80,14 +80,14 @@ export type AskResponse =
       session_id: string;
     };
 
-export interface InjectRequest {
+export interface SendRequest {
   text: string;
   source: string;
   user_id?: string;
   chat_id?: number;
 }
 
-export interface InjectResponse {
+export interface SendResponse {
   turn_id: number;
   status: "queued" | "in_progress" | "done" | "failed";
 }
@@ -145,7 +145,7 @@ export class AgentApiClient {
   }
 
   async listBots(): Promise<BotsListResponse> {
-    const r = await this.send("GET", "/v1/bots");
+    const r = await this.request("GET", "/v1/bots");
     return (await this.readJson(r)) as BotsListResponse;
   }
 
@@ -157,8 +157,8 @@ export class AgentApiClient {
     const path = `/v1/bots/${encodeURIComponent(botId)}/ask`;
     const r =
       files && files.length > 0
-        ? await this.sendMultipart("POST", path, fieldsForAsk(body), files)
-        : await this.send("POST", path, {
+        ? await this.requestMultipart("POST", path, fieldsForAsk(body), files)
+        : await this.request("POST", path, {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
@@ -189,25 +189,25 @@ export class AgentApiClient {
     });
   }
 
-  async inject(
+  async send(
     botId: string,
-    body: InjectRequest,
+    body: SendRequest,
     opts: { idempotencyKey: string; files?: FileUpload[] },
-  ): Promise<InjectResponse> {
-    const path = `/v1/bots/${encodeURIComponent(botId)}/inject`;
+  ): Promise<SendResponse> {
+    const path = `/v1/bots/${encodeURIComponent(botId)}/send`;
     const headers: Record<string, string> = {
       "Idempotency-Key": opts.idempotencyKey,
     };
     const r =
       opts.files && opts.files.length > 0
-        ? await this.sendMultipart(
+        ? await this.requestMultipart(
             "POST",
             path,
-            fieldsForInject(body),
+            fieldsForSend(body),
             opts.files,
             headers,
           )
-        : await this.send("POST", path, {
+        : await this.request("POST", path, {
             headers: { ...headers, "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
@@ -227,13 +227,13 @@ export class AgentApiClient {
     throw new AgentApiError({
       code: "malformed_response",
       status: r.status,
-      message: `unexpected status from inject: ${r.status}`,
+      message: `unexpected status from send: ${r.status}`,
       body: json,
     });
   }
 
   async getTurn(turnId: number): Promise<TurnResponse> {
-    const r = await this.send(
+    const r = await this.request(
       "GET",
       `/v1/turns/${encodeURIComponent(String(turnId))}`,
     );
@@ -262,7 +262,7 @@ export class AgentApiClient {
   }
 
   async listSessions(botId: string): Promise<SessionsListResponse> {
-    const r = await this.send(
+    const r = await this.request(
       "GET",
       `/v1/bots/${encodeURIComponent(botId)}/sessions`,
     );
@@ -271,10 +271,10 @@ export class AgentApiClient {
 
   async deleteSession(botId: string, sessionId: string): Promise<void> {
     const path = `/v1/bots/${encodeURIComponent(botId)}/sessions/${encodeURIComponent(sessionId)}`;
-    const r = await this.send("DELETE", path);
+    const r = await this.request("DELETE", path);
     if (r.status === 204) return;
     // Rare — handler returns 204 on success; anything else is an error
-    // body that send() would have already raised. Belt-and-braces:
+    // body that request() would have already raised. Belt-and-braces:
     throw new AgentApiError({
       code: "malformed_response",
       status: r.status,
@@ -284,7 +284,7 @@ export class AgentApiClient {
 
   // ---- transport helpers --------------------------------------------------
 
-  private async send(
+  private async request(
     method: string,
     path: string,
     init?: { headers?: Record<string, string>; body?: BodyInit },
@@ -312,7 +312,7 @@ export class AgentApiClient {
     throw await this.buildError(response);
   }
 
-  private async sendMultipart(
+  private async requestMultipart(
     method: string,
     path: string,
     fields: Record<string, string>,
@@ -331,7 +331,7 @@ export class AgentApiClient {
       const blob = new Blob([part], { type: f.contentType });
       form.append("file", blob, f.filename);
     }
-    return this.send(method, path, { headers: extraHeaders, body: form });
+    return this.request(method, path, { headers: extraHeaders, body: form });
   }
 
   private async buildError(response: Response): Promise<AgentApiError> {
@@ -382,7 +382,7 @@ function fieldsForAsk(body: AskRequest): Record<string, string> {
   return out;
 }
 
-function fieldsForInject(body: InjectRequest): Record<string, string> {
+function fieldsForSend(body: SendRequest): Record<string, string> {
   const out: Record<string, string> = { text: body.text, source: body.source };
   if (body.user_id) out.user_id = body.user_id;
   if (body.chat_id !== undefined) out.chat_id = String(body.chat_id);

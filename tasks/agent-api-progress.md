@@ -27,7 +27,7 @@ The branch is gone — resume on `main`.
      1 `AGENT_API_SOAK=1`).
    - `bun x tsc --noEmit` — clean.
    - `AGENT_API_E2E=1 bun test test/e2e/agent-api/` — **10 pass /
-     1 skip / 0 fail** in ~30s; `inject-claude` skip needs
+     1 skip / 0 fail** in ~30s; `send-claude` skip needs
      `TELEGRAM_TEST_BOT_TOKEN` + `TELEGRAM_TEST_CHAT_ID` +
      `TELEGRAM_TEST_USER_ID`.
    - `bun run build && bun run scripts/verify-pack.ts` — expect
@@ -42,7 +42,7 @@ The branch is gone — resume on `main`.
    - **Verify rc.5 on npm:** `npm view torana@1.0.0-rc.5` should list
      on the `rc` dist-tag; `latest` should still point at `1.0.0-rc.4`.
    - **Run full 24h `AGENT_API_SOAK=1`** at PRD rate (1 ask/min + 1
-     inject/min) against the published rc.5. Artifacts go to a
+     send/min) against the published rc.5. Artifacts go to a
      configurable dir (default `/tmp/torana-soak-*`). The harness
      already proved out at 12×-rate for 65 min; the 24h run just
      validates the PRD §8 claim at the stated rate.

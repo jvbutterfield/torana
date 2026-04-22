@@ -117,7 +117,7 @@ async function setupGateway(
   return { base: `http://127.0.0.1:${server.port}` };
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "inject")[]): ResolvedAgentApiToken {
+function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -215,9 +215,9 @@ describe("torana ask — subprocess dispatch", () => {
     expect(stderr).toContain("invalid_token");
   }, 20_000);
 
-  test("inject scope token rejected on ask → exit 3", async () => {
-    const secret = "tok-cli-inject-only-123";
-    const { base } = await setupGateway([tokenFor(secret, ["inject"])]);
+  test("send scope token rejected on ask → exit 3", async () => {
+    const secret = "tok-cli-send-only-123";
+    const { base } = await setupGateway([tokenFor(secret, ["send"])]);
     const { exitCode, stderr } = await runCli(
       ["ask", "bot1", "hi", "--server", base, "--token", secret],
     );
@@ -300,12 +300,12 @@ describe("dispatcher — usage errors before network", () => {
     expect(stderr).toMatch(/turns requires/);
   }, 15_000);
 
-  test("inject missing --source → exit 2", async () => {
-    const secret = "tok-cli-inject-nosrc-12";
-    const { base } = await setupGateway([tokenFor(secret, ["inject"])]);
+  test("send missing --source → exit 2", async () => {
+    const secret = "tok-cli-send-nosrc-12";
+    const { base } = await setupGateway([tokenFor(secret, ["send"])]);
     const { exitCode, stderr } = await runCli(
       [
-        "inject",
+        "send",
         "bot1",
         "hi",
         "--user-id",

@@ -21,7 +21,7 @@ export type AskOutcome =
   | { status: 400 | 401 | 403 | 404; durationMs: number }
   | { status: 429 | 500 | 501 | 503; durationMs: number };
 
-export type InjectOutcome =
+export type SendOutcome =
   | { status: 202; replay: boolean; durationMs: number }
   | { status: 400 | 401 | 403 | 404; durationMs: number }
   | { status: 429 | 500 | 501 | 503; durationMs: number };
@@ -52,28 +52,28 @@ export function recordAsk(
 }
 
 /**
- * Record an inject request. Replay hits are counted separately so operators
+ * Record a send request. Replay hits are counted separately so operators
  * can alert on sudden spikes independent of real traffic volume.
  */
-export function recordInject(
+export function recordSend(
   metrics: Metrics | undefined,
   botId: string,
-  outcome: InjectOutcome,
+  outcome: SendOutcome,
 ): void {
   if (!metrics) return;
-  metrics.incAgentApi(botId, "inject_requests_total");
+  metrics.incAgentApi(botId, "send_requests_total");
   const status = outcome.status;
   if (status >= 200 && status < 300) {
-    metrics.incAgentApi(botId, "inject_requests_2xx");
+    metrics.incAgentApi(botId, "send_requests_2xx");
     if ("replay" in outcome && outcome.replay) {
-      metrics.incAgentApi(botId, "inject_idempotent_replays_total");
+      metrics.incAgentApi(botId, "send_idempotent_replays_total");
     }
   } else if (status >= 400 && status < 500) {
-    metrics.incAgentApi(botId, "inject_requests_4xx");
+    metrics.incAgentApi(botId, "send_requests_4xx");
   } else {
-    metrics.incAgentApi(botId, "inject_requests_5xx");
+    metrics.incAgentApi(botId, "send_requests_5xx");
   }
-  metrics.observeAgentApiRequestDuration(botId, "inject" as AskRoute, outcome.durationMs);
+  metrics.observeAgentApiRequestDuration(botId, "send" as AskRoute, outcome.durationMs);
 }
 
 /** Record a pool acquire — outcome + observed duration. */

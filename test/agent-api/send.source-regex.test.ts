@@ -1,8 +1,8 @@
-// Boundary tests for the inject `source` field regex (PRD US-012 line 306).
+// Boundary tests for the send `source` field regex (PRD US-012 line 306).
 // PRD: `source` is "a short caller-chosen label (e.g. 'calendar-prep',
 // max 64 chars, [a-z0-9_-])."
 //
-// inject.test.ts already covers the "spaces" rejection but not the length
+// send.test.ts already covers the "spaces" rejection but not the length
 // boundary or the case-sensitivity assertion. These tests pin both.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -35,7 +35,7 @@ let db: GatewayDB;
 let server: Server;
 
 function setup(secret: string): { base: string; tok: ResolvedAgentApiToken } {
-  tmpDir = mkdtempSync(join(tmpdir(), "torana-inject-src-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "torana-send-src-"));
   const dbPath = join(tmpDir, "gateway.db");
   applyMigrations(dbPath);
   db = new GatewayDB(dbPath);
@@ -49,7 +49,7 @@ function setup(secret: string): { base: string; tok: ResolvedAgentApiToken } {
     secret,
     hash: hash(secret),
     bot_ids: ["bot1"],
-    scopes: ["inject"],
+    scopes: ["send"],
   };
 
   const registry = {
@@ -78,7 +78,7 @@ function setup(secret: string): { base: string; tok: ResolvedAgentApiToken } {
     db,
     registry: registry as never,
     tokens: [tok],
-    log: logger("inject-src-test"),
+    log: logger("send-src-test"),
     pool: { listForBot: () => [], stop: async () => {} } as never,
     orphans: { attach: () => {}, shutdown: () => {} } as never,
   });
@@ -95,13 +95,13 @@ afterEach(async () => {
   if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
 });
 
-async function injectWith(
+async function sendWith(
   base: string,
   secret: string,
   source: string,
   key = KEY,
 ): Promise<Response> {
-  return fetch(`${base}/v1/bots/bot1/inject`, {
+  return fetch(`${base}/v1/bots/bot1/send`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${secret}`,
@@ -116,7 +116,7 @@ async function injectWith(
   });
 }
 
-describe("inject source regex — pure regex sanity", () => {
+describe("send source regex — pure regex sanity", () => {
   test("regex itself: lowercase + digits + underscore + hyphen ok", () => {
     expect(SOURCE_LABEL_RE.test("calendar-prep")).toBe(true);
     expect(SOURCE_LABEL_RE.test("a")).toBe(true);
@@ -137,12 +137,12 @@ describe("inject source regex — pure regex sanity", () => {
   });
 });
 
-describe("inject source regex — HTTP-layer rejection", () => {
+describe("send source regex — HTTP-layer rejection", () => {
   test("64-char source accepted (exactly at the cap)", async () => {
     const secret = "tok-source-64-chars-1234";
     const { base } = setup(secret);
     const source = "a".repeat(64);
-    const r = await injectWith(base, secret, source);
+    const r = await sendWith(base, secret, source);
     expect(r.status).toBe(202);
     const body = (await r.json()) as { turn_id: number };
     const turn = db.getTurnExtended(body.turn_id)!;
@@ -152,7 +152,7 @@ describe("inject source regex — HTTP-layer rejection", () => {
   test("65-char source rejected → 400 invalid_body", async () => {
     const secret = "tok-source-65-chars-1234";
     const { base } = setup(secret);
-    const r = await injectWith(base, secret, "a".repeat(65));
+    const r = await sendWith(base, secret, "a".repeat(65));
     expect(r.status).toBe(400);
     expect((await r.json()).error).toBe("invalid_body");
   });
@@ -160,7 +160,7 @@ describe("inject source regex — HTTP-layer rejection", () => {
   test("uppercase letter in source rejected → 400 invalid_body (PRD: lowercase only)", async () => {
     const secret = "tok-source-uppercase-12345";
     const { base } = setup(secret);
-    const r = await injectWith(base, secret, "Calendar-Prep");
+    const r = await sendWith(base, secret, "Calendar-Prep");
     expect(r.status).toBe(400);
     expect((await r.json()).error).toBe("invalid_body");
   });
@@ -168,14 +168,14 @@ describe("inject source regex — HTTP-layer rejection", () => {
   test("dot in source rejected", async () => {
     const secret = "tok-source-dot-character-1";
     const { base } = setup(secret);
-    const r = await injectWith(base, secret, "calendar.prep");
+    const r = await sendWith(base, secret, "calendar.prep");
     expect(r.status).toBe(400);
   });
 
   test("empty source rejected", async () => {
     const secret = "tok-source-empty-string-12";
     const { base } = setup(secret);
-    const r = await injectWith(base, secret, "");
+    const r = await sendWith(base, secret, "");
     expect(r.status).toBe(400);
   });
 });

@@ -44,7 +44,7 @@ export interface InstallResult {
   }>;
 }
 
-const SKILLS = ["torana-ask", "torana-inject"] as const;
+const SKILLS = ["torana-ask", "torana-send"] as const;
 
 const HELP = `Usage: bun scripts/install-skills.ts --host=<claude|codex>[,host...] [options]
 

@@ -1,6 +1,6 @@
-// Integration tests for POST /v1/bots/:id/inject — exercises auth + body
+// Integration tests for POST /v1/bots/:id/send — exercises auth + body
 // validation + idempotency + chat resolution + ACL against a real HTTP
-// server. Uses a stub registry (no real runner spawn) because inject
+// server. Uses a stub registry (no real runner spawn) because send
 // only enqueues a turn; dispatch goes through the main runner path which
 // we don't need to exercise here.
 
@@ -91,7 +91,7 @@ interface SetupResult {
 }
 
 function setup(tokens: ResolvedAgentApiToken[]): SetupResult {
-  tmpDir = mkdtempSync(join(tmpdir(), "torana-inject-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "torana-send-"));
   const dbPath = join(tmpDir, "gateway.db");
   applyMigrations(dbPath);
   db = new GatewayDB(dbPath);
@@ -112,7 +112,7 @@ function setup(tokens: ResolvedAgentApiToken[]): SetupResult {
     db,
     registry: registry as never,
     tokens,
-    log: logger("inject-test"),
+    log: logger("send-test"),
     pool: stubPool() as never,
     orphans: stubOrphans() as never,
   });
@@ -121,7 +121,7 @@ function setup(tokens: ResolvedAgentApiToken[]): SetupResult {
 
 function tokenWith(
   secret: string,
-  scopes: ("ask" | "inject")[],
+  scopes: ("ask" | "send")[],
   name = "caller",
 ): ResolvedAgentApiToken {
   return {
@@ -146,13 +146,13 @@ beforeEach(() => {
   /* per-test setup */
 });
 
-describe("POST /v1/bots/:id/inject — happy path", () => {
+describe("POST /v1/bots/:id/send — happy path", () => {
   test("user_id resolves via user_chats and enqueues a turn", async () => {
-    const secret = "tok-inject-happy-1234";
-    const { base, registry } = setup([tokenWith(secret, ["inject"])]);
+    const secret = "tok-send-happy-1234";
+    const { base, registry } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -173,7 +173,7 @@ describe("POST /v1/bots/:id/inject — happy path", () => {
     // Turn is in the DB as queued with the right source metadata.
     const turn = db.getTurnExtended(body.turn_id)!;
     expect(turn.status).toBe("queued");
-    expect(turn.source).toBe("agent_api_inject");
+    expect(turn.source).toBe("agent_api_send");
     expect(turn.agent_api_source_label).toBe("calendar-prep");
     expect(turn.idempotency_key).toBe(KEY_A);
     expect(turn.chat_id).toBe(555);
@@ -181,7 +181,7 @@ describe("POST /v1/bots/:id/inject — happy path", () => {
     // Marker-wrapped prompt round-trips via getTurnText.
     const text = db.getTurnText(body.turn_id);
     expect(text).toBe(
-      '[system-injected from "calendar-prep"]\n\nhello there',
+      '[system-message from "calendar-prep"]\n\nhello there',
     );
 
     // Dispatch was woken for this bot.
@@ -189,11 +189,11 @@ describe("POST /v1/bots/:id/inject — happy path", () => {
   });
 
   test("chat_id pass-through is accepted when chat is known for this bot", async () => {
-    const secret = "tok-inject-chatid-123";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const secret = "tok-send-chatid-123";
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -210,11 +210,11 @@ describe("POST /v1/bots/:id/inject — happy path", () => {
   });
 });
 
-describe("POST /v1/bots/:id/inject — validation", () => {
+describe("POST /v1/bots/:id/send — validation", () => {
   test("missing Idempotency-Key → 400 missing_idempotency_key", async () => {
     const secret = "tok-missing-key-12345";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const { base } = setup([tokenWith(secret, ["send"])]);
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -232,8 +232,8 @@ describe("POST /v1/bots/:id/inject — validation", () => {
 
   test("malformed Idempotency-Key → 400 invalid_idempotency_key", async () => {
     const secret = "tok-bad-key-123456789";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const { base } = setup([tokenWith(secret, ["send"])]);
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -252,8 +252,8 @@ describe("POST /v1/bots/:id/inject — validation", () => {
 
   test("missing user_id AND chat_id → 400 missing_target", async () => {
     const secret = "tok-no-target-1234567";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const { base } = setup([tokenWith(secret, ["send"])]);
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -268,8 +268,8 @@ describe("POST /v1/bots/:id/inject — validation", () => {
 
   test("bad source regex → 400 invalid_body", async () => {
     const secret = "tok-bad-source-123456";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const { base } = setup([tokenWith(secret, ["send"])]);
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -288,8 +288,8 @@ describe("POST /v1/bots/:id/inject — validation", () => {
 
   test("malformed JSON body → 400 invalid_body", async () => {
     const secret = "tok-bad-json-12345678";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const { base } = setup([tokenWith(secret, ["send"])]);
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -302,12 +302,12 @@ describe("POST /v1/bots/:id/inject — validation", () => {
   });
 });
 
-describe("POST /v1/bots/:id/inject — target resolution", () => {
+describe("POST /v1/bots/:id/send — target resolution", () => {
   test("user_id that never DMed the bot → 409 user_not_opened_bot", async () => {
     const secret = "tok-no-open-123456789";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     // No upsertUserChat — user has never DMed.
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -326,9 +326,9 @@ describe("POST /v1/bots/:id/inject — target resolution", () => {
 
   test("chat_id forgery (chat belongs to another bot) → 403 chat_not_permitted", async () => {
     const secret = "tok-chat-forgery-1234";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("other-bot", String(USER_ID), 555);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -347,12 +347,12 @@ describe("POST /v1/bots/:id/inject — target resolution", () => {
 
   test("user no longer in ACL → 403 target_not_authorized", async () => {
     const secret = "tok-acl-bypass-123456";
-    const { base, config } = setup([tokenWith(secret, ["inject"])]);
+    const { base, config } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
-    // Admin removed the user from the ACL between their last DM and the inject call.
+    // Admin removed the user from the ACL between their last DM and the send call.
     config.access_control.allowed_user_ids = [];
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -370,13 +370,13 @@ describe("POST /v1/bots/:id/inject — target resolution", () => {
   });
 });
 
-describe("POST /v1/bots/:id/inject — idempotency", () => {
+describe("POST /v1/bots/:id/send — idempotency", () => {
   test("duplicate key returns the same turn_id; body is ignored on replay", async () => {
     const secret = "tok-idem-replay-12345";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r1 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r1 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -392,7 +392,7 @@ describe("POST /v1/bots/:id/inject — idempotency", () => {
     expect(r1.status).toBe(202);
     const body1 = (await r1.json()) as { turn_id: number };
 
-    const r2 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r2 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -413,15 +413,15 @@ describe("POST /v1/bots/:id/inject — idempotency", () => {
 
     // Persisted text comes from the first call.
     const stored = db.getTurnText(body1.turn_id);
-    expect(stored).toBe('[system-injected from "x"]\n\nfirst');
+    expect(stored).toBe('[system-message from "x"]\n\nfirst');
   });
 
   test("a second call with a different key creates a new turn", async () => {
     const secret = "tok-idem-fresh-123456";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r1 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r1 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -436,7 +436,7 @@ describe("POST /v1/bots/:id/inject — idempotency", () => {
     });
     const body1 = (await r1.json()) as { turn_id: number };
 
-    const r2 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r2 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -455,11 +455,11 @@ describe("POST /v1/bots/:id/inject — idempotency", () => {
   });
 });
 
-describe("POST /v1/bots/:id/inject — scope enforcement", () => {
+describe("POST /v1/bots/:id/send — scope enforcement", () => {
   test("token with only ask scope → 403 scope_not_permitted", async () => {
     const secret = "tok-ask-only-12345678";
     const { base } = setup([tokenWith(secret, ["ask"])]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,

@@ -30,9 +30,9 @@ describe("installSkills (helper)", () => {
       sourceDir: REPO_SKILLS,
     });
     const ask = join(claude, "torana-ask", "SKILL.md");
-    const inject = join(claude, "torana-inject", "SKILL.md");
+    const send = join(claude, "torana-send", "SKILL.md");
     expect(existsSync(ask)).toBe(true);
-    expect(existsSync(inject)).toBe(true);
+    expect(existsSync(send)).toBe(true);
     expect(statSync(ask).mode & 0o777).toBe(0o644);
     expect(r.actions.every((a) => a.action === "copied")).toBe(true);
     expect(r.actions).toHaveLength(2);
@@ -154,7 +154,7 @@ describe("torana skills CLI", () => {
     ]);
     expect(r.exitCode).toBe(0);
     expect(existsSync(join(claude, "torana-ask", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(claude, "torana-inject", "SKILL.md"))).toBe(true);
+    expect(existsSync(join(claude, "torana-send", "SKILL.md"))).toBe(true);
     expect(r.stdout.join("\n")).toMatch(/2 copied/);
   });
 

@@ -1,5 +1,5 @@
 // `torana turns get <turn_id>` — fetch the current state of a turn.
-// Polled by callers who got 202 from `ask` or `inject`.
+// Polled by callers who got 202 from `ask` or `send`.
 
 import type { AgentApiClient } from "../agent-api/client.js";
 import {

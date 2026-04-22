@@ -1,16 +1,17 @@
 ---
-name: torana-inject
+name: torana-send
 description: |
   Use when an external event (calendar trigger, monitoring alert, upstream
   agent) needs to be reported to the Telegram user, AND the receiving bot
   must see the material so it can answer follow-up questions. Trigger
-  phrases: "send prep to", "notify <bot> about", "push to <user>'s chat".
+  phrases: "send prep to", "send my calendar for tomorrow to", "notify
+  <bot> about", "push to <user>'s chat".
 allow_implicit_invocation: true
 ---
 
-# torana-inject
+# torana-send
 
-Push a system-injected message into a user's bot chat. Torana delivers the
+Push a system message into a user's bot chat. Torana delivers the
 text (and any attachments) via Telegram **and** records it in the bot's
 turn history so follow-up user messages have full context.
 
@@ -19,7 +20,7 @@ turn history so follow-up user messages have full context.
 - You're an upstream agent that wants to surface information to a user
   through a specific bot: standup summaries, calendar prep, monitoring
   alerts, status updates.
-- The user may reply — the injected material must be visible to the bot
+- The user may reply — the sent material must be visible to the bot
   so it can answer coherently.
 - One-way notifications where replies matter. For fire-and-forget with no
   context retention, use a plain Telegram sendMessage integration.
@@ -29,14 +30,14 @@ turn history so follow-up user messages have full context.
 - You want another agent's **opinion** (Q&A only, not delivered to a
   user). Use `torana-ask`.
 - The user hasn't started a conversation with the bot yet. torana refuses
-  injects until the chat is open (error code `user_not_opened_bot`).
+  sends until the chat is open (error code `user_not_opened_bot`).
 
 ## Quick reference
 
 ```bash
-torana inject --source <label> --user-id <id> <bot_id> "<text>"
-torana inject --source <label> --chat-id <id> <bot_id> "<text>"
-torana inject --source <label> --user-id 12345 --file ./report.pdf reviewer "weekly report"
+torana send --source <label> --user-id <id> <bot_id> "<text>"
+torana send --source <label> --chat-id <id> <bot_id> "<text>"
+torana send --source <label> --user-id 12345 --file ./report.pdf reviewer "weekly report"
 ```
 
 ## Prerequisites
@@ -44,7 +45,7 @@ torana inject --source <label> --user-id 12345 --file ./report.pdf reviewer "wee
 - Same as `torana-ask` — `torana` on PATH, creds via env or profile.
 - The target user must have opened the bot at least once.
 - `--source` is **required** and must match `[a-z0-9_-]{1,64}` (it shows
-  up in the marker prefix the bot sees: `[system-injected from "<source>"]`).
+  up in the marker prefix the bot sees: `[system-message from "<source>"]`).
 - Pick `--user-id` **or** `--chat-id`, never both. `--user-id` resolves
   to the (user, bot) chat.
 
@@ -53,14 +54,14 @@ torana inject --source <label> --user-id 12345 --file ./report.pdf reviewer "wee
 ### 1. Push a status update
 
 ```bash
-torana inject --source ops-standup --user-id 12345 reviewer \
+torana send --source ops-standup --user-id 12345 reviewer \
   "All CI green. Ship it."
 ```
 
-### 2. Inject with an attachment
+### 2. Send with an attachment
 
 ```bash
-torana inject --source calendar --user-id 12345 \
+torana send --source calendar --user-id 12345 \
   --file ./morning-brief.pdf scheduler "Your 9am prep."
 ```
 
@@ -68,7 +69,7 @@ torana inject --source calendar --user-id 12345 \
 
 ```bash
 pg_dump --schema-only db | \
-  torana inject --source ops-audit --user-id 12345 \
+  torana send --source ops-audit --user-id 12345 \
   --file @- dba "Today's schema snapshot."
 ```
 
@@ -81,12 +82,12 @@ rather than double-delivering.
 
 ## Marker convention
 
-The bot sees the injected text wrapped as:
+The bot sees the sent text wrapped as:
 
 ```
-[system-injected from "<source>"]
+[system-message from "<source>"]
+
 <the text you sent>
-[/system-injected]
 ```
 
 When responding to the user, do NOT repeat the marker text back — treat
@@ -108,13 +109,13 @@ Exit codes:
 
 ## Security
 
-- Never echo `TORANA_TOKEN` into the injected text.
-- Don't inject untrusted content verbatim — torana does not sanitize
+- Never echo `TORANA_TOKEN` into the sent text.
+- Don't send untrusted content verbatim — torana does not sanitize
   markdown in the payload, and the marker prefix is user-visible.
 
 ## Codex-specific callout
 
-The first time Codex runs `torana inject` under the default
+The first time Codex runs `torana send` under the default
 `workspace-write` + `on-request` sandbox, you'll see an approval prompt.
 Approve it once and subsequent calls run without prompting in the same
 session. For zero prompts:

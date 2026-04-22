@@ -19,7 +19,7 @@ describe("Metrics — agent-api counters", () => {
     const snap = m.agentApiSnapshot();
     expect(Object.keys(snap)).toEqual(["alpha"]);
     expect(snap.alpha.counters.ask_requests_total).toBe(0);
-    expect(snap.alpha.counters.inject_idempotent_replays_total).toBe(0);
+    expect(snap.alpha.counters.send_idempotent_replays_total).toBe(0);
     expect(snap.alpha.gauges.side_sessions_live).toBe(0);
   });
 
@@ -36,11 +36,11 @@ describe("Metrics — agent-api counters", () => {
 
   test("counters are per-bot; cross-bot increments stay separate", () => {
     const m = makeMetrics(["alpha", "beta"]);
-    m.incAgentApi("alpha", "inject_idempotent_replays_total", 5);
-    m.incAgentApi("beta", "inject_idempotent_replays_total");
+    m.incAgentApi("alpha", "send_idempotent_replays_total", 5);
+    m.incAgentApi("beta", "send_idempotent_replays_total");
     const snap = m.agentApiSnapshot();
-    expect(snap.alpha.counters.inject_idempotent_replays_total).toBe(5);
-    expect(snap.beta.counters.inject_idempotent_replays_total).toBe(1);
+    expect(snap.alpha.counters.send_idempotent_replays_total).toBe(5);
+    expect(snap.beta.counters.send_idempotent_replays_total).toBe(1);
   });
 
   test("setAgentApiGauge overwrites the prior value", () => {
@@ -98,17 +98,17 @@ describe("Metrics — agent-api histograms", () => {
     );
   });
 
-  test("ask and inject histograms are distinct; cross-route pollution impossible", () => {
+  test("ask and send histograms are distinct; cross-route pollution impossible", () => {
     const m = makeMetrics();
     m.observeAgentApiRequestDuration("alpha", "ask", 75);
-    m.observeAgentApiRequestDuration("alpha", "inject", 150);
-    m.observeAgentApiRequestDuration("alpha", "inject", 300);
+    m.observeAgentApiRequestDuration("alpha", "send", 150);
+    m.observeAgentApiRequestDuration("alpha", "send", 300);
     const body = m.renderPrometheus({ alpha: 2 });
     expect(body).toContain(
       'torana_agent_api_request_duration_ms_count{bot_id="alpha",route="ask"} 1',
     );
     expect(body).toContain(
-      'torana_agent_api_request_duration_ms_count{bot_id="alpha",route="inject"} 2',
+      'torana_agent_api_request_duration_ms_count{bot_id="alpha",route="send"} 2',
     );
   });
 
@@ -185,8 +185,8 @@ describe("Metrics — agent-api renderPrometheus", () => {
     m.incAgentApi("alpha", "ask_requests_4xx", 1);
     m.incAgentApi("alpha", "ask_requests_5xx", 1);
     m.incAgentApi("alpha", "ask_timeouts_total", 2);
-    m.incAgentApi("alpha", "inject_requests_2xx", 5);
-    m.incAgentApi("alpha", "inject_idempotent_replays_total", 3);
+    m.incAgentApi("alpha", "send_requests_2xx", 5);
+    m.incAgentApi("alpha", "send_idempotent_replays_total", 3);
     m.incAgentApi("alpha", "side_sessions_started_total", 4);
     m.incAgentApi("alpha", "side_session_evictions_idle", 1);
     m.incAgentApi("alpha", "side_session_evictions_hard", 1);
@@ -213,10 +213,10 @@ describe("Metrics — agent-api renderPrometheus", () => {
     );
 
     expect(body).toContain(
-      "# HELP torana_agent_api_inject_idempotent_replays_total",
+      "# HELP torana_agent_api_send_idempotent_replays_total",
     );
     expect(body).toContain(
-      'torana_agent_api_inject_idempotent_replays_total{bot_id="alpha"} 3',
+      'torana_agent_api_send_idempotent_replays_total{bot_id="alpha"} 3',
     );
 
     expect(body).toContain("# HELP torana_agent_api_side_sessions_started_total");

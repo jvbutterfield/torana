@@ -159,7 +159,7 @@ describe("/v1 auth preamble", () => {
 
   test("right token, wrong scope → 403 scope_not_permitted", async () => {
     const base = setup([token]);
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}` },
       body: JSON.stringify({ text: "hi" }),

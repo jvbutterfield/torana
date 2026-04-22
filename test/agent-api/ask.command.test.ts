@@ -159,7 +159,7 @@ beforeEach(() => {
 
 function tokenFor(
   secret: string,
-  scopes: ("ask" | "inject")[],
+  scopes: ("ask" | "send")[],
 ): ResolvedAgentApiToken {
   return {
     name: "caller",

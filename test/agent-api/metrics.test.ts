@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { Metrics } from "../../src/metrics.js";
 import {
   recordAsk,
-  recordInject,
+  recordSend,
   recordAcquire,
   recordEviction,
   recordOrphanResolution,
@@ -64,40 +64,40 @@ describe("recordAsk", () => {
   });
 });
 
-describe("recordInject", () => {
-  test("202 without replay → inject_requests_2xx only", () => {
+describe("recordSend", () => {
+  test("202 without replay → send_requests_2xx only", () => {
     const m = makeMetrics();
-    recordInject(m, "alpha", { status: 202, replay: false, durationMs: 5 });
+    recordSend(m, "alpha", { status: 202, replay: false, durationMs: 5 });
     const snap = m.agentApiSnapshot().alpha.counters;
-    expect(snap.inject_requests_total).toBe(1);
-    expect(snap.inject_requests_2xx).toBe(1);
-    expect(snap.inject_idempotent_replays_total).toBe(0);
+    expect(snap.send_requests_total).toBe(1);
+    expect(snap.send_requests_2xx).toBe(1);
+    expect(snap.send_idempotent_replays_total).toBe(0);
   });
 
   test("202 with replay → 2xx + replay counter", () => {
     const m = makeMetrics();
-    recordInject(m, "alpha", { status: 202, replay: true, durationMs: 3 });
+    recordSend(m, "alpha", { status: 202, replay: true, durationMs: 3 });
     const snap = m.agentApiSnapshot().alpha.counters;
-    expect(snap.inject_requests_2xx).toBe(1);
-    expect(snap.inject_idempotent_replays_total).toBe(1);
+    expect(snap.send_requests_2xx).toBe(1);
+    expect(snap.send_idempotent_replays_total).toBe(1);
   });
 
   test("4xx / 5xx status paths don't increment replay counter", () => {
     const m = makeMetrics();
-    recordInject(m, "alpha", { status: 400, durationMs: 1 });
-    recordInject(m, "alpha", { status: 503, durationMs: 1 });
+    recordSend(m, "alpha", { status: 400, durationMs: 1 });
+    recordSend(m, "alpha", { status: 503, durationMs: 1 });
     const snap = m.agentApiSnapshot().alpha.counters;
-    expect(snap.inject_requests_4xx).toBe(1);
-    expect(snap.inject_requests_5xx).toBe(1);
-    expect(snap.inject_idempotent_replays_total).toBe(0);
+    expect(snap.send_requests_4xx).toBe(1);
+    expect(snap.send_requests_5xx).toBe(1);
+    expect(snap.send_idempotent_replays_total).toBe(0);
   });
 
-  test("duration observed on inject histogram (not ask)", () => {
+  test("duration observed on send histogram (not ask)", () => {
     const m = makeMetrics();
-    recordInject(m, "alpha", { status: 202, replay: false, durationMs: 77 });
+    recordSend(m, "alpha", { status: 202, replay: false, durationMs: 77 });
     const body = m.renderPrometheus({ alpha: 2 });
     expect(body).toContain(
-      'torana_agent_api_request_duration_ms_count{bot_id="alpha",route="inject"} 1',
+      'torana_agent_api_request_duration_ms_count{bot_id="alpha",route="send"} 1',
     );
     expect(body).not.toContain(
       'torana_agent_api_request_duration_ms_count{bot_id="alpha",route="ask"} 1',
@@ -168,7 +168,7 @@ describe("recordEviction + setSideSessionsLive", () => {
 
   test("every façade function no-ops when metrics is undefined", () => {
     recordAsk(undefined, "alpha", { status: 200, durationMs: 1 });
-    recordInject(undefined, "alpha", { status: 202, replay: false, durationMs: 1 });
+    recordSend(undefined, "alpha", { status: 202, replay: false, durationMs: 1 });
     recordAcquire(undefined, "alpha", "spawn", 1);
     recordEviction(undefined, "alpha", "idle");
     recordOrphanResolution(undefined, "alpha", "done");

@@ -127,9 +127,9 @@ function defaultMessage(code: AgentApiErrorCode): string {
     case "invalid_timeout":
       return "timeout_ms is outside the allowed range (1000–300000)";
     case "missing_target":
-      return "inject requires either user_id or chat_id";
+      return "send requires either user_id or chat_id";
     case "missing_idempotency_key":
-      return "inject requires the Idempotency-Key header";
+      return "send requires the Idempotency-Key header";
     case "invalid_idempotency_key":
       return "Idempotency-Key must be 16–128 chars of [A-Za-z0-9_-]";
     case "user_not_opened_bot":

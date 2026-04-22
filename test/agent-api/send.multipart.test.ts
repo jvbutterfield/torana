@@ -1,4 +1,4 @@
-// Multipart + file-lifecycle integration tests for POST /v1/bots/:id/inject.
+// Multipart + file-lifecycle integration tests for POST /v1/bots/:id/send.
 // Targets the ordering discipline in tasks/impl-agent-api.md §7.1:
 //
 //   * files are written BEFORE the DB transaction
@@ -6,8 +6,8 @@
 //   * on idempotent replay, the new request's files are deleted (the prior
 //     turn owns its own first-call files)
 //
-// Uses a stub registry / pool / orphans — same as test/agent-api/inject.test.ts —
-// because inject only enqueues a turn; dispatch happens through the main
+// Uses a stub registry / pool / orphans — same as test/agent-api/send.test.ts —
+// because send only enqueues a turn; dispatch happens through the main
 // runner path (not exercised here).
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -93,7 +93,7 @@ function setup(
   tokens: ResolvedAgentApiToken[],
   configMutator: (c: Config) => void = () => {},
 ): SetupResult {
-  tmpDir = mkdtempSync(join(tmpdir(), "torana-inject-multipart-"));
+  tmpDir = mkdtempSync(join(tmpdir(), "torana-send-multipart-"));
   applyMigrations(join(tmpDir, "gateway.db"));
   db = new GatewayDB(join(tmpDir, "gateway.db"));
 
@@ -120,7 +120,7 @@ function setup(
     db,
     registry: registry as never,
     tokens,
-    log: logger("inject-multipart-test"),
+    log: logger("send-multipart-test"),
     pool: stubPool() as never,
     orphans: stubOrphans() as never,
   });
@@ -129,7 +129,7 @@ function setup(
 
 function tokenWith(
   secret: string,
-  scopes: ("ask" | "inject")[],
+  scopes: ("ask" | "send")[],
 ): ResolvedAgentApiToken {
   return {
     name: "caller",
@@ -177,13 +177,13 @@ beforeEach(() => {
   /* per-test setup */
 });
 
-describe("inject multipart — happy path", () => {
+describe("send multipart — happy path", () => {
   test("PDF + text → turn queued, attachment on disk, path recorded", async () => {
     const secret = "tok-multipart-happy-123";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -217,13 +217,13 @@ describe("inject multipart — happy path", () => {
   });
 });
 
-describe("inject multipart — rejection paths leave no files on disk", () => {
+describe("send multipart — rejection paths leave no files on disk", () => {
   test("disallowed MIME → 415 and zero agentapi files", async () => {
     const secret = "tok-multipart-badmime-1";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -250,9 +250,9 @@ describe("inject multipart — rejection paths leave no files on disk", () => {
 
   test("missing target field (no user_id/chat_id) → 400 and files cleaned up", async () => {
     const secret = "tok-multipart-notarget-";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -278,11 +278,11 @@ describe("inject multipart — rejection paths leave no files on disk", () => {
 
   test("ACL bypass (user removed) → 403 and files cleaned up", async () => {
     const secret = "tok-multipart-acl-1234";
-    const { base, config } = setup([tokenWith(secret, ["inject"])]);
+    const { base, config } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
     config.access_control.allowed_user_ids = []; // admin removed the user
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -308,14 +308,14 @@ describe("inject multipart — rejection paths leave no files on disk", () => {
   });
 });
 
-describe("inject multipart — idempotent replay file rollback", () => {
+describe("send multipart — idempotent replay file rollback", () => {
   test("replay path does NOT leave a second copy on disk", async () => {
     const secret = "tok-multipart-replay-12";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
     // First call writes a file and a turn.
-    const r1 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r1 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Idempotency-Key": KEY_A },
       body: multipartBody([
@@ -334,7 +334,7 @@ describe("inject multipart — idempotent replay file rollback", () => {
     expect(afterFirst).toHaveLength(1);
 
     // Second call with the SAME key but different content — should replay.
-    const r2 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r2 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Idempotency-Key": KEY_A },
       body: multipartBody([
@@ -362,15 +362,15 @@ describe("inject multipart — idempotent replay file rollback", () => {
   });
 });
 
-describe("inject multipart — aggregate + count caps", () => {
+describe("send multipart — aggregate + count caps", () => {
   test("over max_files_per_request → 413 and no writes", async () => {
     const secret = "tok-multipart-toomany-1";
-    const { base } = setup([tokenWith(secret, ["inject"])], (c) => {
+    const { base } = setup([tokenWith(secret, ["send"])], (c) => {
       c.agent_api.ask.max_files_per_request = 1;
     });
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Idempotency-Key": KEY_A },
       body: multipartBody([
@@ -388,14 +388,14 @@ describe("inject multipart — aggregate + count caps", () => {
   });
 });
 
-describe("inject — idempotency key is NOT consumed by pre-commit errors", () => {
+describe("send — idempotency key is NOT consumed by pre-commit errors", () => {
   test("bad MIME with same key → subsequent clean call succeeds and gets a fresh turn", async () => {
     const secret = "tok-multipart-keysafe-1";
-    const { base } = setup([tokenWith(secret, ["inject"])]);
+    const { base } = setup([tokenWith(secret, ["send"])]);
     db.upsertUserChat("bot1", String(USER_ID), 555);
 
     // First call: bad MIME → 415, key NOT consumed.
-    const r1 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r1 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Idempotency-Key": KEY_B },
       body: multipartBody([
@@ -414,7 +414,7 @@ describe("inject — idempotency key is NOT consumed by pre-commit errors", () =
     expect(r1.status).toBe(415);
 
     // Second call: same key, valid body → new turn created.
-    const r2 = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r2 = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}`, "Idempotency-Key": KEY_B },
       body: multipartBody([

@@ -7,7 +7,7 @@ import type { Logger } from "../log.js";
 import type { ResolvedAgentApiToken } from "../config/load.js";
 import type { Metrics } from "../metrics.js";
 
-export type Scope = "ask" | "inject";
+export type Scope = "ask" | "send";
 
 export interface AuthSuccess {
   token: ResolvedAgentApiToken;

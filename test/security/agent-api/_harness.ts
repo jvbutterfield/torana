@@ -129,7 +129,7 @@ function fakeRegistry(
     },
     botIds,
     dispatchFor: () => {
-      // No-op — the inject handler fires this after insert. Real
+      // No-op — the send handler fires this after insert. Real
       // registry wakes the dispatch loop; the security tests only
       // care about whether the handler reached (or did not reach)
       // this line.
@@ -140,7 +140,7 @@ function fakeRegistry(
 export function startHarness(opts: HarnessOptions = {}): Harness {
   const botIds = opts.botIds ?? ["bot1"];
   const tokens = opts.tokens ?? [
-    mkToken("cos", "sekret-cos-value-123456", { bot_ids: botIds, scopes: ["ask", "inject"] }),
+    mkToken("cos", "sekret-cos-value-123456", { bot_ids: botIds, scopes: ["ask", "send"] }),
   ];
 
   const tmpDir = mkdtempSync(join(tmpdir(), "torana-sec-"));

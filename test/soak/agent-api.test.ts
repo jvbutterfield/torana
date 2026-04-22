@@ -1,7 +1,7 @@
 // §12.7 soak test — gated by AGENT_API_SOAK=1.
 //
 // Runs a real gateway with the agent-api enabled + FakeTelegram + a
-// mock claude binary. Drives load (ask + inject) at a fixed cadence
+// mock claude binary. Drives load (ask + send) at a fixed cadence
 // for `duration_ms`, sampling process RSS, open file descriptors, the
 // pool's live-session count, and the idempotency table row count on
 // `sample_interval_ms`. Writes every sample to artifacts/samples.jsonl.
@@ -13,18 +13,18 @@
 //      the first hour (no runaway memory).
 //   2. Peak FD count ≤ 2× initial (no leaks on side-session stop).
 //   3. side_sessions_live gauge never exceeds max_global.
-//   4. Idempotency table count tracks inject_rate × retention and
+//   4. Idempotency table count tracks send_rate × retention and
 //      drops once retention has elapsed.
 //   5. Zero unhandled promise rejections.
 //   6. Zero orphan side_sessions rows at shutdown.
-//   7. ≥99% ask success (200 or 202→done) and ≥99% inject success (202).
+//   7. ≥99% ask success (200 or 202→done) and ≥99% send success (202).
 //
 // Parameters (via env):
 //   AGENT_API_SOAK=1                              — gate; required.
 //   AGENT_API_SOAK_DURATION_MS                    — default 24h.
 //   AGENT_API_SOAK_SAMPLE_INTERVAL_MS             — default 60_000.
 //   AGENT_API_SOAK_WORKLOAD_INTERVAL_MS           — default 60_000
-//                                                   (1 ask/min + 1 inject/min).
+//                                                   (1 ask/min + 1 send/min).
 //   AGENT_API_SOAK_IDEMPOTENCY_RETENTION_MS       — default 86_400_000.
 //   AGENT_API_SOAK_ARTIFACT_DIR                   — default a temp dir
 //                                                   under $TMPDIR. The path is
@@ -151,7 +151,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
         createHash("sha256").update(bearerSecret, "utf8").digest(),
       ),
       bot_ids: [cfg.botId],
-      scopes: ["ask", "inject"],
+      scopes: ["ask", "send"],
     },
   ];
 
@@ -209,7 +209,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
           name: "soak",
           secret_ref: `\${INLINE:${bearerSecret}}`,
           bot_ids: [cfg.botId],
-          scopes: ["ask", "inject"],
+          scopes: ["ask", "send"],
         },
       ],
       side_sessions: {
@@ -218,7 +218,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
         max_per_bot: cfg.maxPerBot,
         max_global: cfg.maxGlobal,
       },
-      inject: { idempotency_retention_ms: cfg.idempotencyRetentionMs },
+      send: { idempotency_retention_ms: cfg.idempotencyRetentionMs },
       ask: {
         default_timeout_ms: 30_000,
         max_timeout_ms: 300_000,
@@ -322,9 +322,9 @@ interface WorkloadStats {
   askSuccess: number; // 200 or (202 that eventually returns done)
   askHttpFailures: number;
   askPollFailures: number;
-  injectAttempts: number;
-  injectSuccess: number; // 202 (including replay)
-  injectHttpFailures: number;
+  sendAttempts: number;
+  sendSuccess: number; // 202 (including replay)
+  sendHttpFailures: number;
 }
 
 function newStats(): WorkloadStats {
@@ -333,9 +333,9 @@ function newStats(): WorkloadStats {
     askSuccess: 0,
     askHttpFailures: 0,
     askPollFailures: 0,
-    injectAttempts: 0,
-    injectSuccess: 0,
-    injectHttpFailures: 0,
+    sendAttempts: 0,
+    sendSuccess: 0,
+    sendHttpFailures: 0,
   };
 }
 
@@ -414,18 +414,18 @@ async function pollUntilDone(
   return false;
 }
 
-async function fireInject(
+async function fireSend(
   h: Harness,
   stats: WorkloadStats,
 ): Promise<void> {
-  stats.injectAttempts += 1;
+  stats.sendAttempts += 1;
   const body = {
-    text: "soak inject " + stats.injectAttempts,
+    text: "soak send " + stats.sendAttempts,
     source: "soak",
     user_id: String(h.config.allowedUserId),
   };
   try {
-    const r = await fetch(`${h.base}/v1/bots/${h.config.botId}/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/${h.config.botId}/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${h.bearer}`,
@@ -435,10 +435,10 @@ async function fireInject(
       body: JSON.stringify(body),
     });
     await r.text();
-    if (r.status === 202) stats.injectSuccess += 1;
-    else stats.injectHttpFailures += 1;
+    if (r.status === 202) stats.sendSuccess += 1;
+    else stats.sendHttpFailures += 1;
   } catch {
-    stats.injectHttpFailures += 1;
+    stats.sendHttpFailures += 1;
   }
 }
 
@@ -465,7 +465,7 @@ interface Report {
   orphanSideSessions: number;
   stats: WorkloadStats;
   askSuccessRate: number;
-  injectSuccessRate: number;
+  sendSuccessRate: number;
   pass: boolean;
   failures: string[];
 }
@@ -557,18 +557,18 @@ function aggregate(
     stats.askAttempts === 0
       ? 1
       : stats.askSuccess / stats.askAttempts;
-  const injectSuccessRate =
-    stats.injectAttempts === 0
+  const sendSuccessRate =
+    stats.sendAttempts === 0
       ? 1
-      : stats.injectSuccess / stats.injectAttempts;
+      : stats.sendSuccess / stats.sendAttempts;
   if (askSuccessRate < 0.99) {
     failures.push(
       `ask success rate ${(askSuccessRate * 100).toFixed(2)}% < 99% (attempts=${stats.askAttempts} success=${stats.askSuccess})`,
     );
   }
-  if (injectSuccessRate < 0.99) {
+  if (sendSuccessRate < 0.99) {
     failures.push(
-      `inject success rate ${(injectSuccessRate * 100).toFixed(2)}% < 99% (attempts=${stats.injectAttempts} success=${stats.injectSuccess})`,
+      `send success rate ${(sendSuccessRate * 100).toFixed(2)}% < 99% (attempts=${stats.sendAttempts} success=${stats.sendSuccess})`,
     );
   }
 
@@ -580,7 +580,7 @@ function aggregate(
     unhandled === 0 &&
     orphanRows === 0 &&
     askSuccessRate >= 0.99 &&
-    injectSuccessRate >= 0.99;
+    sendSuccessRate >= 0.99;
 
   return {
     config: { ...cfg, pid: process.pid },
@@ -605,7 +605,7 @@ function aggregate(
     orphanSideSessions: orphanRows,
     stats,
     askSuccessRate,
-    injectSuccessRate,
+    sendSuccessRate,
     pass,
     failures,
   };
@@ -651,7 +651,7 @@ async function runSoak(): Promise<Report> {
         ? (stickySessionIds[workloadIteration % stickySessionIds.length] ?? null)
         : null;
     void fireAsk(h, sticky, stats);
-    void fireInject(h, stats);
+    void fireSend(h, stats);
   }, cfg.workloadIntervalMs);
 
   const sampleTimer = setInterval(() => {
@@ -715,7 +715,7 @@ async function runSoak(): Promise<Report> {
 
   // eslint-disable-next-line no-console
   console.log(
-    `[soak] ${report.pass ? "PASS" : "FAIL"} — samples=${report.samples} ask=${stats.askSuccess}/${stats.askAttempts} inject=${stats.injectSuccess}/${stats.injectAttempts}`,
+    `[soak] ${report.pass ? "PASS" : "FAIL"} — samples=${report.samples} ask=${stats.askSuccess}/${stats.askAttempts} send=${stats.sendSuccess}/${stats.sendAttempts}`,
   );
   if (!report.pass) {
     // eslint-disable-next-line no-console

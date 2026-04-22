@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { Metrics } from "../../../src/metrics.js";
 import {
   recordAsk,
-  recordInject,
+  recordSend,
   recordOrphanResolution,
   setSideSessionsLive,
 } from "../../../src/agent-api/metrics.js";
@@ -29,8 +29,8 @@ describe("§12.5.6 disclosure.metrics-labels", () => {
     // Exercise every recorder to populate stats.
     recordAsk(m, "bot1", { status: 200, durationMs: 123 });
     recordAsk(m, "bot1", { status: 500, durationMs: 50 });
-    recordInject(m, "bot1", { status: 202, replay: false, durationMs: 40 });
-    recordInject(m, "bot1", { status: 202, replay: true, durationMs: 12 });
+    recordSend(m, "bot1", { status: 202, replay: false, durationMs: 40 });
+    recordSend(m, "bot1", { status: 202, replay: true, durationMs: 12 });
     recordOrphanResolution(m, "bot1", "done");
     recordOrphanResolution(m, "bot1", "backstop");
     setSideSessionsLive(m, "bot1", 3);
@@ -50,7 +50,7 @@ describe("§12.5.6 disclosure.metrics-labels", () => {
       expect(text).not.toMatch(/token\s*=\s*"/);
       expect(text).not.toMatch(/secret\s*=\s*"/);
       // No marker content / prompt text leaks.
-      expect(text).not.toContain("[system-injected");
+      expect(text).not.toContain("[system-message");
     }
   });
 

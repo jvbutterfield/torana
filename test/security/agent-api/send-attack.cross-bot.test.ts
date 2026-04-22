@@ -1,4 +1,4 @@
-// §12.5.5: a token scoped to bot A tries to inject on bot B → 403
+// §12.5.5: a token scoped to bot A tries to send on bot B → 403
 // bot_not_permitted. Duplicates some coverage in authz.wrong-bot but
 // specifically frames it as an attacker actively trying to escalate
 // cross-bot, which is a common threat model in multi-tenant setups.
@@ -13,18 +13,18 @@ afterEach(async () => {
   if (h) await h.close();
 });
 
-describe("§12.5.5 inject-attack.cross-bot", () => {
-  const secretForA = "tok-a-inject-secret-value-abcd";
+describe("§12.5.5 send-attack.cross-bot", () => {
+  const secretForA = "tok-a-send-secret-value-abcd";
   const tokenForA = mkToken("opA", secretForA, {
     bot_ids: ["botA"],
-    scopes: ["inject"],
+    scopes: ["send"],
   });
 
-  test("token-for-A tries to inject on botB → 403 bot_not_permitted", async () => {
+  test("token-for-A tries to send on botB → 403 bot_not_permitted", async () => {
     h = startHarness({ botIds: ["botA", "botB"], tokens: [tokenForA] });
     h.db.upsertUserChat("botB", "111", 999);
 
-    const r = await fetch(`${h.base}/v1/bots/botB/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/botB/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secretForA}`,
@@ -44,7 +44,7 @@ describe("§12.5.5 inject-attack.cross-bot", () => {
     // probe by timing body-parse latency against bodies of different
     // sizes. We assert the authz gate fires up-front: a deliberately
     // malformed body still returns bot_not_permitted, not invalid_body.
-    const r = await fetch(`${h.base}/v1/bots/botB/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/botB/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secretForA}`,
@@ -63,7 +63,7 @@ describe("§12.5.5 inject-attack.cross-bot", () => {
     // would be an info leak (confirming bot names you shouldn't know
     // about).
     h = startHarness({ botIds: ["botA"], tokens: [tokenForA] });
-    const r = await fetch(`${h.base}/v1/bots/phantom/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/phantom/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secretForA}`,

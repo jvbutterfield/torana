@@ -181,7 +181,7 @@ agent_api:
     expect(c011?.status).toBe("ok");
   });
 
-  test("ok: inject-only scope on command runner is fine", async () => {
+  test("ok: send-only scope on command runner is fine", async () => {
     const cfg = writeConfig(baseYaml(`
 agent_api:
   enabled: true
@@ -189,7 +189,7 @@ agent_api:
     - name: caller
       secret_ref: "super-secret-token-value-abcdefghij"
       bot_ids: ["alpha"]
-      scopes: ["inject"]
+      scopes: ["send"]
 `));
     const r = await doctor(cfg);
     const c011 = r.checks.find((c) => c.id === "C011");
@@ -236,7 +236,7 @@ agent_api:
     - name: caller
       secret_ref: "super-secret-token-value-abcdefghij"
       bot_ids: ["alpha"]
-      scopes: ["inject"]
+      scopes: ["send"]
   side_sessions:
     idle_ttl_ms: 3600000
     hard_ttl_ms: 86400000
@@ -258,7 +258,7 @@ agent_api:
     - name: caller
       secret_ref: "super-secret-token-value-abcdefghij"
       bot_ids: ["alpha"]
-      scopes: ["inject"]
+      scopes: ["send"]
 `));
     const r = await doctor(cfg);
     const c014 = r.checks.find((c) => c.id === "C014");

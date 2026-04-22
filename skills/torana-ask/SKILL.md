@@ -4,7 +4,7 @@ description: |
   Use when the user wants another torana-hosted agent to answer a question
   and report back (agent-to-agent Q&A). Trigger phrases: "ask the <bot> bot",
   "what does <bot> think about", "have <bot> check". Do NOT use for sending
-  information to the user — that's torana-inject.
+  information to the user — that's torana-send.
 allow_implicit_invocation: true
 ---
 
@@ -24,7 +24,7 @@ Call a torana-hosted agent synchronously and return its reply.
 ## When NOT to use
 
 - You want the receiving bot to **speak to the user** on their Telegram
-  chat. Use `torana-inject` instead — it routes through the user's normal
+  chat. Use `torana-send` instead — it routes through the user's normal
   chat and triggers notifications.
 - The bot is expected to take a long time (> 5 min). `ask` returns 202
   after `timeout_ms` (default 60 s, max 300 s) with a `turn_id` you can

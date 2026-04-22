@@ -7,7 +7,7 @@ import type { AgentApiDeps, AuthedHandler, Scope } from "./types.js";
 import type { SideSessionPool } from "./pool.js";
 import type { OrphanListenerManager } from "./orphan-listeners.js";
 import { handleAsk } from "./handlers/ask.js";
-import { handleInject } from "./handlers/inject.js";
+import { handleSend } from "./handlers/send.js";
 import { handleGetTurn } from "./handlers/turns.js";
 import {
   handleListSessions,
@@ -52,7 +52,7 @@ export function registerAgentApiRoutes(
   const unregs: Unregister[] = [];
 
   const askHandler = handleAsk(deps);
-  const injectHandler = handleInject(deps);
+  const sendHandler = handleSend(deps);
   const listSessions = handleListSessions(deps);
   const deleteSession = handleDeleteSession(deps);
 
@@ -67,8 +67,8 @@ export function registerAgentApiRoutes(
   unregs.push(
     router.route(
       "POST",
-      "/v1/bots/:bot_id/inject",
-      authed(deps, "inject", injectHandler),
+      "/v1/bots/:bot_id/send",
+      authed(deps, "send", sendHandler),
     ),
   );
 

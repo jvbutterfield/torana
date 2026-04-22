@@ -16,7 +16,7 @@ describe("§12.5.2 authz.wrong-bot", () => {
   const secret = "bot-a-secret-value-abcd1234";
   const tokenForA = mkToken("coA", secret, {
     bot_ids: ["botA"],
-    scopes: ["ask", "inject"],
+    scopes: ["ask", "send"],
   });
 
   test("POST /v1/bots/botB/ask with token-for-botA → 403 bot_not_permitted", async () => {
@@ -32,9 +32,9 @@ describe("§12.5.2 authz.wrong-bot", () => {
     expect(body.bot_id).toBe("botB");
   });
 
-  test("POST /v1/bots/botB/inject with token-for-botA → 403 bot_not_permitted", async () => {
+  test("POST /v1/bots/botB/send with token-for-botA → 403 bot_not_permitted", async () => {
     h = startHarness({ botIds: ["botA", "botB"], tokens: [tokenForA] });
-    const r = await fetch(`${h.base}/v1/bots/botB/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/botB/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
