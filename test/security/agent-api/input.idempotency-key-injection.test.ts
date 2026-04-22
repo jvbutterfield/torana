@@ -64,11 +64,11 @@ describe("§12.5.3 input.idempotency-key-injection (unit-level — fetch drops c
 
 describe("§12.5.3 input.idempotency-key-injection (HTTP-level)", () => {
   const secret = "idem-key-secret-value-abcd12345";
-  const token = mkToken("cos", secret, { scopes: ["inject"] });
+  const token = mkToken("cos", secret, { scopes: ["send"] });
 
-  test("POST /v1/bots/:id/inject with no Idempotency-Key → 400 missing_idempotency_key", async () => {
+  test("POST /v1/bots/:id/send with no Idempotency-Key → 400 missing_idempotency_key", async () => {
     h = startHarness({ tokens: [token] });
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -82,7 +82,7 @@ describe("§12.5.3 input.idempotency-key-injection (HTTP-level)", () => {
 
   test("POST with a too-short Idempotency-Key → 400 invalid_idempotency_key", async () => {
     h = startHarness({ tokens: [token] });
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -97,7 +97,7 @@ describe("§12.5.3 input.idempotency-key-injection (HTTP-level)", () => {
 
   test("POST with a too-long Idempotency-Key → 400 invalid_idempotency_key", async () => {
     h = startHarness({ tokens: [token] });
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -112,7 +112,7 @@ describe("§12.5.3 input.idempotency-key-injection (HTTP-level)", () => {
 
   test("POST with a key containing illegal but fetch-legal chars → 400 invalid_idempotency_key", async () => {
     h = startHarness({ tokens: [token] });
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,

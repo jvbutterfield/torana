@@ -1,8 +1,8 @@
-// §12.4: inject round-trip against REAL claude + a REAL Telegram
+// §12.4: send round-trip against REAL claude + a REAL Telegram
 // sandbox bot. Additionally gated by TELEGRAM_TEST_BOT_TOKEN +
 // TELEGRAM_TEST_CHAT_ID; without them the whole file is skipped.
 //
-// What this covers beyond the integration-level FakeTelegram inject
+// What this covers beyond the integration-level FakeTelegram send
 // test:
 //   1. The claude runner actually processes the marker-wrapped prompt
 //      and produces a response the streaming manager + outbox will
@@ -19,7 +19,7 @@
 //   TELEGRAM_TEST_BOT_TOKEN='123:abc' \
 //   TELEGRAM_TEST_CHAT_ID='111222333' \
 //   TELEGRAM_TEST_USER_ID='111222333' \
-//   bun test test/e2e/agent-api/inject-claude.test.ts
+//   bun test test/e2e/agent-api/send-claude.test.ts
 
 import { afterEach, describe, expect, test } from "bun:test";
 
@@ -60,10 +60,10 @@ function claudeBot(): BotConfig {
   };
 }
 
-describeOrSkip("§12.4 inject-claude — real claude + real Telegram sandbox", () => {
-  test("inject turn lands on the sandbox Telegram chat", async () => {
-    const secret = "e2e-inject-claude-secret-abcde1234";
-    const token = mkToken("e2e-inject", secret, { scopes: ["inject"] });
+describeOrSkip("§12.4 send-claude — real claude + real Telegram sandbox", () => {
+  test("send turn lands on the sandbox Telegram chat", async () => {
+    const secret = "e2e-send-claude-secret-abcde1234";
+    const token = mkToken("e2e-send", secret, { scopes: ["send"] });
 
     // Seed user_chats by inserting a row directly — we can't DM the
     // sandbox bot from within the test. ALLOWED_USER must match
@@ -89,13 +89,13 @@ describeOrSkip("§12.4 inject-claude — real claude + real Telegram sandbox", (
     // Seed user_chats so chat resolution by user_id succeeds.
     h.db.upsertUserChat("alpha", String(allowedUserId), allowedChatId);
 
-    const marker = `e2e-inject-${Date.now().toString(36)}`;
-    const r = await fetch(`${h.base}/v1/bots/alpha/inject`, {
+    const marker = `e2e-send-${Date.now().toString(36)}`;
+    const r = await fetch(`${h.base}/v1/bots/alpha/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
         "Content-Type": "application/json",
-        "Idempotency-Key": `e2e-inject-key-${Date.now().toString(36)}-abcd1234`,
+        "Idempotency-Key": `e2e-send-key-${Date.now().toString(36)}-abcd1234`,
       },
       body: JSON.stringify({
         text: `Reply with ONLY the exact token ${marker}`,

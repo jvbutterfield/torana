@@ -6,7 +6,7 @@
 //      whether the id exists.
 //   3. Lookup turn. If missing / telegram-origin / another caller's turn,
 //      return the same 404 turn_not_found.
-//   4. Authorize: ask-turn needs scope "ask"; inject-turn needs "inject".
+//   4. Authorize: ask-turn needs scope "ask"; send-turn needs "send".
 //   5. Body by status.
 
 import type { AgentApiDeps } from "../types.js";
@@ -35,8 +35,8 @@ export function handleGetTurn(deps: AgentApiDeps): RouteHandler {
       return errorResponse("turn_not_found");
     }
 
-    const needed: "ask" | "inject" =
-      turn.source === "agent_api_ask" ? "ask" : "inject";
+    const needed: "ask" | "send" =
+      turn.source === "agent_api_ask" ? "ask" : "send";
     const authz = authorize(a.token, turn.bot_id, needed);
     if (authz) return mapAuthFailure(authz);
 

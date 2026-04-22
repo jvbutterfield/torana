@@ -1,4 +1,4 @@
-// Resolve an inject call's target to a concrete chat_id.
+// Resolve a send call's target to a concrete chat_id.
 //
 // Callers may pass `user_id` (lookup the most-recent authorized chat via
 // the `user_chats` table populated by processUpdate) or `chat_id` directly

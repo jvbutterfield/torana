@@ -157,7 +157,7 @@ export interface ResolvedAgentApiToken {
   /** SHA-256 of the UTF-8 bytes of `secret`. 32 bytes. */
   hash: Uint8Array;
   bot_ids: readonly string[];
-  scopes: readonly ("ask" | "inject")[];
+  scopes: readonly ("ask" | "send")[];
 }
 
 export interface LoadedConfig {

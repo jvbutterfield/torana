@@ -9,7 +9,7 @@ import { existsSync, readFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 
-const SKILLS = ["torana-ask", "torana-inject"] as const;
+const SKILLS = ["torana-ask", "torana-send"] as const;
 
 export interface ParityResult {
   ok: boolean;

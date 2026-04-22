@@ -2,7 +2,7 @@
 // requires a different scope → 403 scope_not_permitted. Scopes are
 // per-route:
 //   - POST /v1/bots/:id/ask    requires "ask"
-//   - POST /v1/bots/:id/inject requires "inject"
+//   - POST /v1/bots/:id/send requires "send"
 //   - GET  /v1/bots/:id/sessions           requires "ask"
 //   - DELETE /v1/bots/:id/sessions/:sid    requires "ask"
 
@@ -18,21 +18,21 @@ afterEach(async () => {
 
 describe("§12.5.2 authz.wrong-scope", () => {
   const askSecret = "ask-only-secret-value-abcd1234";
-  const injectSecret = "inject-only-secret-value-wxyz789";
+  const sendSecret = "send-only-secret-value-wxyz789";
   const askOnly = mkToken("askOnly", askSecret, {
     bot_ids: ["bot1"],
     scopes: ["ask"],
   });
-  const injectOnly = mkToken("injectOnly", injectSecret, {
+  const sendOnly = mkToken("sendOnly", sendSecret, {
     bot_ids: ["bot1"],
-    scopes: ["inject"],
+    scopes: ["send"],
   });
 
-  test("inject-only token → POST /v1/bots/:id/ask → 403 scope_not_permitted", async () => {
-    h = startHarness({ tokens: [injectOnly] });
+  test("send-only token → POST /v1/bots/:id/ask → 403 scope_not_permitted", async () => {
+    h = startHarness({ tokens: [sendOnly] });
     const r = await fetch(`${h.base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${injectSecret}` },
+      headers: { Authorization: `Bearer ${sendSecret}` },
       body: JSON.stringify({ text: "hi" }),
     });
     expect(r.status).toBe(403);
@@ -41,9 +41,9 @@ describe("§12.5.2 authz.wrong-scope", () => {
     expect(body.scope).toBe("ask");
   });
 
-  test("ask-only token → POST /v1/bots/:id/inject → 403 scope_not_permitted", async () => {
+  test("ask-only token → POST /v1/bots/:id/send → 403 scope_not_permitted", async () => {
     h = startHarness({ tokens: [askOnly] });
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${askSecret}`,
@@ -55,20 +55,20 @@ describe("§12.5.2 authz.wrong-scope", () => {
     expect((await r.json()).error).toBe("scope_not_permitted");
   });
 
-  test("inject-only token → GET /v1/bots/:id/sessions → 403 (needs 'ask')", async () => {
-    h = startHarness({ tokens: [injectOnly] });
+  test("send-only token → GET /v1/bots/:id/sessions → 403 (needs 'ask')", async () => {
+    h = startHarness({ tokens: [sendOnly] });
     const r = await fetch(`${h.base}/v1/bots/bot1/sessions`, {
-      headers: { Authorization: `Bearer ${injectSecret}` },
+      headers: { Authorization: `Bearer ${sendSecret}` },
     });
     expect(r.status).toBe(403);
     expect((await r.json()).error).toBe("scope_not_permitted");
   });
 
-  test("inject-only token → DELETE /v1/bots/:id/sessions/:sid → 403 (needs 'ask')", async () => {
-    h = startHarness({ tokens: [injectOnly] });
+  test("send-only token → DELETE /v1/bots/:id/sessions/:sid → 403 (needs 'ask')", async () => {
+    h = startHarness({ tokens: [sendOnly] });
     const r = await fetch(`${h.base}/v1/bots/bot1/sessions/sess-xyz`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${injectSecret}` },
+      headers: { Authorization: `Bearer ${sendSecret}` },
     });
     expect(r.status).toBe(403);
     expect((await r.json()).error).toBe("scope_not_permitted");

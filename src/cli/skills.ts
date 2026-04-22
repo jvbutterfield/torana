@@ -17,7 +17,7 @@ import {
 
 const SKILLS_HELP = `Usage: torana skills <subcommand>
 
-Install the torana-ask / torana-inject skill packages into Claude Code or
+Install the torana-ask / torana-send skill packages into Claude Code or
 Codex skill directories.
 
 Subcommands:

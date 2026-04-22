@@ -287,7 +287,7 @@ export const BotSchema = z
 
 // ---------- agent API ----------
 
-export const AgentApiScopeSchema = z.enum(["ask", "inject"]);
+export const AgentApiScopeSchema = z.enum(["ask", "send"]);
 export type AgentApiScope = z.infer<typeof AgentApiScopeSchema>;
 
 export const AgentApiTokenSchema = z
@@ -316,7 +316,7 @@ export const AgentApiSideSessionsSchema = z
     max_global: 64,
   });
 
-export const AgentApiInjectSchema = z
+export const AgentApiSendSchema = z
   .object({
     idempotency_retention_ms: IntCoerce.min(60_000).default(86_400_000),
   })
@@ -343,7 +343,7 @@ export const AgentApiSchema = z
     enabled: BoolPermissive.default(false),
     tokens: z.array(AgentApiTokenSchema).default([]),
     side_sessions: AgentApiSideSessionsSchema,
-    inject: AgentApiInjectSchema,
+    send: AgentApiSendSchema,
     ask: AgentApiAskSchema,
   })
   .strict()
@@ -356,7 +356,7 @@ export const AgentApiSchema = z
       max_per_bot: 8,
       max_global: 64,
     },
-    inject: { idempotency_retention_ms: 86_400_000 },
+    send: { idempotency_retention_ms: 86_400_000 },
     ask: {
       default_timeout_ms: 60_000,
       max_timeout_ms: 300_000,

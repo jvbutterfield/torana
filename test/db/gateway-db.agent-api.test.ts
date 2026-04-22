@@ -1,6 +1,6 @@
 // Agent API additions to GatewayDB: user_chats, idempotency, side_sessions,
-// synthetic-inbound allocator, insertAskTurn/insertInjectTurn, getTurnExtended,
-// and the extended getTurnText branch for inject payloads.
+// synthetic-inbound allocator, insertAskTurn/insertSendTurn, getTurnExtended,
+// and the extended getTurnText branch for send payloads.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -143,13 +143,13 @@ describe("gateway-db: insertAskTurn", () => {
   });
 });
 
-describe("gateway-db: insertInjectTurn + idempotency", () => {
+describe("gateway-db: insertSendTurn + idempotency", () => {
   test("creates queued turn with marker prompt on inbound payload", () => {
-    const out = db.insertInjectTurn({
+    const out = db.insertSendTurn({
       botId: "bot1",
       tokenName: "cal",
       chatId: 555,
-      markerWrappedText: '[system-injected from "cron"]\n\nhello',
+      markerWrappedText: '[system-message from "cron"]\n\nhello',
       idempotencyKey: "abcdefghijklmnop",
       sourceLabel: "cron",
       attachmentPaths: [],
@@ -158,17 +158,17 @@ describe("gateway-db: insertInjectTurn + idempotency", () => {
 
     const turn = db.getTurnExtended(out.turnId)!;
     expect(turn.status).toBe("queued");
-    expect(turn.source).toBe("agent_api_inject");
+    expect(turn.source).toBe("agent_api_send");
     expect(turn.chat_id).toBe(555);
     expect(turn.idempotency_key).toBe("abcdefghijklmnop");
     expect(turn.agent_api_source_label).toBe("cron");
 
     // Prompt is recovered via extended getTurnText.
-    expect(db.getTurnText(out.turnId)).toBe('[system-injected from "cron"]\n\nhello');
+    expect(db.getTurnText(out.turnId)).toBe('[system-message from "cron"]\n\nhello');
   });
 
   test("duplicate idempotency key returns replay with same turn id", () => {
-    const first = db.insertInjectTurn({
+    const first = db.insertSendTurn({
       botId: "bot1",
       tokenName: "cal",
       chatId: 555,
@@ -177,7 +177,7 @@ describe("gateway-db: insertInjectTurn + idempotency", () => {
       sourceLabel: "cron",
       attachmentPaths: [],
     });
-    const second = db.insertInjectTurn({
+    const second = db.insertSendTurn({
       botId: "bot1",
       tokenName: "cal",
       chatId: 555,
@@ -211,7 +211,7 @@ describe("gateway-db: setTurnFinalText + sweepIdempotency", () => {
   });
 
   test("sweepIdempotency deletes rows below threshold", async () => {
-    const out = db.insertInjectTurn({
+    const out = db.insertSendTurn({
       botId: "bot1",
       tokenName: "cal",
       chatId: 1,

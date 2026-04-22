@@ -51,7 +51,7 @@ function hash(s: string): Uint8Array {
 
 function tokenFor(
   secret: string,
-  scopes: ("ask" | "inject")[],
+  scopes: ("ask" | "send")[],
 ): ResolvedAgentApiToken {
   return {
     name: "caller",

@@ -1,7 +1,7 @@
-// Ask + inject handler → Metrics wiring. Drives the real HTTP path end-to-end
+// Ask + send handler → Metrics wiring. Drives the real HTTP path end-to-end
 // with a Metrics instance passed through deps and asserts the request counter
 // families get incremented with the right status bucket, including the
-// replay-specific counter for inject.
+// replay-specific counter for send.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
@@ -29,7 +29,7 @@ function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "inject")[]): ResolvedAgentApiToken {
+function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -48,7 +48,7 @@ let orphans: OrphanListenerManager | null = null;
 let metrics: Metrics | null = null;
 
 interface SetupOpts {
-  scopes?: ("ask" | "inject")[];
+  scopes?: ("ask" | "send")[];
   /** claude-mock mode: normal | slow-echo | very-slow | error-turn | crash-on-turn */
   mockMode?: string;
   /** Override max_per_bot (default 8). Used for capacity tests. */
@@ -60,7 +60,7 @@ interface SetupOpts {
 }
 
 async function setup(opts: SetupOpts = {}): Promise<{ base: string; secret: string }> {
-  const scopes = opts.scopes ?? (["ask", "inject"] as ("ask" | "inject")[]);
+  const scopes = opts.scopes ?? (["ask", "send"] as ("ask" | "send")[]);
   tmpDir = mkdtempSync(join(tmpdir(), "torana-handlers-metrics-"));
   const dbPath = join(tmpDir, "gateway.db");
   applyMigrations(dbPath);
@@ -114,7 +114,7 @@ async function setup(opts: SetupOpts = {}): Promise<{ base: string; secret: stri
       return ["bot1"];
     },
     dispatchFor(_id: string) {
-      /* inject handler wakes dispatch — no-op in this test */
+      /* send handler wakes dispatch — no-op in this test */
     },
   };
 
@@ -140,7 +140,7 @@ async function setup(opts: SetupOpts = {}): Promise<{ base: string; secret: stri
     orphans,
   });
 
-  // Seed user_chats so inject can resolve.
+  // Seed user_chats so send can resolve.
   db.upsertUserChat("bot1", String(111_222_333), 111_222_333);
 
   return { base: `http://127.0.0.1:${server.port}`, secret };
@@ -199,10 +199,10 @@ describe("ask handler → Metrics", () => {
   });
 });
 
-describe("inject handler → Metrics", () => {
-  test("fresh inject (202) → inject_requests_2xx (no replay)", async () => {
-    const { base, secret } = await setup({ scopes: ["inject"] });
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+describe("send handler → Metrics", () => {
+  test("fresh send (202) → send_requests_2xx (no replay)", async () => {
+    const { base, secret } = await setup({ scopes: ["send"] });
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -217,20 +217,20 @@ describe("inject handler → Metrics", () => {
     });
     expect(r.status).toBe(202);
     const snap = metrics!.agentApiSnapshot().bot1.counters;
-    expect(snap.inject_requests_total).toBe(1);
-    expect(snap.inject_requests_2xx).toBe(1);
-    expect(snap.inject_idempotent_replays_total).toBe(0);
+    expect(snap.send_requests_total).toBe(1);
+    expect(snap.send_requests_2xx).toBe(1);
+    expect(snap.send_idempotent_replays_total).toBe(0);
   });
 
-  test("replayed inject (same Idempotency-Key) → inject_idempotent_replays_total", async () => {
-    const { base, secret } = await setup({ scopes: ["inject"] });
+  test("replayed send (same Idempotency-Key) → send_idempotent_replays_total", async () => {
+    const { base, secret } = await setup({ scopes: ["send"] });
     const key = "dup-metrics-0000001a";
     const body = JSON.stringify({
       source: "test",
       text: "hello",
       user_id: "111222333",
     });
-    const first = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const first = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -240,7 +240,7 @@ describe("inject handler → Metrics", () => {
       body,
     });
     expect(first.status).toBe(202);
-    const second = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const second = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -252,14 +252,14 @@ describe("inject handler → Metrics", () => {
     expect(second.status).toBe(202);
 
     const snap = metrics!.agentApiSnapshot().bot1.counters;
-    expect(snap.inject_requests_total).toBe(2);
-    expect(snap.inject_requests_2xx).toBe(2);
-    expect(snap.inject_idempotent_replays_total).toBe(1);
+    expect(snap.send_requests_total).toBe(2);
+    expect(snap.send_requests_2xx).toBe(2);
+    expect(snap.send_idempotent_replays_total).toBe(1);
   });
 
-  test("missing_target (400) → inject_requests_4xx, no replay bump", async () => {
-    const { base, secret } = await setup({ scopes: ["inject"] });
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+  test("missing_target (400) → send_requests_4xx, no replay bump", async () => {
+    const { base, secret } = await setup({ scopes: ["send"] });
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -270,13 +270,13 @@ describe("inject handler → Metrics", () => {
     });
     expect(r.status).toBe(400);
     const snap = metrics!.agentApiSnapshot().bot1.counters;
-    expect(snap.inject_requests_4xx).toBe(1);
-    expect(snap.inject_idempotent_replays_total).toBe(0);
+    expect(snap.send_requests_4xx).toBe(1);
+    expect(snap.send_idempotent_replays_total).toBe(0);
   });
 
-  test("403 scope_not_permitted → inject_requests_4xx", async () => {
-    const { base, secret } = await setup({ scopes: ["ask"] }); // inject not in scopes
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+  test("403 scope_not_permitted → send_requests_4xx", async () => {
+    const { base, secret } = await setup({ scopes: ["ask"] }); // send not in scopes
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -290,14 +290,14 @@ describe("inject handler → Metrics", () => {
       }),
     });
     expect(r.status).toBe(403);
-    // 4xx from the router runs BEFORE the handler so inject_requests_*
+    // 4xx from the router runs BEFORE the handler so send_requests_*
     // counters should stay zero — the authed() wrapper rejects before
-    // reaching recordInject.
+    // reaching recordSend.
     const snap = metrics!.agentApiSnapshot();
     // No counters were touched for bot1 — either the map is empty or both
     // buckets are 0. Both are acceptable.
     if (snap.bot1) {
-      expect(snap.bot1.counters.inject_requests_total).toBe(0);
+      expect(snap.bot1.counters.send_requests_total).toBe(0);
     }
   });
 });
@@ -424,15 +424,15 @@ describe("ask handler failure paths → Metrics", () => {
   }, 15_000);
 });
 
-// --- Failure-path metrics (inject) -----------------------------------------
+// --- Failure-path metrics (send) -----------------------------------------
 
-describe("inject handler failure paths → Metrics", () => {
+describe("send handler failure paths → Metrics", () => {
   test("in-txn replay (two concurrent inserts, same key) → replay counter", async () => {
     // Both requests arrive with the same Idempotency-Key before either has
     // committed a turn row. Only one wins the insert; the other takes the
-    // in-txn replay branch in insertInjectTurn. Both callers observe 202
+    // in-txn replay branch in insertSendTurn. Both callers observe 202
     // with the same turn_id; exactly one replay counter bump.
-    const { base, secret } = await setup({ scopes: ["inject"] });
+    const { base, secret } = await setup({ scopes: ["send"] });
     const key = "in-txn-metrics-race-0001";
     const body = JSON.stringify({
       source: "test",
@@ -441,7 +441,7 @@ describe("inject handler failure paths → Metrics", () => {
     });
 
     const both = await Promise.all([
-      fetch(`${base}/v1/bots/bot1/inject`, {
+      fetch(`${base}/v1/bots/bot1/send`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${secret}`,
@@ -450,7 +450,7 @@ describe("inject handler failure paths → Metrics", () => {
         },
         body,
       }),
-      fetch(`${base}/v1/bots/bot1/inject`, {
+      fetch(`${base}/v1/bots/bot1/send`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${secret}`,
@@ -465,10 +465,10 @@ describe("inject handler failure paths → Metrics", () => {
     expect(turnIds[0]).toBe(turnIds[1]);
 
     const snap = metrics!.agentApiSnapshot().bot1.counters;
-    expect(snap.inject_requests_total).toBe(2);
-    expect(snap.inject_requests_2xx).toBe(2);
+    expect(snap.send_requests_total).toBe(2);
+    expect(snap.send_requests_2xx).toBe(2);
     // EXACTLY one replay bump — the one that lost the race (pre-write
     // dedup OR in-txn replay; the handler counts both as `replay=true`).
-    expect(snap.inject_idempotent_replays_total).toBe(1);
+    expect(snap.send_idempotent_replays_total).toBe(1);
   }, 15_000);
 });

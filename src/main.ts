@@ -158,7 +158,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
         orphans: agentApiOrphans,
       }),
     );
-    const retention = config.agent_api.inject.idempotency_retention_ms;
+    const retention = config.agent_api.send.idempotency_retention_ms;
     agentApiIdempotencySweep = setInterval(() => {
       try {
         db.sweepIdempotency(Date.now() - retention);

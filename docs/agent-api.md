@@ -9,9 +9,9 @@ Two modes:
 - **`ask`** — synchronous request/response against a bot's runner in an
   isolated **side-session**. The caller gets `{text, turn_id, usage}` back, no
   Telegram involvement.
-- **`inject`** — post a system-injected message into an existing Telegram chat
-  so the runner responds as if the user had typed it. The injected text is
-  wrapped with a marker (`[system-injected from "<source>"]`) so the runner
+- **`send`** — post a system message into an existing Telegram chat
+  so the runner responds as if the user had typed it. The sent text is
+  wrapped with a marker (`[system-message from "<source>"]`) so the runner
   can distinguish machine-initiated turns from real ones.
 
 ---
@@ -25,13 +25,13 @@ agent_api:
     - name: ci-reviewer
       secret_ref: ${TORANA_CI_TOKEN}
       bot_ids: ["reviewer"]
-      scopes: ["ask", "inject"]
+      scopes: ["ask", "send"]
   side_sessions:
     idle_ttl_ms: 3_600_000    # 1h of no use → reaped
     hard_ttl_ms: 86_400_000   # 24h absolute lifetime
     max_per_bot: 8
     max_global: 64
-  inject:
+  send:
     idempotency_retention_ms: 86_400_000
   ask:
     default_timeout_ms: 60_000
@@ -56,7 +56,7 @@ there.
 │ another agent)   │────────── ▶                                 │
 │                  │  bearer   │  /v1/bots/:id/ask    → pool →  │
 └──────────────────┘           │                         ├──────▶│ claude
-                               │  /v1/bots/:id/inject → db → dispatch → │ codex
+                               │  /v1/bots/:id/send   → db → dispatch → │ codex
                                │                                 │ command
                                │  /v1/turns/:id       (poll)     │
                                │  /v1/bots, /v1/bots/:id/sessions│
@@ -93,7 +93,7 @@ redaction set so it never lands in logs. Authorization is a two-step check:
 
 1. `authenticate`: does the presented token match any configured token?
 2. `authorize`: does that token's `bot_ids` include this `:bot_id`, and does
-   its `scopes` include the required scope (`ask` or `inject`)?
+   its `scopes` include the required scope (`ask` or `send`)?
 
 Both return the same error shape. A turn that belongs to another caller
 returns `404 turn_not_found` — never `403` — so enumeration attacks can't
@@ -156,7 +156,7 @@ gateway keeps the side-session locked and wires an **orphan listener** that
 persists the eventual terminal event to the DB; the caller polls
 `GET /v1/turns/:turn_id` to retrieve the result.
 
-### `POST /v1/bots/:bot_id/inject`
+### `POST /v1/bots/:bot_id/send`
 
 Push a message into an existing Telegram chat as if the user had typed it.
 
@@ -172,7 +172,7 @@ base64url-encoded `randomBytes(12)` are both comfortably above the floor);
 the 128-char upper bound caps the size of the idempotency table row.
 Keys are scoped per `bot_id` — the same key used against a different bot
 inserts a fresh turn. Retention is controlled by
-`agent_api.inject.idempotency_retention_ms` (default 24h); rows older
+`agent_api.send.idempotency_retention_ms` (default 24h); rows older
 than that get swept hourly.
 
 ```json
@@ -184,8 +184,8 @@ than that get swept hourly.
 ```
 
 - `source` — 1–64 chars, lowercase + digits + `_-`. Appears verbatim in the
-  injected marker so the runner (and a reviewer inspecting logs) knows who
-  sent it.
+  system-message marker so the runner (and a reviewer inspecting logs) knows
+  who sent it.
 - `text` — 1–64 KiB.
 - `user_id` OR `chat_id` required. `user_id` is preferred; the gateway maps
   it to the last known `chat_id` from the `user_chats` table. `chat_id` must
@@ -206,7 +206,7 @@ grant access to *bots*, not to *users*.
 | `500` | `internal_error`. |
 
 **Idempotency.** Per `(bot_id, idempotency_key)` pair, within
-`inject.idempotency_retention_ms` (default 24h), the gateway returns the
+`send.idempotency_retention_ms` (default 24h), the gateway returns the
 prior turn id and **ignores the current body**. This applies both to the
 pre-write check (before file writes) and to the in-transaction race where
 two concurrent callers present the same key.
@@ -290,13 +290,13 @@ and two histograms:
 | Metric | Type | Labels |
 |---|---|---|
 | `torana_agent_api_requests_total` | counter | `bot_id, mode, outcome ∈ {2xx,4xx,5xx,timeout}` |
-| `torana_agent_api_inject_idempotent_replays_total` | counter | `bot_id` |
+| `torana_agent_api_send_idempotent_replays_total` | counter | `bot_id` |
 | `torana_agent_api_side_sessions_started_total` | counter | `bot_id` |
 | `torana_agent_api_side_session_evictions_total` | counter | `bot_id, reason ∈ {idle,hard,lru}` |
 | `torana_agent_api_side_session_capacity_rejected_total` | counter | `bot_id` |
 | `torana_agent_api_ask_orphan_resolutions_total` | counter | `bot_id, outcome ∈ {done,error,fatal,backstop}` |
 | `torana_agent_api_side_sessions_live` | gauge | `bot_id` |
-| `torana_agent_api_request_duration_ms` | histogram | `bot_id, route ∈ {ask,inject}` |
+| `torana_agent_api_request_duration_ms` | histogram | `bot_id, route ∈ {ask,send}` |
 | `torana_agent_api_side_session_acquire_duration_ms` | histogram | `bot_id, outcome ∈ {reuse,spawn,capacity,busy}` |
 
 `ask_timeouts_total` (in the `requests_total` table above, counted once per
@@ -331,9 +331,9 @@ Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 
 - **Per-bot scoping.** A token can drive exactly the bots listed in its
   `bot_ids` array. Other bots return the same error shape as
   "token invalid" so callers can't probe for bot existence.
-- **Per-scope gating.** `ask` and `inject` are independent; a token scoped
-  `["inject"]` cannot call `/v1/bots/:id/ask`.
-- **Inject ACL re-check.** Agent-API tokens grant access to *bots*, not
+- **Per-scope gating.** `ask` and `send` are independent; a token scoped
+  `["send"]` cannot call `/v1/bots/:id/ask`.
+- **Send ACL re-check.** Agent-API tokens grant access to *bots*, not
   *users*. The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.
 - **No enumeration.** Every 404 path for turn reads returns a single
@@ -343,7 +343,7 @@ Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 
   aggregate, count, and disk-usage caps all enforce in
   `parseMultipartRequest`.
 - **Idempotency is a safety feature**, not just a convenience: retrying an
-  `inject` won't double-send even if the caller's network flapped.
+  `send` won't double-send even if the caller's network flapped.
 
 ### Session-id sharing across tokens
 
@@ -363,7 +363,7 @@ for every flag; a quick tour:
 ```sh
 torana bots list --server https://gw --token $TOK
 torana ask reviewer "review this diff"           --server https://gw --token $TOK
-torana inject drafter --user-id 111 "hey"        --server https://gw --token $TOK --source ci
+torana send drafter --user-id 111 "hey"          --server https://gw --token $TOK --source ci
 torana turns get 42                              --server https://gw --token $TOK
 ```
 
@@ -394,7 +394,7 @@ echo "$RESULT"
 ### Posting a CI alert into a Telegram chat
 
 ```sh
-torana inject reviewer \
+torana send reviewer \
   --user-id $TELEGRAM_USER_ID \
   --source ci-pr-reviewer \
   --idempotency-key "ci-pr-4201-run-7" \
@@ -425,7 +425,7 @@ curl -X DELETE $TORANA_URL/v1/bots/reviewer/sessions/$SID \
 ## What's not in v1
 
 - **CommandRunner side-sessions** (Phase 2c). `ask` against a `command`-type
-  runner returns `501 runner_does_not_support_side_sessions`. `inject`
+  runner returns `501 runner_does_not_support_side_sessions`. `send`
   works against `command` runners today.
 - **Profile store at `~/.config/torana/config.toml`** (Phase 6b). Use
   `--server`/`--token` flags or `TORANA_SERVER`/`TORANA_TOKEN` env vars

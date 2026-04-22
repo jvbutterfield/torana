@@ -17,7 +17,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MATRIX_FILES = [
   "ask-claude.test.ts",
   "ask-codex.test.ts",
-  "inject-claude.test.ts",
+  "send-claude.test.ts",
   "cli-remote.test.ts",
 ] as const;
 
@@ -48,7 +48,7 @@ describe("§12.4 E2E matrix — manifest drift guard", () => {
     expect(MATRIX_FILES.length).toBe(4);
     // Same subsection prefixes the matrix uses.
     expect(MATRIX_FILES.some((f) => f.startsWith("ask-"))).toBe(true);
-    expect(MATRIX_FILES.some((f) => f.startsWith("inject-"))).toBe(true);
+    expect(MATRIX_FILES.some((f) => f.startsWith("send-"))).toBe(true);
     expect(MATRIX_FILES.some((f) => f.startsWith("cli-"))).toBe(true);
   });
 });

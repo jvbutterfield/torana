@@ -47,11 +47,11 @@ const MATRIX_FILES = [
   "resource.slow-loris.test.ts",
   "resource.idempotency-store-bloat.test.ts",
   // §12.5.5 Injection class
-  "inject-attack.chat-forgery.test.ts",
-  "inject-attack.acl-bypass.test.ts",
-  "inject-attack.cross-bot.test.ts",
-  "inject-attack.idempotency-reuse-different-content.test.ts",
-  "inject-attack.runner-prompt-injection.test.ts",
+  "send-attack.chat-forgery.test.ts",
+  "send-attack.acl-bypass.test.ts",
+  "send-attack.cross-bot.test.ts",
+  "send-attack.idempotency-reuse-different-content.test.ts",
+  "send-attack.runner-prompt-injection.test.ts",
   // §12.5.6 Disclosure
   "disclosure.error-body.test.ts",
   "disclosure.metrics-labels.test.ts",
@@ -91,7 +91,7 @@ describe("§12.5 security matrix — manifest drift guard", () => {
       "authz.": 0,
       "input.": 0,
       "resource.": 0,
-      "inject-attack.": 0,
+      "send-attack.": 0,
       "disclosure.": 0,
     };
     for (const name of MATRIX_FILES) {
@@ -103,7 +103,7 @@ describe("§12.5 security matrix — manifest drift guard", () => {
     expect(counts["authz."]).toBe(4);
     expect(counts["input."]).toBe(8);
     expect(counts["resource."]).toBe(4);
-    expect(counts["inject-attack."]).toBe(5);
+    expect(counts["send-attack."]).toBe(5);
     expect(counts["disclosure."]).toBe(3);
     // Total must equal the matrix size.
     const total = Object.values(counts).reduce((a, b) => a + b, 0);

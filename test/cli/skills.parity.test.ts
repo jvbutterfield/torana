@@ -50,14 +50,14 @@ describe("skill parity (synthetic)", () => {
 
   test("detects missing target", () => {
     const root = makeFakeRepo();
-    const target = join(root, "codex-plugin", "skills", "torana-inject", "SKILL.md");
+    const target = join(root, "codex-plugin", "skills", "torana-send", "SKILL.md");
     // Use unlinkSync
     const { unlinkSync } = require("node:fs") as typeof import("node:fs");
     unlinkSync(target);
     const r = checkParity(root);
     expect(r.ok).toBe(false);
-    const inject = r.entries.find((e) => e.skill === "torana-inject");
-    expect(inject?.drift).toBe("missing-target");
+    const send = r.entries.find((e) => e.skill === "torana-send");
+    expect(send?.drift).toBe("missing-target");
   });
 
   test("syncSkills restores parity after target edit", () => {

@@ -69,7 +69,7 @@ describe("validateIdempotencyKey", () => {
 describe("sweepIdempotencyRows", () => {
   test("deletes rows older than retention, keeps fresh ones", () => {
     // Seed a turn so the foreign key constraint is satisfied.
-    const turnId = db.insertInjectTurn({
+    const turnId = db.insertSendTurn({
       botId: "bot1",
       tokenName: "t",
       chatId: 1,

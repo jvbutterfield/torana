@@ -10,8 +10,8 @@
 //     written but no test reads the field today).
 //   - GET /v1/turns/:id 410 turn_result_expired with a fast-forward clock
 //     after a completed turn ages past TURN_RESULT_TTL_MS (PRD US-010 line 263).
-//   - GET /v1/turns/:id 200 done body shape for completed inject turns
-//     (PRD US-010 — body must NOT carry text for inject).
+//   - GET /v1/turns/:id 200 done body shape for completed send turns
+//     (PRD US-010 — body must NOT carry text for send).
 //   - GET /v1/turns/:id status='failed' with error_text (PRD US-010).
 //   - GET /v1/turns/:id status='interrupted' surfaces as failed +
 //     "interrupted_by_gateway_restart" (PRD US-010 + impl plan §6.2).
@@ -229,7 +229,7 @@ describe("/v1 — mapAuthFailure body fields (errors.ts)", () => {
       scopes: ["ask"],
     };
     const { base } = setup({ tokens: [tok] });
-    const r = await fetch(`${base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}` },
       body: JSON.stringify({ text: "hi" }),
@@ -237,7 +237,7 @@ describe("/v1 — mapAuthFailure body fields (errors.ts)", () => {
     expect(r.status).toBe(403);
     const body = (await r.json()) as { error: string; scope?: string };
     expect(body.error).toBe("scope_not_permitted");
-    expect(body.scope).toBe("inject");
+    expect(body.scope).toBe("send");
   });
 });
 
@@ -248,11 +248,11 @@ describe("GET /v1/turns/:id — additional status branches (US-010)", () => {
     secret,
     hash: hash(secret),
     bot_ids: ["bot1"],
-    scopes: ["ask", "inject"],
+    scopes: ["ask", "send"],
   };
 
   test("410 turn_result_expired when completed_at is older than 24h", async () => {
-    // Inject a fake clock that reports 25h after the turn completed.
+    // Install a fake clock that reports 25h after the turn completed.
     const now = Date.now();
     const future = now + 25 * 60 * 60 * 1000;
     const { base } = setup({ tokens: [tok], clock: () => future });
@@ -296,16 +296,16 @@ describe("GET /v1/turns/:id — additional status branches (US-010)", () => {
     expect(body.text).toBe("still-fresh");
   });
 
-  test("completed inject turn returns done WITHOUT a text field", async () => {
-    // For inject turns the PRD US-010 says: "text omitted; only status +
+  test("completed send turn returns done WITHOUT a text field", async () => {
+    // For send turns the PRD US-010 says: "text omitted; only status +
     // error" — the user already received the message via Telegram.
     const { base } = setup({ tokens: [tok] });
     db.upsertUserChat("bot1", "111222333", 555);
-    const insertResult = db.insertInjectTurn({
+    const insertResult = db.insertSendTurn({
       botId: "bot1",
       tokenName: "owner",
       chatId: 555,
-      markerWrappedText: "[system-injected from \"x\"]\n\nhi",
+      markerWrappedText: "[system-message from \"x\"]\n\nhi",
       idempotencyKey: "idem-xxxxxxxxxxxxxxxxx",
       sourceLabel: "x",
       attachmentPaths: [],
@@ -458,14 +458,14 @@ describe("GET /v1/bots/:id/sessions — live pool snapshot (US-008 + US-015)", (
     expect(eph.inflight).toBe(1);
   });
 
-  test("requires ask scope — inject-only token gets 403", async () => {
+  test("requires ask scope — send-only token gets 403", async () => {
     const secret = "tok-sessions-needs-ask-1";
     const tok: ResolvedAgentApiToken = {
       name: "inj",
       secret,
       hash: hash(secret),
       bot_ids: ["bot1"],
-      scopes: ["inject"],
+      scopes: ["send"],
     };
     const { base } = setup({ tokens: [tok] });
     const r = await fetch(`${base}/v1/bots/bot1/sessions`, {

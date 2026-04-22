@@ -113,7 +113,7 @@ async function setupGateway(tokens: ResolvedAgentApiToken[]): Promise<{ base: st
   return { base: `http://127.0.0.1:${server.port}` };
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "inject")[]): ResolvedAgentApiToken {
+function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,

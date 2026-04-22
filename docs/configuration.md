@@ -132,7 +132,7 @@ When off, `/metrics` returns 404.
 ### `agent_api` (optional block — opt-in HTTP surface)
 
 Bearer-authenticated `/v1/*` API that lets external processes drive bots via
-`ask` (sync) and `inject` (queue into Telegram chat). Full protocol in
+`ask` (sync) and `send` (queue into Telegram chat). Full protocol in
 [`agent-api.md`](agent-api.md).
 
 ```yaml
@@ -142,13 +142,13 @@ agent_api:
     - name: ci-reviewer
       secret_ref: ${TORANA_CI_TOKEN}       # env-interpolated bearer string
       bot_ids: ["reviewer"]
-      scopes: ["ask", "inject"]
+      scopes: ["ask", "send"]
   side_sessions:
     idle_ttl_ms: 3600000        # 1h
     hard_ttl_ms: 86400000       # 24h
     max_per_bot: 8
     max_global: 64
-  inject:
+  send:
     idempotency_retention_ms: 86400000
   ask:
     default_timeout_ms: 60000
@@ -163,12 +163,12 @@ agent_api:
 | `tokens[].name` | string | — | `^[a-z][a-z0-9_-]{0,63}$`; unique within the block |
 | `tokens[].secret_ref` | string | — | Non-empty after interpolation. SHA-256 hashed at load; raw value added to log redactor |
 | `tokens[].bot_ids` | string[] | — | Must reference configured bots (enforced by schema + doctor `C010`) |
-| `tokens[].scopes` | `(ask\|inject)[]` | — | Min length 1 |
+| `tokens[].scopes` | `(ask\|send)[]` | — | Min length 1 |
 | `side_sessions.idle_ttl_ms` | int ≥ 60000 | `3600000` | Unused-for-this-long → reap |
 | `side_sessions.hard_ttl_ms` | int ≥ 60000 | `86400000` | Absolute lifetime; `idle_ttl_ms ≤ hard_ttl_ms` (doctor `C013`) |
 | `side_sessions.max_per_bot` | int 1..64 | `8` | |
 | `side_sessions.max_global` | int 1..512 | `64` | `max_per_bot ≤ max_global` (doctor `C013`) |
-| `inject.idempotency_retention_ms` | int ≥ 60000 | `86400000` | Sweeps hourly |
+| `send.idempotency_retention_ms` | int ≥ 60000 | `86400000` | Sweeps hourly |
 | `ask.default_timeout_ms` | int 1000..300000 | `60000` | Clamped to `max_timeout_ms` on every request |
 | `ask.max_timeout_ms` | int 1000..300000 | `300000` | |
 | `ask.max_body_bytes` | int ≥ 4096 | `104857600` | Multipart aggregate cap |

@@ -1,7 +1,7 @@
 // Two-pass argv parser used by the agent-api subcommands. The legacy
 // gateway subcommands (`start`, `doctor`, `validate`, `migrate`, `version`)
 // still go through `parseArgs` in `src/cli.ts`; this parser handles the new
-// `ask`, `inject`, `turns get`, `bots list` chains where positionals matter.
+// `ask`, `send`, `turns get`, `bots list` chains where positionals matter.
 //
 // Pass 1: walk argv until we hit a non-flag token; that token (plus an
 // optional second non-flag for `turns get`/`bots list`) is the subcommand

@@ -4,7 +4,7 @@ The `torana` binary has two surfaces:
 
 - **Gateway** — `start`, `doctor`, `validate`, `migrate`, `version`. Operate
   on a local `torana.yaml` and (for some) a local SQLite DB.
-- **Agent-API client** — `ask`, `inject`, `turns get`, `bots list`. Operate
+- **Agent-API client** — `ask`, `send`, `turns get`, `bots list`. Operate
   on a **running gateway** over HTTP; need `--server` + `--token` (or the
   env equivalents).
 
@@ -183,12 +183,12 @@ stdout and exits **6** (timeout). Poll with `torana turns get $id`:
 id=$(torana ask reviewer "long-running task") && torana turns get "$id"
 ```
 
-### `torana inject`
+### `torana send`
 
 Push a message into a user's chat.
 
 ```
-torana inject [options] --source LABEL <bot_id> <text>
+torana send [options] --source LABEL <bot_id> <text>
 ```
 
 Options:
@@ -196,9 +196,9 @@ Options:
 | Flag | Meaning |
 |---|---|
 | `--server URL` / `--token TOK` | Credentials (as above). |
-| `--user-id ID` | Telegram user id to inject into. Either this or `--chat-id` required. |
+| `--user-id ID` | Telegram user id to send to. Either this or `--chat-id` required. |
 | `--chat-id ID` | Alternative target (must already be associated with the bot). |
-| `--source LABEL` | Lowercase `[a-z0-9_-]{1,64}` — required. Appears in the `[system-injected from "<label>"]` marker. |
+| `--source LABEL` | Lowercase `[a-z0-9_-]{1,64}` — required. Appears in the `[system-message from "<label>"]` marker. |
 | `--idempotency-key K` | Explicit key. If omitted, one is auto-generated and printed as a `#`-prefixed comment on stderr so you can reuse it on retry. |
 | `--file PATH` | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call. |
 | `--profile NAME` | Resolve `--server` + `--token` from the profile store. |

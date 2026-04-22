@@ -1,4 +1,4 @@
-// Function-level tests for src/cli/inject.ts using a fake AgentApiClient.
+// Function-level tests for src/cli/send.ts using a fake AgentApiClient.
 
 import { describe, expect, test } from "bun:test";
 
@@ -6,7 +6,7 @@ import {
   AgentApiClient,
   AgentApiError,
 } from "../../src/agent-api/client.js";
-import { runInject } from "../../src/cli/inject.js";
+import { runSend } from "../../src/cli/send.js";
 import { ExitCode } from "../../src/cli/shared/exit.js";
 import { CliUsageError } from "../../src/cli/shared/args.js";
 
@@ -19,16 +19,16 @@ function clientStub(impl: Partial<AgentApiClient>): AgentApiClient {
   );
 }
 
-describe("runInject — happy path", () => {
+describe("runSend — happy path", () => {
   test("explicit idempotency-key forwarded; no auto-key stderr", async () => {
     let capturedKey: string | undefined;
     const client = clientStub({
-      inject: async (_botId, _body, opts) => {
+      send: async (_botId, _body, opts) => {
         capturedKey = opts.idempotencyKey;
         return { turn_id: 5, status: "queued" };
       },
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -52,12 +52,12 @@ describe("runInject — happy path", () => {
   test("auto-generates idempotency-key when omitted; emits notice on stderr", async () => {
     let capturedKey: string | undefined;
     const client = clientStub({
-      inject: async (_botId, _body, opts) => {
+      send: async (_botId, _body, opts) => {
         capturedKey = opts.idempotencyKey;
         return { turn_id: 7, status: "queued" };
       },
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -77,12 +77,12 @@ describe("runInject — happy path", () => {
   test("--chat-id is parsed as integer", async () => {
     let captured: number | undefined;
     const client = clientStub({
-      inject: async (_botId, body) => {
+      send: async (_botId, body) => {
         captured = body.chat_id;
         return { turn_id: 1, status: "queued" };
       },
     });
-    await runInject(
+    await runSend(
       {
         argv: ["alpha", "hi", "--source", "src", "--chat-id", "98765"],
       },
@@ -93,9 +93,9 @@ describe("runInject — happy path", () => {
 
   test("--json emits full response body", async () => {
     const client = clientStub({
-      inject: async () => ({ turn_id: 11, status: "in_progress" }),
+      send: async () => ({ turn_id: 11, status: "in_progress" }),
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -117,7 +117,7 @@ describe("runInject — happy path", () => {
   test("--file forwards through reader as multipart", async () => {
     let receivedFiles: unknown;
     const client = clientStub({
-      inject: async (_botId, _body, opts) => {
+      send: async (_botId, _body, opts) => {
         receivedFiles = opts.files;
         return { turn_id: 1, status: "queued" };
       },
@@ -127,7 +127,7 @@ describe("runInject — happy path", () => {
       mime: "application/pdf",
       filename: "alert.pdf",
     });
-    await runInject(
+    await runSend(
       {
         argv: [
           "alpha",
@@ -149,11 +149,11 @@ describe("runInject — happy path", () => {
   });
 });
 
-describe("runInject — usage errors", () => {
+describe("runSend — usage errors", () => {
   test("missing --source", async () => {
     const client = clientStub({});
     await expect(
-      runInject(
+      runSend(
         { argv: ["alpha", "hi", "--user-id", "1"] },
         { client },
       ),
@@ -163,7 +163,7 @@ describe("runInject — usage errors", () => {
   test("neither --user-id nor --chat-id", async () => {
     const client = clientStub({});
     await expect(
-      runInject(
+      runSend(
         { argv: ["alpha", "hi", "--source", "src"] },
         { client },
       ),
@@ -173,7 +173,7 @@ describe("runInject — usage errors", () => {
   test("both --user-id and --chat-id", async () => {
     const client = clientStub({});
     await expect(
-      runInject(
+      runSend(
         {
           argv: [
             "alpha",
@@ -194,7 +194,7 @@ describe("runInject — usage errors", () => {
   test("non-integer --chat-id", async () => {
     const client = clientStub({});
     await expect(
-      runInject(
+      runSend(
         {
           argv: [
             "alpha",
@@ -213,7 +213,7 @@ describe("runInject — usage errors", () => {
   test("missing positional <text>", async () => {
     const client = clientStub({});
     await expect(
-      runInject(
+      runSend(
         { argv: ["alpha", "--source", "src", "--user-id", "1"] },
         { client },
       ),
@@ -221,10 +221,10 @@ describe("runInject — usage errors", () => {
   });
 });
 
-describe("runInject — server errors", () => {
+describe("runSend — server errors", () => {
   test("target_not_authorized → exit 3 + auto-key stderr preserved", async () => {
     const client = clientStub({
-      inject: async () => {
+      send: async () => {
         throw new AgentApiError({
           code: "target_not_authorized",
           status: 403,
@@ -232,7 +232,7 @@ describe("runInject — server errors", () => {
         });
       },
     });
-    const r = await runInject(
+    const r = await runSend(
       {
         argv: [
           "alpha",
@@ -252,11 +252,11 @@ describe("runInject — server errors", () => {
   });
 });
 
-describe("runInject — help", () => {
+describe("runSend — help", () => {
   test("--help short-circuits", async () => {
     const client = clientStub({});
-    const r = await runInject({ argv: ["--help"] }, { client });
+    const r = await runSend({ argv: ["--help"] }, { client });
     expect(r.exitCode).toBe(ExitCode.success);
-    expect(r.stdout[0]).toContain("Usage: torana inject");
+    expect(r.stdout[0]).toContain("Usage: torana send");
   });
 });

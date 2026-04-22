@@ -20,7 +20,7 @@ describe("§12.5.6 disclosure.error-body", () => {
   const secret = "err-body-secret-value-abcdef12";
   const token = mkToken("cos", secret, {
     bot_ids: ["bot1"],
-    scopes: ["ask", "inject"],
+    scopes: ["ask", "send"],
   });
 
   test("errorResponse defaultMessage never contains 'Error', 'at ', or absolute paths", async () => {

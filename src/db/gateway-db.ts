@@ -63,7 +63,7 @@ export class GatewayDB {
     listSideSessions: Statement;
     markAllSideSessionsStopped: Statement;
     insertAskTurnRow: Statement;
-    insertInjectTurnRow: Statement;
+    insertSendTurnRow: Statement;
     setTurnFinalText: Statement;
     getTurnExtended: Statement;
   };
@@ -291,11 +291,11 @@ export class GatewayDB {
         VALUES (?, 0, ?, 'running', datetime('now'), ?, 'agent_api_ask', ?)
         RETURNING id
       `),
-      insertInjectTurnRow: d.prepare(`
+      insertSendTurnRow: d.prepare(`
         INSERT INTO turns (bot_id, chat_id, source_update_id, status,
                            attachment_paths_json, source, agent_api_token_name,
                            agent_api_source_label, idempotency_key)
-        VALUES (?, ?, ?, 'queued', ?, 'agent_api_inject', ?, ?, ?)
+        VALUES (?, ?, ?, 'queued', ?, 'agent_api_send', ?, ?, ?)
         RETURNING id
       `),
       setTurnFinalText: d.prepare(`
@@ -450,10 +450,10 @@ export class GatewayDB {
     if (!row) return null;
     try {
       const payload = JSON.parse(row.payload_json);
-      // Agent-API inject rows store the marker-wrapped prompt on the
+      // Agent-API send rows store the marker-wrapped prompt on the
       // synthetic inbound payload — return that verbatim so the dispatch
       // loop can feed it to the main runner.
-      if (payload?.kind === "inject" && typeof payload.prompt === "string") {
+      if (payload?.kind === "send" && typeof payload.prompt === "string") {
         return payload.prompt;
       }
       return payload?.message?.text ?? payload?.message?.caption ?? null;
@@ -778,7 +778,7 @@ export class GatewayDB {
 
   /**
    * Record (or refresh) the most recent authorized chat for a (bot, user).
-   * Called from processUpdate so inject calls can look up `chat_id` by
+   * Called from processUpdate so send calls can look up `chat_id` by
    * `telegram_user_id` later.
    */
   upsertUserChat(botId: BotId, telegramUserId: string, chatId: number): void {
@@ -901,11 +901,11 @@ export class GatewayDB {
   }
 
   /**
-   * Insert an agent-API `inject` turn. Idempotency lookup runs inside the
+   * Insert an agent-API `send` turn. Idempotency lookup runs inside the
    * same transaction; if the key was already used, returns the prior turn id
    * with `replay: true` and does not touch `turns`/`inbound_updates`.
    */
-  insertInjectTurn(args: {
+  insertSendTurn(args: {
     botId: BotId;
     tokenName: string;
     chatId: number;
@@ -926,14 +926,14 @@ export class GatewayDB {
         chatId: args.chatId,
         fromUserId: `agent_api:${args.tokenName}`,
         payloadJson: JSON.stringify({
-          kind: "inject",
+          kind: "send",
           source: args.sourceLabel,
           idempotency_key: args.idempotencyKey,
           prompt: args.markerWrappedText,
         }),
       });
 
-      const turnRow = this.stmts.insertInjectTurnRow.get(
+      const turnRow = this.stmts.insertSendTurnRow.get(
         args.botId,
         args.chatId,
         inboundId,

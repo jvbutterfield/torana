@@ -8,13 +8,13 @@
 //      CodexRunner). The CLI path is either "claude" / "codex" on
 //      $PATH or an override via env.
 //   3. A FakeTelegram stand-in (from test/integration/fake-telegram.ts)
-//      for inject paths that need to verify delivery. The ask path
+//      for send paths that need to verify delivery. The ask path
 //      never touches Telegram.
 //
 // The whole suite is gated by `AGENT_API_E2E=1`. Without it, every
 // file's `describe` is a `describe.skip`, so a bare `bun test` stays
 // fast. We also expose a `telegramE2eEnabled()` helper for
-// inject-claude which additionally needs TELEGRAM_TEST_BOT_TOKEN +
+// send-claude which additionally needs TELEGRAM_TEST_BOT_TOKEN +
 // TELEGRAM_TEST_CHAT_ID.
 //
 // Notes on cost + flakiness:
@@ -72,7 +72,7 @@ export function inheritedEnv(): Record<string, string> {
 }
 
 /**
- * True when inject-claude.test.ts may run. Needs the suite gate PLUS a
+ * True when send-claude.test.ts may run. Needs the suite gate PLUS a
  * pair of TELEGRAM_TEST_* env vars pointing at a throwaway test bot +
  * chat. Without them the whole file is skipped because we can't
  * verify the delivery side of the round-trip.
@@ -99,7 +99,7 @@ export function mkToken(
     secret,
     hash: hash(secret),
     bot_ids: ["alpha"],
-    scopes: ["ask", "inject"],
+    scopes: ["ask", "send"],
     ...overrides,
   };
 }
@@ -203,7 +203,7 @@ export async function startE2E(opts: StartE2EOptions): Promise<E2EHarness> {
         max_per_bot: 4,
         max_global: 8,
       },
-      inject: { idempotency_retention_ms: 86_400_000 },
+      send: { idempotency_retention_ms: 86_400_000 },
       ask: {
         default_timeout_ms: 90_000,
         max_timeout_ms: 300_000,

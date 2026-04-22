@@ -18,11 +18,11 @@ afterEach(async () => {
   if (h) await h.close();
 });
 
-describe("§12.5.5 inject-attack.idempotency-reuse-different-content", () => {
+describe("§12.5.5 send-attack.idempotency-reuse-different-content", () => {
   const secret = "idem-reuse-secret-value-abcd12";
   const token = mkToken("cos", secret, {
     bot_ids: ["bot1"],
-    scopes: ["inject"],
+    scopes: ["send"],
   });
   const KEY = "idem-reuse-key-abc-efgh-ijklmnop";
 
@@ -35,7 +35,7 @@ describe("§12.5.5 inject-attack.idempotency-reuse-different-content", () => {
     });
     h.db.upsertUserChat("bot1", "111", 100);
 
-    const first = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const first = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -53,7 +53,7 @@ describe("§12.5.5 inject-attack.idempotency-reuse-different-content", () => {
     expect(typeof originalTurnId).toBe("number");
 
     // Attacker re-uses the key with DIFFERENT content.
-    const second = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const second = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -92,7 +92,7 @@ describe("§12.5.5 inject-attack.idempotency-reuse-different-content", () => {
     h.db.upsertUserChat("bot1", "111", 100);
     const KEY2 = "idem-src-key-abc-efgh-ijklmnop";
 
-    await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -106,7 +106,7 @@ describe("§12.5.5 inject-attack.idempotency-reuse-different-content", () => {
       }),
     });
 
-    const second = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const second = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,

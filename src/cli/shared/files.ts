@@ -1,4 +1,4 @@
-// File reader used by `torana ask` and `torana inject` for `--file PATH`
+// File reader used by `torana ask` and `torana send` for `--file PATH`
 // and `--file @-` (stdin). Returns bytes plus a best-effort MIME guess —
 // from Bun.file metadata + extension for real files, or from magic bytes
 // for stdin (where there's no filename to inspect). The server enforces
@@ -33,7 +33,7 @@ export async function readFileForUpload(path: string): Promise<ReadFileResult> {
 /**
  * Read stdin exhaustively and sniff MIME from magic bytes. Used when the
  * user passes `--file @-`. Only one `@-` per command is allowed — the
- * caller in ask.ts / inject.ts enforces that and surfaces a usage error.
+ * caller in ask.ts / send.ts enforces that and surfaces a usage error.
  *
  * Bun >= 1.1 exposes `Bun.stdin.bytes()`; we fall back to
  * `process.stdin` for older runtimes and non-Bun test envs.

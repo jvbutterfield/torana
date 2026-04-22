@@ -33,7 +33,7 @@ function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "inject")[]): ResolvedAgentApiToken {
+function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
   return { name: "caller", secret, hash: hash(secret), bot_ids: ["bot1"], scopes };
 }
 
@@ -109,7 +109,7 @@ async function setup(): Promise<{ base: string; secret: string }> {
     config,
     db,
     registry: registry as never,
-    tokens: [tokenFor(secret, ["ask", "inject"])],
+    tokens: [tokenFor(secret, ["ask", "send"])],
     log: logger("metrics-scrape-test"),
     metrics,
     pool,
@@ -170,10 +170,10 @@ describe("GET /metrics — agent-api counters appear after traffic", () => {
     expect(resp.headers.get("Content-Type") ?? "").toContain("text/plain");
   }, 20_000);
 
-  test("an inject request produces inject-route lines on /metrics", async () => {
+  test("a send request produces send-route lines on /metrics", async () => {
     const { base, secret } = await setup();
 
-    await fetch(`${base}/v1/bots/bot1/inject`, {
+    await fetch(`${base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -185,13 +185,13 @@ describe("GET /metrics — agent-api counters appear after traffic", () => {
 
     const body = await (await fetch(`${base}/metrics`)).text();
     expect(body).toContain(
-      'torana_agent_api_requests_total{bot_id="bot1",mode="inject",outcome="2xx"} 1',
+      'torana_agent_api_requests_total{bot_id="bot1",mode="send",outcome="2xx"} 1',
     );
     expect(body).toContain(
-      'torana_agent_api_request_duration_ms_count{bot_id="bot1",route="inject"} 1',
+      'torana_agent_api_request_duration_ms_count{bot_id="bot1",route="send"} 1',
     );
     expect(body).toContain(
-      'torana_agent_api_inject_idempotent_replays_total{bot_id="bot1"} 0',
+      'torana_agent_api_send_idempotent_replays_total{bot_id="bot1"} 0',
     );
   });
 

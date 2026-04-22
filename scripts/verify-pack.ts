@@ -23,13 +23,13 @@ const REQUIRED = [
   // Agent-API skills — `torana skills install` reads these at runtime from the
   // installed package, not from a bundle, so they have to ship as real files.
   "skills/torana-ask/SKILL.md",
-  "skills/torana-inject/SKILL.md",
+  "skills/torana-send/SKILL.md",
   // Codex plugin — Codex marketplace installs pull from these paths directly.
   // The skill copies under codex-plugin/skills/ must remain byte-identical to
   // skills/ — enforced at build-time by scripts/check-skill-parity.ts.
   "codex-plugin/marketplace.json",
   "codex-plugin/skills/torana-ask/SKILL.md",
-  "codex-plugin/skills/torana-inject/SKILL.md",
+  "codex-plugin/skills/torana-send/SKILL.md",
   // Side-session runner example — referenced from docs/agent-api.md and the
   // CommandRunner section of the runner docs as the canonical integration
   // pattern for the claude-ndjson / codex-jsonl protocols.

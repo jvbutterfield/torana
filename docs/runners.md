@@ -13,7 +13,7 @@ Three built-in runners ship with v1:
 Side-sessions are a distinct subprocess-per-(bot, session_id) pool that the
 [Agent API](agent-api.md) uses for synchronous `ask` requests. An `ask`
 against a runner that doesn't support them returns
-`501 runner_does_not_support_side_sessions`. `inject` works against every
+`501 runner_does_not_support_side_sessions`. `send` works against every
 runner.
 
 Pick one per bot in your YAML. Different bots in the same gateway can use different runners — see [Hybrid configurations](#hybrid-configurations) below.

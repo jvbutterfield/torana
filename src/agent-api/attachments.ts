@@ -10,7 +10,7 @@
 //        before we return (atomic — caller never sees partial state)
 //
 //   2. cleanupFiles(paths) — best-effort unlink. Callers invoke this when the
-//      DB transaction throws OR when insertInjectTurn returns {replay: true}
+//      DB transaction throws OR when insertSendTurn returns {replay: true}
 //      (files were written optimistically; the replay path doesn't own them).
 //
 //   3. sweepUnreferencedAgentApiFiles(db, dataDir, maxAgeMs)

@@ -130,7 +130,7 @@ describe("config/load — agent_api superRefine error paths", () => {
     - name: dup
       secret_ref: \${B}
       bot_ids: [alpha]
-      scopes: [inject]
+      scopes: [send]
 `);
     expect(() =>
       loadConfigFromString(raw, { env: { A: "secret-a-1234", B: "secret-b-1234" } }),
@@ -151,7 +151,7 @@ describe("config/load — agent_api superRefine error paths", () => {
     ).toThrow(/unknown bot 'no-such-bot'/);
   });
 
-  test("scopes empty → fails (PRD: 'non-empty subset of [ask, inject]')", () => {
+  test("scopes empty → fails (PRD: 'non-empty subset of [ask, send]')", () => {
     const raw = withAgentApi(`
   enabled: true
   tokens:
@@ -241,7 +241,7 @@ describe("config/load — agent_api: secrets redaction integration", () => {
     - name: cal
       secret_ref: \${CAL}
       bot_ids: [alpha]
-      scopes: [inject]
+      scopes: [send]
 `);
     const { secrets } = loadConfigFromString(raw, {
       env: { COS: "secret-cos-12345", CAL: "secret-cal-67890" },

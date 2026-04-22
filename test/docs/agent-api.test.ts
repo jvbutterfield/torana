@@ -86,7 +86,7 @@ describe("docs/agent-api.md", () => {
       "## Authentication",
       "## Endpoints",
       "### `POST /v1/bots/:bot_id/ask`",
-      "### `POST /v1/bots/:bot_id/inject`",
+      "### `POST /v1/bots/:bot_id/send`",
       "### `GET /v1/turns/:turn_id`",
       "### `GET /v1/bots`",
       "### `GET /v1/health`",
@@ -104,7 +104,7 @@ describe("docs/agent-api.md", () => {
     const body = read(path);
     const metrics = [
       "torana_agent_api_requests_total",
-      "torana_agent_api_inject_idempotent_replays_total",
+      "torana_agent_api_send_idempotent_replays_total",
       "torana_agent_api_side_sessions_started_total",
       "torana_agent_api_side_session_evictions_total",
       "torana_agent_api_side_session_capacity_rejected_total",
@@ -153,7 +153,7 @@ describe("docs/cli.md", () => {
     expect(body).toContain("## Gateway commands");
     expect(body).toContain("## Agent-API client commands");
     expect(body).toContain("### `torana ask`");
-    expect(body).toContain("### `torana inject`");
+    expect(body).toContain("### `torana send`");
     expect(body).toContain("### `torana turns get`");
     expect(body).toContain("### `torana bots list`");
   });

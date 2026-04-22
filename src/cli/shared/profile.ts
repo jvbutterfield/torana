@@ -1,7 +1,7 @@
 // Profile store for the torana CLI — a small TOML file that holds one or
 // more `(server, token)` pairs keyed by profile name. The config subcommand
 // (`torana config add-profile`, `list-profiles`, `remove-profile`, `show`,
-// `init`) edits this file; `ask`, `inject`, `turns`, `bots`, and
+// `init`) edits this file; `ask`, `send`, `turns`, `bots`, and
 // `doctor --profile NAME` read it via `resolveCredentials`.
 //
 // Path resolution:

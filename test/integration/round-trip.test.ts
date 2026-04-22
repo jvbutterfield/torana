@@ -104,7 +104,7 @@ function makeConfig(options: {
         max_per_bot: 8,
         max_global: 64,
       },
-      inject: { idempotency_retention_ms: 86_400_000 },
+      send: { idempotency_retention_ms: 86_400_000 },
       ask: {
         default_timeout_ms: 60_000,
         max_timeout_ms: 300_000,

@@ -77,9 +77,9 @@ of the main ACL / secret story above. Full protocol in
 - **Per-bot scoping.** A token can only drive bots listed in its
   `bot_ids` array. Requests to other bots return the same error shape as
   "token invalid" — callers can't probe for bot existence.
-- **Per-scope gating.** `ask` and `inject` are distinct scopes; a token
-  scoped `["inject"]` cannot call `/v1/bots/:id/ask` (403).
-- **Inject ACL re-check.** Agent-API tokens authorize *bots*, not *users*.
+- **Per-scope gating.** `ask` and `send` are distinct scopes; a token
+  scoped `["send"]` cannot call `/v1/bots/:id/ask` (403).
+- **Send ACL re-check.** Agent-API tokens authorize *bots*, not *users*.
   The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.
 - **No enumeration.** Turn lookups return a single `turn_not_found` code
@@ -89,7 +89,7 @@ of the main ACL / secret story above. Full protocol in
   (`agentapi-<uuid>-<idx><ext>`); per-file, aggregate, count, and
   disk-usage caps all enforced in `parseMultipartRequest`.
 - **Idempotency is a safety property**, not just a UX one — retrying an
-  `inject` under a flaky network cannot double-send.
+  `send` under a flaky network cannot double-send.
 
 Doctor `C009..C014` catch the most common misconfigurations before the
 gateway starts accepting traffic; `torana doctor --server URL --token TOK`

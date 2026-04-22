@@ -1,6 +1,6 @@
 // Agent-API idempotency helpers.
 //
-// The dedup write itself lives inside `db.insertInjectTurn` (so a concurrent
+// The dedup write itself lives inside `db.insertSendTurn` (so a concurrent
 // second caller with the same key races against the transaction, not
 // against us). This module owns:
 //   - the key-format validator (re-exported from schemas for call-site clarity)

@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { ASK_HELP } from "../../src/cli/ask.js";
-import { INJECT_HELP } from "../../src/cli/inject.js";
+import { SEND_HELP } from "../../src/cli/send.js";
 import { CONFIG_HELP } from "../../src/cli/config.js";
 import { SKILLS_HELP } from "../../src/cli/skills.js";
 
@@ -24,17 +24,17 @@ describe("ask --help", () => {
   });
 });
 
-describe("inject --help", () => {
+describe("send --help", () => {
   test("exit codes 0, 2, 3, 4, 5, 7 present", () => {
     for (const code of ["0", "2", "3", "4", "5", "7"]) {
-      expect(INJECT_HELP).toMatch(new RegExp(`\\b${code}\\b`));
+      expect(SEND_HELP).toMatch(new RegExp(`\\b${code}\\b`));
     }
   });
   test("documents --source, --idempotency-key, --user-id/--chat-id", () => {
-    expect(INJECT_HELP).toContain("--source");
-    expect(INJECT_HELP).toContain("--idempotency-key");
-    expect(INJECT_HELP).toContain("--user-id");
-    expect(INJECT_HELP).toContain("--chat-id");
+    expect(SEND_HELP).toContain("--source");
+    expect(SEND_HELP).toContain("--idempotency-key");
+    expect(SEND_HELP).toContain("--user-id");
+    expect(SEND_HELP).toContain("--chat-id");
   });
 });
 

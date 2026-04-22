@@ -126,7 +126,7 @@ afterEach(async () => {
   }
 });
 
-function tokenFor(secret: string, scopes: ("ask" | "inject")[]): ResolvedAgentApiToken {
+function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,

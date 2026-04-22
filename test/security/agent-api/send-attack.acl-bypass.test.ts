@@ -1,7 +1,7 @@
 // §12.5.5: user_id that resolves to a user NOT in
 // access_control.allowed_user_ids must return 403 target_not_authorized,
 // even if the user has opened this bot previously. The ACL re-check at
-// inject time guards against the scenario where a user was authorized
+// send time guards against the scenario where a user was authorized
 // when they DMed the bot, then later removed from the ACL, and now an
 // attacker (or stale integration) tries to force a DM to them.
 
@@ -15,11 +15,11 @@ afterEach(async () => {
   if (h) await h.close();
 });
 
-describe("§12.5.5 inject-attack.acl-bypass", () => {
+describe("§12.5.5 send-attack.acl-bypass", () => {
   const secret = "acl-bypass-secret-value-abcd12";
   const token = mkToken("cos", secret, {
     bot_ids: ["bot1"],
-    scopes: ["inject"],
+    scopes: ["send"],
   });
 
   test("user_id not in access_control.allowed_user_ids → 403 target_not_authorized", async () => {
@@ -32,7 +32,7 @@ describe("§12.5.5 inject-attack.acl-bypass", () => {
     // User 999 has opened the bot (so chat resolution succeeds),
     // but they are NOT allowlisted. ACL re-check must still reject.
     h.db.upsertUserChat("bot1", "999", 22000);
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -54,7 +54,7 @@ describe("§12.5.5 inject-attack.acl-bypass", () => {
     });
     // User 999 had opened bot1 at some point — user_chats row exists.
     h.db.upsertUserChat("bot1", "999", 12345);
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
@@ -76,7 +76,7 @@ describe("§12.5.5 inject-attack.acl-bypass", () => {
     });
     // Chat 77 belongs to user 999; 999 is not in ACL.
     h.db.upsertUserChat("bot1", "999", 77);
-    const r = await fetch(`${h.base}/v1/bots/bot1/inject`, {
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,

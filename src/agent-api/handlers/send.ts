@@ -1,4 +1,4 @@
-// POST /v1/bots/:bot_id/inject handler.
+// POST /v1/bots/:bot_id/send handler.
 //
 // Flow (tasks/impl-agent-api.md §6.4 + §7.1):
 //   1. Validate Idempotency-Key header (format + presence).
@@ -9,7 +9,7 @@
 //   4. Validate body fields via zod (strict, rejects unknown keys).
 //   5. Resolve chat_id, re-check ACL against resolved user.
 //   6. Marker-wrap text.
-//   7. db.insertInjectTurn — synthetic inbound + turn (status='queued') +
+//   7. db.insertSendTurn — synthetic inbound + turn (status='queued') +
 //      idempotency row in a single BEGIN IMMEDIATE transaction. Throws or
 //      returns {replay: true} under the in-txn race path.
 //        - on throw: cleanupFiles(attachmentPaths); return 500
@@ -23,34 +23,34 @@ import type { AgentApiDeps, AuthedHandler } from "../types.js";
 import type { BotRegistry } from "../../core/registry.js";
 import type { GatewayDB } from "../../db/gateway-db.js";
 import { errorResponse, jsonResponse } from "../errors.js";
-import { InjectBodySchema, validateIdempotencyKey } from "../schemas.js";
+import { SendBodySchema, validateIdempotencyKey } from "../schemas.js";
 import { resolveChatId } from "../chat-resolve.js";
-import { wrapInjected } from "../marker.js";
+import { wrapSystemMessage } from "../marker.js";
 import { isAuthorized } from "../../core/acl.js";
 import { cleanupFiles, parseMultipartRequest } from "../attachments.js";
-import { recordInject } from "../metrics.js";
+import { recordSend } from "../metrics.js";
 
-export interface InjectDeps extends AgentApiDeps {
+export interface SendDeps extends AgentApiDeps {
   registry: BotRegistry;
 }
 
-export function handleInject(deps: InjectDeps): AuthedHandler {
-  const inner = handleInjectInner(deps);
+export function handleSend(deps: SendDeps): AuthedHandler {
+  const inner = handleSendInner(deps);
   return async (req, params) => {
     const startMs = Date.now();
     const outcome: { replay: boolean } = { replay: false };
     const resp = await inner(req, params, outcome);
-    recordInject(deps.metrics, params.botId, {
+    recordSend(deps.metrics, params.botId, {
       status: resp.status as 202 | 400 | 401 | 403 | 404 | 429 | 500 | 501 | 503,
       replay: outcome.replay,
       durationMs: Date.now() - startMs,
-    } as Parameters<typeof recordInject>[2]);
+    } as Parameters<typeof recordSend>[2]);
     return resp;
   };
 }
 
-function handleInjectInner(
-  deps: InjectDeps,
+function handleSendInner(
+  deps: SendDeps,
 ): (
   req: Request,
   params: Parameters<AuthedHandler>[1],
@@ -119,7 +119,7 @@ function handleInjectInner(
       // writes; this catch is for truly unexpected failures (e.g. the
       // Request object itself threw during header inspection).
       await cleanupFiles(attachmentPaths);
-      deps.log.error("inject body parse threw", {
+      deps.log.error("send body parse threw", {
         bot_id: botId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -127,7 +127,7 @@ function handleInjectInner(
     }
 
     // 4. Validate body fields.
-    const parsed = InjectBodySchema.safeParse(bodyRaw);
+    const parsed = SendBodySchema.safeParse(bodyRaw);
     if (!parsed.success) {
       await cleanupFiles(attachmentPaths);
       const issue = parsed.error.issues[0];
@@ -159,13 +159,13 @@ function handleInjectInner(
     }
 
     // 6. Marker-wrap prompt.
-    const wrapped = wrapInjected(body.text, body.source);
+    const wrapped = wrapSystemMessage(body.text, body.source);
 
     // 7. Persist. On throw, roll back files. On in-txn replay, files are
     //    orphans (the prior turn owns its own first-call files); unlink ours.
     let insertResult: { replay: boolean; turnId: number };
     try {
-      insertResult = deps.db.insertInjectTurn({
+      insertResult = deps.db.insertSendTurn({
         botId,
         tokenName: token.name,
         chatId,
@@ -176,7 +176,7 @@ function handleInjectInner(
       });
     } catch (err) {
       await cleanupFiles(attachmentPaths);
-      deps.log.error("insertInjectTurn failed", {
+      deps.log.error("insertSendTurn failed", {
         bot_id: botId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -200,7 +200,7 @@ function handleInjectInner(
     try {
       deps.registry.dispatchFor(botId);
     } catch (err) {
-      deps.log.warn("dispatchFor threw after inject insert", {
+      deps.log.warn("dispatchFor threw after send insert", {
         bot_id: botId,
         turn_id: insertResult.turnId,
         error: err instanceof Error ? err.message : String(err),

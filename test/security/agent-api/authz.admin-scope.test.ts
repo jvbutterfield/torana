@@ -1,5 +1,5 @@
 // §12.5.2: the admin-ish session-management routes (list/delete
-// sessions) require scope "ask". An inject-only token must NOT be able
+// sessions) require scope "ask". A send-only token must NOT be able
 // to enumerate or stop other callers' sessions. This pins the guard
 // against an over-permissive refactor where "any valid token" is
 // treated as sufficient for /v1/bots/:id/sessions.
@@ -16,20 +16,20 @@ afterEach(async () => {
 
 describe("§12.5.2 authz.admin-scope", () => {
   const askSecret = "ask-admin-secret-value-abcd1234";
-  const injectSecret = "inject-only-secret-value-xyz567";
+  const sendSecret = "send-only-secret-value-xyz567";
   const askToken = mkToken("askOp", askSecret, {
     bot_ids: ["bot1"],
     scopes: ["ask"],
   });
-  const injectOnly = mkToken("injectOnly", injectSecret, {
+  const sendOnly = mkToken("sendOnly", sendSecret, {
     bot_ids: ["bot1"],
-    scopes: ["inject"],
+    scopes: ["send"],
   });
 
-  test("inject-only token on LIST sessions → 403 scope_not_permitted", async () => {
-    h = startHarness({ tokens: [askToken, injectOnly] });
+  test("send-only token on LIST sessions → 403 scope_not_permitted", async () => {
+    h = startHarness({ tokens: [askToken, sendOnly] });
     const r = await fetch(`${h.base}/v1/bots/bot1/sessions`, {
-      headers: { Authorization: `Bearer ${injectSecret}` },
+      headers: { Authorization: `Bearer ${sendSecret}` },
     });
     expect(r.status).toBe(403);
     const body = await r.json();
@@ -37,18 +37,18 @@ describe("§12.5.2 authz.admin-scope", () => {
     expect(body.scope).toBe("ask");
   });
 
-  test("inject-only token on DELETE session → 403 scope_not_permitted", async () => {
-    h = startHarness({ tokens: [askToken, injectOnly] });
+  test("send-only token on DELETE session → 403 scope_not_permitted", async () => {
+    h = startHarness({ tokens: [askToken, sendOnly] });
     const r = await fetch(`${h.base}/v1/bots/bot1/sessions/sess-xyz`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${injectSecret}` },
+      headers: { Authorization: `Bearer ${sendSecret}` },
     });
     expect(r.status).toBe(403);
     expect((await r.json()).error).toBe("scope_not_permitted");
   });
 
   test("ask token on LIST sessions → 200 (sanity: scope check is the gate, not a blanket deny)", async () => {
-    h = startHarness({ tokens: [askToken, injectOnly] });
+    h = startHarness({ tokens: [askToken, sendOnly] });
     const r = await fetch(`${h.base}/v1/bots/bot1/sessions`, {
       headers: { Authorization: `Bearer ${askSecret}` },
     });
