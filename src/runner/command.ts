@@ -117,7 +117,10 @@ export class CommandRunner implements AgentRunner {
     this.sideStartupMs = opts.sideStartupMs ?? DEFAULT_SIDE_STARTUP_MS;
   }
 
-  on<E extends RunnerEventKind>(event: E, handler: RunnerEventHandler<E>): Unsubscribe {
+  on<E extends RunnerEventKind>(
+    event: E,
+    handler: RunnerEventHandler<E>,
+  ): Unsubscribe {
     return this.emitter.on(event, handler);
   }
 
@@ -493,7 +496,9 @@ export class CommandRunner implements AgentRunner {
 
   async reset(): Promise<void> {
     if (this.activeTurn) {
-      throw new Error(`CommandRunner.reset() with in-flight turn '${this.activeTurn}'`);
+      throw new Error(
+        `CommandRunner.reset() with in-flight turn '${this.activeTurn}'`,
+      );
     }
     if (!this.proc) return;
 
@@ -523,7 +528,11 @@ export class CommandRunner implements AgentRunner {
     }
   }
 
-  sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {
+  sendTurn(
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult {
     // Order matters: a runner mid-turn has status "busy", and the caller
     // needs to distinguish that from "hasn't finished starting yet".
     if (this.activeTurn !== null) {
@@ -571,7 +580,10 @@ export class CommandRunner implements AgentRunner {
     });
 
     const env = this.buildEnv();
-    this.log.info("spawning runner", { cmd: this.config.cmd[0], protocol: this.config.protocol });
+    this.log.info("spawning runner", {
+      cmd: this.config.cmd[0],
+      protocol: this.config.protocol,
+    });
     this.status = "starting";
 
     try {
@@ -616,7 +628,9 @@ export class CommandRunner implements AgentRunner {
     return env;
   }
 
-  private async readStdout(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async readStdout(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const parser =
@@ -642,7 +656,9 @@ export class CommandRunner implements AgentRunner {
     }
   }
 
-  private async readStderr(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async readStderr(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     try {
@@ -657,7 +673,9 @@ export class CommandRunner implements AgentRunner {
     }
   }
 
-  private async watchExit(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async watchExit(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const exitCode = await proc.exited;
     if (this.proc !== proc) return;
 
@@ -678,7 +696,10 @@ export class CommandRunner implements AgentRunner {
   }
 
   private dispatchEvent(ev: RunnerEvent): void {
-    if (ev.kind === "ready" && (this.status === "starting" || this.status === "busy")) {
+    if (
+      ev.kind === "ready" &&
+      (this.status === "starting" || this.status === "busy")
+    ) {
       this.status = "ready";
     }
     if (ev.kind === "done" || ev.kind === "error") {

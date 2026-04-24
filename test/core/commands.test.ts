@@ -15,23 +15,42 @@ import type { TelegramClient } from "../../src/telegram/client.js";
 function stubRunner(overrides: Partial<AgentRunner> = {}): AgentRunner {
   return {
     botId: "alpha",
-    async start() { /* */ },
-    async stop() { /* */ },
+    async start() {
+      /* */
+    },
+    async stop() {
+      /* */
+    },
     sendTurn: () => ({ accepted: false, reason: "not_ready" }),
-    async reset() { /* */ },
+    async reset() {
+      /* */
+    },
     supportsReset: () => true,
     isReady: () => true,
-    on: () => () => { /* */ },
+    on: () => () => {
+      /* */
+    },
     supportsSideSessions: () => false,
-    async startSideSession() { throw new Error("unsupported"); },
-    sendSideTurn: () => { throw new Error("unsupported"); },
-    async stopSideSession() { throw new Error("unsupported"); },
-    onSide: () => { throw new Error("unsupported"); },
+    async startSideSession() {
+      throw new Error("unsupported");
+    },
+    sendSideTurn: () => {
+      throw new Error("unsupported");
+    },
+    async stopSideSession() {
+      throw new Error("unsupported");
+    },
+    onSide: () => {
+      throw new Error("unsupported");
+    },
     ...overrides,
   };
 }
 
-function stubTelegram(): { client: TelegramClient; calls: Array<{ method: string; args: unknown[] }> } {
+function stubTelegram(): {
+  client: TelegramClient;
+  calls: Array<{ method: string; args: unknown[] }>;
+} {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const client = {
     async sendMessage(chatId: number, text: string) {
@@ -68,9 +87,7 @@ function buildCtx(opts: {
   return { ctx, calls };
 }
 
-function makeBotConfig(
-  commands: BotConfig["commands"],
-): BotConfig {
+function makeBotConfig(commands: BotConfig["commands"]): BotConfig {
   return {
     id: "alpha",
     token: "TT:AAAA",
@@ -82,6 +99,7 @@ function makeBotConfig(
       args: [],
       env: {},
       pass_continue_flag: true,
+      acknowledge_dangerous: true,
     },
   };
 }
@@ -111,7 +129,10 @@ describe("parseCommand", () => {
   });
 
   test("handles tab separator", () => {
-    expect(parseCommand("/reset\targ")).toEqual({ trigger: "/reset", rest: "arg" });
+    expect(parseCommand("/reset\targ")).toEqual({
+      trigger: "/reset",
+      rest: "arg",
+    });
   });
 });
 
@@ -120,9 +141,15 @@ describe("parseCommand", () => {
 describe("dispatchCommand: /reset", () => {
   test("calls runner.reset() and replies with confirmation", async () => {
     let resetCalled = false;
-    const runner = stubRunner({ async reset() { resetCalled = true; } });
+    const runner = stubRunner({
+      async reset() {
+        resetCalled = true;
+      },
+    });
     const { ctx, calls } = buildCtx({
-      botConfig: makeBotConfig([{ trigger: "/reset", action: "builtin:reset" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/reset", action: "builtin:reset" },
+      ]),
       runner,
     });
     const result = await dispatchCommand(ctx, { trigger: "/reset", rest: "" });
@@ -144,7 +171,9 @@ describe("dispatchCommand: /reset", () => {
   test("replies with 'not supported' when runner.supportsReset() is false", async () => {
     const runner = stubRunner({ supportsReset: () => false });
     const { ctx, calls } = buildCtx({
-      botConfig: makeBotConfig([{ trigger: "/reset", action: "builtin:reset" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/reset", action: "builtin:reset" },
+      ]),
       runner,
     });
     const result = await dispatchCommand(ctx, { trigger: "/reset", rest: "" });
@@ -155,10 +184,14 @@ describe("dispatchCommand: /reset", () => {
 
   test("reports error to user when runner.reset() throws", async () => {
     const runner = stubRunner({
-      async reset() { throw new Error("boom"); },
+      async reset() {
+        throw new Error("boom");
+      },
     });
     const { ctx, calls } = buildCtx({
-      botConfig: makeBotConfig([{ trigger: "/reset", action: "builtin:reset" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/reset", action: "builtin:reset" },
+      ]),
       runner,
     });
     const result = await dispatchCommand(ctx, { trigger: "/reset", rest: "" });
@@ -171,7 +204,9 @@ describe("dispatchCommand: /reset", () => {
 describe("dispatchCommand: /status", () => {
   test("replies with a multi-line status summary", async () => {
     const { ctx, calls } = buildCtx({
-      botConfig: makeBotConfig([{ trigger: "/status", action: "builtin:status" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/status", action: "builtin:status" },
+      ]),
     });
     await dispatchCommand(ctx, { trigger: "/status", rest: "" });
     const reply = calls.find((c) => c.method === "sendMessage");
@@ -184,7 +219,9 @@ describe("dispatchCommand: /status", () => {
   test("shows 'DISABLED' when bot is disabled", async () => {
     const { client, calls } = stubTelegram();
     const ctx: CommandContext = {
-      botConfig: makeBotConfig([{ trigger: "/status", action: "builtin:status" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/status", action: "builtin:status" },
+      ]),
       chatId: 111,
       messageId: 1,
       fromUserId: 42,
@@ -212,7 +249,9 @@ describe("dispatchCommand: /status", () => {
 describe("dispatchCommand: /health", () => {
   test("replies with ✅ healthy when ready+not-disabled+empty mailbox", async () => {
     const { ctx, calls } = buildCtx({
-      botConfig: makeBotConfig([{ trigger: "/health", action: "builtin:health" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/health", action: "builtin:health" },
+      ]),
     });
     await dispatchCommand(ctx, { trigger: "/health", rest: "" });
     const reply = calls.find((c) => c.method === "sendMessage");
@@ -222,7 +261,9 @@ describe("dispatchCommand: /health", () => {
   test("replies with ⚠️ degraded when runner not ready", async () => {
     const { client, calls } = stubTelegram();
     const ctx: CommandContext = {
-      botConfig: makeBotConfig([{ trigger: "/health", action: "builtin:health" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/health", action: "builtin:health" },
+      ]),
       chatId: 111,
       messageId: 1,
       fromUserId: 42,
@@ -246,7 +287,9 @@ describe("dispatchCommand: /health", () => {
   test("replies with ⚠️ degraded when mailbox_depth >= 5", async () => {
     const { client, calls } = stubTelegram();
     const ctx: CommandContext = {
-      botConfig: makeBotConfig([{ trigger: "/health", action: "builtin:health" }]),
+      botConfig: makeBotConfig([
+        { trigger: "/health", action: "builtin:health" },
+      ]),
       chatId: 111,
       messageId: 1,
       fromUserId: 42,

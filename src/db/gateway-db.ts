@@ -100,7 +100,9 @@ export class GatewayDB {
       getUpdateStatus: d.prepare(
         "SELECT id, status FROM inbound_updates WHERE bot_id = ? AND telegram_update_id = ?",
       ),
-      setUpdateStatus: d.prepare("UPDATE inbound_updates SET status = ? WHERE id = ?"),
+      setUpdateStatus: d.prepare(
+        "UPDATE inbound_updates SET status = ? WHERE id = ?",
+      ),
       createTurn: d.prepare(
         "INSERT INTO turns (bot_id, chat_id, source_update_id, attachment_paths_json) VALUES (?, ?, ?, ?)",
       ),
@@ -177,7 +179,9 @@ export class GatewayDB {
       incWorkerGen: d.prepare(
         "UPDATE worker_state SET generation = generation + 1 WHERE bot_id = ?",
       ),
-      getWorkerGen: d.prepare("SELECT generation FROM worker_state WHERE bot_id = ?"),
+      getWorkerGen: d.prepare(
+        "SELECT generation FROM worker_state WHERE bot_id = ?",
+      ),
       resetAllWorkers: d.prepare(
         "UPDATE worker_state SET status = 'starting', pid = NULL",
       ),
@@ -347,9 +351,10 @@ export class GatewayDB {
     botId: BotId,
     telegramUpdateId: number,
   ): { id: number; status: string } | null {
-    return this.stmts.getUpdateStatus.get(botId, telegramUpdateId) as
-      | { id: number; status: string }
-      | null;
+    return this.stmts.getUpdateStatus.get(botId, telegramUpdateId) as {
+      id: number;
+      status: string;
+    } | null;
   }
 
   insertUpdate(
@@ -446,7 +451,9 @@ export class GatewayDB {
   }
 
   getTurnText(turnId: number): string | null {
-    const row = this.stmts.getTurnText.get(turnId) as { payload_json: string } | null;
+    const row = this.stmts.getTurnText.get(turnId) as {
+      payload_json: string;
+    } | null;
     if (!row) return null;
     try {
       const payload = JSON.parse(row.payload_json);
@@ -463,9 +470,9 @@ export class GatewayDB {
   }
 
   getTurnAttachments(turnId: number): string[] {
-    const row = this.stmts.getTurnAttachments.get(turnId) as
-      | { attachment_paths_json: string | null }
-      | null;
+    const row = this.stmts.getTurnAttachments.get(turnId) as {
+      attachment_paths_json: string | null;
+    } | null;
     if (!row?.attachment_paths_json) return [];
     try {
       return JSON.parse(row.attachment_paths_json) as string[];
@@ -475,9 +482,9 @@ export class GatewayDB {
   }
 
   getTurnSourceUpdateId(turnId: number): number | null {
-    const row = this.stmts.getTurnSourceUpdateId.get(turnId) as
-      | { source_update_id: number }
-      | null;
+    const row = this.stmts.getTurnSourceUpdateId.get(turnId) as {
+      source_update_id: number;
+    } | null;
     return row?.source_update_id ?? null;
   }
 
@@ -561,12 +568,16 @@ export class GatewayDB {
   getOutboxRow(
     id: number,
   ): { telegram_message_id: number | null; status: string } | null {
-    return this.stmts.getOutboxRow.get(id) as
-      | { telegram_message_id: number | null; status: string }
-      | null;
+    return this.stmts.getOutboxRow.get(id) as {
+      telegram_message_id: number | null;
+      status: string;
+    } | null;
   }
 
-  hasSupersedingEdit(telegramMessageId: number | null, afterId: number): boolean {
+  hasSupersedingEdit(
+    telegramMessageId: number | null,
+    afterId: number,
+  ): boolean {
     if (!telegramMessageId) return false;
     return !!this.stmts.supersededEdit.get(telegramMessageId, afterId);
   }
@@ -655,9 +666,9 @@ export class GatewayDB {
    * `codex exec resume <id>` on the first turn after a gateway restart.
    */
   getCodexThreadId(botId: BotId): string | null {
-    const row = this.stmts.getCodexThreadId.get(botId) as
-      | { codex_thread_id: string | null }
-      | null;
+    const row = this.stmts.getCodexThreadId.get(botId) as {
+      codex_thread_id: string | null;
+    } | null;
     return row?.codex_thread_id ?? null;
   }
 
@@ -750,9 +761,9 @@ export class GatewayDB {
   }
 
   getLastTurnAt(botId: BotId): string | null {
-    const row = this.stmts.lastTurnAt.get(botId) as
-      | { completed_at: string }
-      | null;
+    const row = this.stmts.lastTurnAt.get(botId) as {
+      completed_at: string;
+    } | null;
     return row?.completed_at ?? null;
   }
 
@@ -789,19 +800,21 @@ export class GatewayDB {
     botId: BotId,
     telegramUserId: string,
   ): { chat_id: number } | null {
-    return this.stmts.getLastChatForUser.get(botId, telegramUserId) as
-      | { chat_id: number }
-      | null;
+    return this.stmts.getLastChatForUser.get(botId, telegramUserId) as {
+      chat_id: number;
+    } | null;
   }
 
   listUserChatsByBot(botId: BotId): Array<{ chat_id: number }> {
-    return this.stmts.listUserChatsByBot.all(botId) as Array<{ chat_id: number }>;
+    return this.stmts.listUserChatsByBot.all(botId) as Array<{
+      chat_id: number;
+    }>;
   }
 
   getIdempotencyTurn(botId: BotId, key: string): number | null {
-    const row = this.stmts.getIdempotencyTurn.get(botId, key) as
-      | { turn_id: number }
-      | null;
+    const row = this.stmts.getIdempotencyTurn.get(botId, key) as {
+      turn_id: number;
+    } | null;
     return row?.turn_id ?? null;
   }
 
@@ -893,7 +906,9 @@ export class GatewayDB {
       const row = this.stmts.insertAskTurnRow.get(
         args.botId,
         inboundId,
-        args.attachmentPaths.length ? JSON.stringify(args.attachmentPaths) : null,
+        args.attachmentPaths.length
+          ? JSON.stringify(args.attachmentPaths)
+          : null,
         args.tokenName,
       ) as { id: number };
       return row.id;
@@ -937,7 +952,9 @@ export class GatewayDB {
         args.botId,
         args.chatId,
         inboundId,
-        args.attachmentPaths.length ? JSON.stringify(args.attachmentPaths) : null,
+        args.attachmentPaths.length
+          ? JSON.stringify(args.attachmentPaths)
+          : null,
         args.tokenName,
         args.sourceLabel,
         args.idempotencyKey,

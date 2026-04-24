@@ -50,7 +50,10 @@ let db: GatewayDB;
 let server: Server;
 let clockMs: number = Date.now();
 
-function fakeRegistry(botIds: string[], config: Config): {
+function fakeRegistry(
+  botIds: string[],
+  config: Config,
+): {
   bot(id: string): unknown;
   botIds: string[];
 } {
@@ -305,7 +308,7 @@ describe("GET /v1/turns/:id — additional status branches (US-010)", () => {
       botId: "bot1",
       tokenName: "owner",
       chatId: 555,
-      markerWrappedText: "[system-message from \"x\"]\n\nhi",
+      markerWrappedText: '[system-message from "x"]\n\nhi',
       idempotencyKey: "idem-xxxxxxxxxxxxxxxxx",
       sourceLabel: "x",
       attachmentPaths: [],

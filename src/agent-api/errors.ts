@@ -106,7 +106,9 @@ export function mapAuthFailure(a: AuthFailure): Response {
     case "bot_not_permitted":
       return errorResponse("bot_not_permitted", undefined, { bot_id: a.botId });
     case "scope_not_permitted":
-      return errorResponse("scope_not_permitted", undefined, { scope: a.scope });
+      return errorResponse("scope_not_permitted", undefined, {
+        scope: a.scope,
+      });
   }
 }
 

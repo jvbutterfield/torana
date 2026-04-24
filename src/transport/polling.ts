@@ -78,7 +78,10 @@ class BotPoller {
     while (this.running) {
       const state = this.db.getBotState(this.botId);
       if (state?.disabled) {
-        log.warn("bot disabled — poller exiting", { bot_id: this.botId, reason: state.disabled_reason });
+        log.warn("bot disabled — poller exiting", {
+          bot_id: this.botId,
+          reason: state.disabled_reason,
+        });
         return;
       }
 
@@ -114,14 +117,15 @@ class BotPoller {
         if (!this.running) return;
         if (err instanceof TelegramError && err.isAuth) {
           log.error("auth failure in poll loop", { bot_id: this.botId });
-          this.db.setBotDisabled(
-            this.botId,
-            "Telegram 401 — check bot token",
-          );
+          this.db.setBotDisabled(this.botId, "Telegram 401 — check bot token");
           return;
         }
         this.failureCount += 1;
-        const wait = nextBackoffMs(this.failureCount - 1, baseBackoff, capBackoff);
+        const wait = nextBackoffMs(
+          this.failureCount - 1,
+          baseBackoff,
+          capBackoff,
+        );
         log.warn("poll failed; backing off", {
           bot_id: this.botId,
           failure: this.failureCount,

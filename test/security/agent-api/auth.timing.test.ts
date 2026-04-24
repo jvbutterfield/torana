@@ -22,7 +22,8 @@ import { describe, expect, test } from "bun:test";
 import { authenticate } from "../../../src/agent-api/auth.js";
 import { mkToken } from "./_harness.js";
 
-const REAL_SECRET = "this-is-a-genuine-token-value-64-chars-long-padded-xxxxxxxxxxxxxx";
+const REAL_SECRET =
+  "this-is-a-genuine-token-value-64-chars-long-padded-xxxxxxxxxxxxxx";
 const SHORT_WRONG = "x";
 const LONG_WRONG = "y".repeat(64);
 
@@ -100,7 +101,11 @@ describe("§12.5.1 auth.timing", () => {
     // Tokens that differ at byte 1 vs byte 31 should both hash + compare.
     const differsAtFirstByte = "0" + REAL_SECRET.slice(1);
     const differsAtLastByte = REAL_SECRET.slice(0, -1) + "0";
-    expect(authenticate(tokens, `Bearer ${differsAtFirstByte}`)).toEqual({ kind: "invalid_token" });
-    expect(authenticate(tokens, `Bearer ${differsAtLastByte}`)).toEqual({ kind: "invalid_token" });
+    expect(authenticate(tokens, `Bearer ${differsAtFirstByte}`)).toEqual({
+      kind: "invalid_token",
+    });
+    expect(authenticate(tokens, `Bearer ${differsAtLastByte}`)).toEqual({
+      kind: "invalid_token",
+    });
   });
 });

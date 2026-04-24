@@ -64,7 +64,13 @@ describe("examples/side-session-runner", () => {
     await r.start();
 
     const mainEvents: RunnerEvent[] = [];
-    for (const k of ["ready", "text_delta", "done", "error", "fatal"] as const) {
+    for (const k of [
+      "ready",
+      "text_delta",
+      "done",
+      "error",
+      "fatal",
+    ] as const) {
       r.on(k, (ev) => mainEvents.push(ev as RunnerEvent));
     }
 
@@ -85,7 +91,13 @@ describe("examples/side-session-runner", () => {
       // Drive side-session turn — dedicated subprocess, own turn counter.
       await r.startSideSession("demo");
       const sideEvents: RunnerEvent[] = [];
-      for (const k of ["ready", "text_delta", "done", "error", "fatal"] as const) {
+      for (const k of [
+        "ready",
+        "text_delta",
+        "done",
+        "error",
+        "fatal",
+      ] as const) {
         r.onSide("demo", k, (ev) => sideEvents.push(ev as RunnerEvent));
       }
 

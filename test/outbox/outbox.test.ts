@@ -12,16 +12,15 @@ import { fileURLToPath } from "node:url";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import { OutboxProcessor } from "../../src/outbox.js";
 import { Metrics } from "../../src/metrics.js";
-import {
-  TelegramClient,
-  TelegramError,
-} from "../../src/telegram/client.js";
+import { TelegramClient, TelegramError } from "../../src/telegram/client.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadSchema(dbPath: string): void {
-  const sql = readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") + "\nPRAGMA user_version=1;";
+  const sql =
+    readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") +
+    "\nPRAGMA user_version=1;";
   const raw = new Database(dbPath, { create: true });
   raw.exec(sql);
   raw.close();
@@ -34,7 +33,11 @@ type FetchArgs = { url: string; init: RequestInit | undefined };
  * per-method. Each bot gets its own instance; the fetch impl sits underneath.
  */
 function makeFetch(
-  handler: (method: string, body: Record<string, unknown>, args: FetchArgs) => Response | Promise<Response>,
+  handler: (
+    method: string,
+    body: Record<string, unknown>,
+    args: FetchArgs,
+  ) => Response | Promise<Response>,
 ): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const urlStr =
@@ -64,7 +67,11 @@ interface Harness {
     fetchImpl?: typeof fetch;
     max_attempts?: number;
     retry_base_ms?: number;
-  }) => { outbox: OutboxProcessor; metrics: Metrics; calls: Array<{ method: string; body: Record<string, unknown> }> };
+  }) => {
+    outbox: OutboxProcessor;
+    metrics: Metrics;
+    calls: Array<{ method: string; body: Record<string, unknown> }>;
+  };
   seedTurn: (botId: string, chatId?: number) => number;
 }
 
@@ -91,7 +98,8 @@ beforeEach(() => {
       return db.createTurn(botId, chatId, inboundId!);
     },
     makeProcessor(opts = {}) {
-      const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+      const calls: Array<{ method: string; body: Record<string, unknown> }> =
+        [];
       const defaultFetch = makeFetch((method) => {
         if (method === "sendMessage") {
           return Response.json({ ok: true, result: { message_id: 9001 } });
@@ -104,12 +112,20 @@ beforeEach(() => {
       const fetchImpl = opts.fetchImpl ?? defaultFetch;
       const wrapped = ((url: string | URL | Request, init?: RequestInit) => {
         const urlStr =
-          typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+          typeof url === "string"
+            ? url
+            : url instanceof URL
+              ? url.toString()
+              : url.url;
         const methodMatch = urlStr.match(/\/bot[^/]+\/(.+)$/);
         const m = methodMatch?.[1] ?? "";
         let body: Record<string, unknown> = {};
         if (init?.body && typeof init.body === "string") {
-          try { body = JSON.parse(init.body); } catch { /* ignore */ }
+          try {
+            body = JSON.parse(init.body);
+          } catch {
+            /* ignore */
+          }
         }
         calls.push({ method: m, body });
         return fetchImpl(url as never, init);
@@ -123,6 +139,7 @@ beforeEach(() => {
         },
         gateway: {
           port: 3000,
+          bind_host: "127.0.0.1",
           data_dir: tmpDir,
           db_path: join(tmpDir, "gateway.db"),
           log_level: "warn",
@@ -166,9 +183,14 @@ describe("OutboxProcessor.drain", () => {
 
   test("respects deadline: returns when maxMs elapses even with rows remaining", async () => {
     // Hand-rolled fetch that hangs forever: drain must return by deadline.
-    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
       });
     }) as unknown as typeof fetch;
     const { outbox } = harness.makeProcessor({ fetchImpl });
@@ -183,10 +205,7 @@ describe("OutboxProcessor.drain", () => {
     // We can't cancel the fetch from here, so just verify drain does return
     // once processPending returns. For a robust assertion, call drain with
     // a completed queue after some time.
-    await Promise.race([
-      drainPromise,
-      new Promise((r) => setTimeout(r, 1500)),
-    ]);
+    await Promise.race([drainPromise, new Promise((r) => setTimeout(r, 1500))]);
     const elapsed = Date.now() - t0;
     // We don't need drain to be bounded tightly — just bound enough that it
     // doesn't hang indefinitely. The hanging fetch would stall forever
@@ -223,14 +242,22 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const row = harness.db.getOutboxRow(outboxId);
     expect(row?.status).toBe("retrying");
     const raw = harness.db
-      .query("SELECT attempt_count, next_attempt_at, last_error FROM outbox WHERE id = ?")
-      .get(outboxId) as { attempt_count: number; next_attempt_at: string; last_error: string };
+      .query(
+        "SELECT attempt_count, next_attempt_at, last_error FROM outbox WHERE id = ?",
+      )
+      .get(outboxId) as {
+      attempt_count: number;
+      next_attempt_at: string;
+      last_error: string;
+    };
     expect(raw.attempt_count).toBe(1);
     expect(raw.next_attempt_at).not.toBeNull();
     // Stored format must be SQLite's datetime() format (space separator, no
     // millis, no Z) so that lexicographic comparison with datetime('now')
     // works correctly during retry eligibility checks.
-    expect(raw.next_attempt_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(raw.next_attempt_at).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
     expect(new Date(raw.next_attempt_at + "Z").getTime()).toBeGreaterThan(
       Date.now() - 1000,
     );
@@ -244,7 +271,11 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const fetchImpl = makeFetch((method) => {
       if (method === "sendMessage") {
         return Response.json(
-          { ok: false, error_code: 429, description: "Too Many Requests: retry after 5" },
+          {
+            ok: false,
+            error_code: 429,
+            description: "Too Many Requests: retry after 5",
+          },
           { status: 429 },
         );
       }
@@ -300,7 +331,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
 
     // Metrics recorded failures.
     const snap = metrics.snapshot();
-    expect(snap.alpha.counters.telegram_send_failures).toBeGreaterThanOrEqual(2);
+    expect(snap.alpha.counters.telegram_send_failures).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 
   test("retry succeeds: row transitions retrying → sent and callback fires", async () => {
@@ -447,7 +480,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const id = outbox.queueSend(turnId, "alpha", 111, "hi");
     // Manually set next_attempt_at to a future time and status=retrying.
     harness.db
-      .query("UPDATE outbox SET status='retrying', next_attempt_at=datetime('now','+1 hour') WHERE id=?")
+      .query(
+        "UPDATE outbox SET status='retrying', next_attempt_at=datetime('now','+1 hour') WHERE id=?",
+      )
       .run(id);
     await outbox.drain(100);
     expect(calls).toBe(0);
@@ -503,7 +538,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
 
     // Force the row eligible again by rewinding next_attempt_at, then drain.
     harness.db
-      .query("UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?")
+      .query(
+        "UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?",
+      )
       .run(id);
     await outbox.drain(100);
     const r2 = harness.db
@@ -516,7 +553,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
 
     // Attempt 3: backoff = 10s * 2^2 = 40s.
     harness.db
-      .query("UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?")
+      .query(
+        "UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?",
+      )
       .run(id);
     await outbox.drain(100);
     const r3 = harness.db

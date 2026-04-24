@@ -139,7 +139,6 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
-
   // C006 — webhook base_url reachable (HEAD; any non-5xx is pass).
   const usesWebhook =
     config.transport.default_mode === "webhook" ||
@@ -220,7 +219,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       status: "skip",
       detail: "no alerts block configured",
     });
-  } else if (config.alerts.via_bot && config.bots.some((b) => b.id === config.alerts!.via_bot)) {
+  } else if (
+    config.alerts.via_bot &&
+    config.bots.some((b) => b.id === config.alerts!.via_bot)
+  ) {
     checks.push({
       id: "C008",
       status: "ok",
@@ -250,7 +252,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checks.push({
       id: "C009",
       status: "warn",
-      detail: "agent_api.enabled=true but no tokens defined — no callers can authenticate",
+      detail:
+        "agent_api.enabled=true but no tokens defined — no callers can authenticate",
     });
   } else {
     checks.push({
@@ -361,10 +364,14 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     const ask = agentApi.ask;
     const violations: string[] = [];
     if (ss.idle_ttl_ms > ss.hard_ttl_ms) {
-      violations.push(`side_sessions.idle_ttl_ms(${ss.idle_ttl_ms}) > hard_ttl_ms(${ss.hard_ttl_ms})`);
+      violations.push(
+        `side_sessions.idle_ttl_ms(${ss.idle_ttl_ms}) > hard_ttl_ms(${ss.hard_ttl_ms})`,
+      );
     }
     if (ss.max_per_bot > ss.max_global) {
-      violations.push(`side_sessions.max_per_bot(${ss.max_per_bot}) > max_global(${ss.max_global})`);
+      violations.push(
+        `side_sessions.max_per_bot(${ss.max_per_bot}) > max_global(${ss.max_global})`,
+      );
     }
     if (ask.default_timeout_ms > ask.max_timeout_ms) {
       violations.push(
@@ -402,8 +409,7 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checks.push({
       id: "C014",
       status: "warn",
-      detail:
-        `agent_api bound on port ${config.gateway.port}; ensure TLS + network access controls (reverse proxy, firewall, VPN) match the trust model of the ${agentApi.tokens.length} token(s)`,
+      detail: `agent_api bound on port ${config.gateway.port}; ensure TLS + network access controls (reverse proxy, firewall, VPN) match the trust model of the ${agentApi.tokens.length} token(s)`,
     });
   }
 
@@ -431,7 +437,9 @@ export async function runRemoteDoctor(
   const timeoutMs = opts.timeoutMs ?? 2_000;
   const fetchImpl = opts.fetchImpl ?? fetch;
 
-  async function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async function withTimeout<T>(
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {

@@ -36,22 +36,28 @@ const DEFAULT_MAX_BYTES = 1024 * 1024;
  *
  * Errors include `line`/`column` so the user can find the reference.
  */
-export function interpolate(input: string, env: Record<string, string | undefined>): string {
+export function interpolate(
+  input: string,
+  env: Record<string, string | undefined>,
+): string {
   const masked = maskYamlComments(input);
-  return input.replace(/\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/g, (match, name, fallback, offset) => {
-    // `masked` has the same length as `input` — if the same offset in `masked`
-    // has been replaced with spaces, the reference lives inside a comment and
-    // we must leave the original text unchanged.
-    if (masked[offset] === " ") return match;
-    const val = env[name];
-    if (val !== undefined && val !== "") return val;
-    if (fallback !== undefined) return fallback;
-    if (val === "") return "";
-    const { line, column } = offsetToLineColumn(input, offset);
-    throw new ConfigLoadError(
-      `env var \${${name}} is not set and has no default (at line ${line}, column ${column})`,
-    );
-  });
+  return input.replace(
+    /\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/g,
+    (match, name, fallback, offset) => {
+      // `masked` has the same length as `input` — if the same offset in `masked`
+      // has been replaced with spaces, the reference lives inside a comment and
+      // we must leave the original text unchanged.
+      if (masked[offset] === " ") return match;
+      const val = env[name];
+      if (val !== undefined && val !== "") return val;
+      if (fallback !== undefined) return fallback;
+      if (val === "") return "";
+      const { line, column } = offsetToLineColumn(input, offset);
+      throw new ConfigLoadError(
+        `env var \${${name}} is not set and has no default (at line ${line}, column ${column})`,
+      );
+    },
+  );
 }
 
 /**
@@ -101,7 +107,12 @@ function maskYamlComments(input: string): string {
       prev = c;
       continue;
     }
-    if (c === "#" && !inSingle && !inDouble && (prev === "" || /\s/.test(prev))) {
+    if (
+      c === "#" &&
+      !inSingle &&
+      !inDouble &&
+      (prev === "" || /\s/.test(prev))
+    ) {
       inComment = true;
       out.push(" ");
       prev = c;
@@ -117,7 +128,10 @@ function maskYamlComments(input: string): string {
   return out.join("");
 }
 
-function offsetToLineColumn(input: string, offset: number): { line: number; column: number } {
+function offsetToLineColumn(
+  input: string,
+  offset: number,
+): { line: number; column: number } {
   let line = 1;
   let column = 1;
   for (let i = 0; i < offset && i < input.length; i++) {
@@ -132,8 +146,13 @@ function offsetToLineColumn(input: string, offset: number): { line: number; colu
 }
 
 /** Main entry point: read from disk, interpolate, parse YAML, validate. */
-export function loadConfigFromFile(filePath: string, opts: LoadOptions = {}): LoadedConfig {
-  const absPath = isAbsolute(filePath) ? filePath : resolve(process.cwd(), filePath);
+export function loadConfigFromFile(
+  filePath: string,
+  opts: LoadOptions = {},
+): LoadedConfig {
+  const absPath = isAbsolute(filePath)
+    ? filePath
+    : resolve(process.cwd(), filePath);
   const stat = statSync(absPath);
   if (stat.size > (opts.maxBytes ?? DEFAULT_MAX_BYTES)) {
     throw new ConfigLoadError(
@@ -184,11 +203,17 @@ export function loadConfigFromString(
   try {
     parsed = yaml.load(interpolated);
   } catch (err) {
-    throw new ConfigLoadError(`YAML parse error: ${(err as Error).message}`, opts.filePath);
+    throw new ConfigLoadError(
+      `YAML parse error: ${(err as Error).message}`,
+      opts.filePath,
+    );
   }
 
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new ConfigLoadError("config root must be a YAML object", opts.filePath);
+    throw new ConfigLoadError(
+      "config root must be a YAML object",
+      opts.filePath,
+    );
   }
 
   let config: Config;
@@ -200,7 +225,9 @@ export function loadConfigFromString(
         path: pathToString(i.path),
         message: i.message,
       }));
-      const summary = issues.map((i) => `  - ${i.path}: ${i.message}`).join("\n");
+      const summary = issues
+        .map((i) => `  - ${i.path}: ${i.message}`)
+        .join("\n");
       throw new ConfigLoadError(
         `config validation failed:\n${summary}`,
         opts.filePath,
@@ -213,7 +240,10 @@ export function loadConfigFromString(
   // Resolve paths relative to data_dir / config file.
   const dataDir = isAbsolute(config.gateway.data_dir)
     ? config.gateway.data_dir
-    : resolve(opts.filePath ? dirname(opts.filePath) : process.cwd(), config.gateway.data_dir);
+    : resolve(
+        opts.filePath ? dirname(opts.filePath) : process.cwd(),
+        config.gateway.data_dir,
+      );
   config.gateway.data_dir = dataDir;
 
   if (config.gateway.db_path) {
@@ -265,12 +295,18 @@ function resolveAgentApiTokens(
 
   // Two warnings — fired BEFORE the empty-tokens early return so an enabled
   // block with no tokens still nudges the operator (PRD US-016 C009).
-  if (config.agent_api.enabled === false && config.agent_api.tokens.length > 0) {
+  if (
+    config.agent_api.enabled === false &&
+    config.agent_api.tokens.length > 0
+  ) {
     warnings.push(
       "agent_api.tokens defined but agent_api.enabled=false — tokens are inert until enabled",
     );
   }
-  if (config.agent_api.enabled === true && config.agent_api.tokens.length === 0) {
+  if (
+    config.agent_api.enabled === true &&
+    config.agent_api.tokens.length === 0
+  ) {
     warnings.push(
       "agent_api.enabled=true but no tokens defined — no callers will be able to authenticate",
     );
@@ -329,14 +365,18 @@ function collectSecrets(
   agentApiTokens: ResolvedAgentApiToken[] = [],
 ): string[] {
   const secrets = new Set<string>();
-  if (config.transport.webhook?.secret) secrets.add(config.transport.webhook.secret);
+  if (config.transport.webhook?.secret)
+    secrets.add(config.transport.webhook.secret);
   for (const bot of config.bots) {
     if (bot.token) secrets.add(bot.token);
   }
   for (const tok of agentApiTokens) {
     if (tok.secret) secrets.add(tok.secret);
   }
-  return [...secrets].filter((s) => s.length >= 6);
+  // Redact every configured secret. Schema validation already enforces a
+  // 32-char minimum on webhook + agent-api secrets; bot tokens come from
+  // Telegram (always long). No further length filter applied here.
+  return [...secrets].filter((s) => s.length > 0);
 }
 
 export { SECRET_PATHS };

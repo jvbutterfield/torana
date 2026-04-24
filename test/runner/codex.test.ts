@@ -449,7 +449,9 @@ describe("CodexRunner lifecycle", () => {
     const line = content
       .split("\n")
       .filter((l) => l.includes('"thread.started"'))
-      .map((l) => JSON.parse(l) as { __argv?: string[]; __resuming?: boolean })[0];
+      .map(
+        (l) => JSON.parse(l) as { __argv?: string[]; __resuming?: boolean },
+      )[0];
     expect(line.__resuming).toBe(true);
     expect(line.__argv?.join(" ")).toContain("resume tid-restored");
 

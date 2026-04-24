@@ -24,9 +24,7 @@ describe("padRight", () => {
 describe("renderJson", () => {
   test("formats with 2-space indent", () => {
     const r = renderJson({ a: 1, b: [2, 3] }, 0);
-    expect(r.stdout).toEqual([
-      `{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}`,
-    ]);
+    expect(r.stdout).toEqual([`{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}`]);
     expect(r.stderr).toEqual([]);
     expect(r.exitCode).toBe(0);
   });

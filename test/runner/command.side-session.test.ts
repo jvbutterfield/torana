@@ -192,7 +192,9 @@ for (const protocol of ["claude-ndjson", "codex-jsonl"] as const) {
 
     test("onSide before startSideSession → SideSessionNotFound", () => {
       const r = newRunner(protocol);
-      expect(() => r.onSide("nope", "done", () => {})).toThrow(SideSessionNotFound);
+      expect(() => r.onSide("nope", "done", () => {})).toThrow(
+        SideSessionNotFound,
+      );
     });
 
     test("happy path: side sendSideTurn lands events on side emitter only", async () => {
@@ -208,7 +210,9 @@ for (const protocol of ["claude-ndjson", "codex-jsonl"] as const) {
         await waitFor(() => sideEvents.find((e) => e.kind === "done"), 5000);
 
         // Main emitter saw the main ready event only — no side events bled in.
-        expect(mainEvents.filter((e) => e.kind === "text_delta").length).toBe(0);
+        expect(mainEvents.filter((e) => e.kind === "text_delta").length).toBe(
+          0,
+        );
         expect(mainEvents.filter((e) => e.kind === "done").length).toBe(0);
 
         const sideText = sideEvents.find((e) => e.kind === "text_delta") as
@@ -376,18 +380,18 @@ for (const protocol of ["claude-ndjson", "codex-jsonl"] as const) {
         sideStartupMs: 200,
       });
       try {
-        await r
-          .startSideSession("s1")
-          .then(
-            () => {
-              throw new Error("expected startSideSession to reject");
-            },
-            () => {
-              /* expected */
-            },
-          );
+        await r.startSideSession("s1").then(
+          () => {
+            throw new Error("expected startSideSession to reject");
+          },
+          () => {
+            /* expected */
+          },
+        );
         // Entry was scrubbed — onSide must not see a phantom entry.
-        expect(() => r.onSide("s1", "done", () => {})).toThrow(SideSessionNotFound);
+        expect(() => r.onSide("s1", "done", () => {})).toThrow(
+          SideSessionNotFound,
+        );
       } finally {
         /* nothing to stop — spawn failed */
       }
@@ -398,7 +402,9 @@ for (const protocol of ["claude-ndjson", "codex-jsonl"] as const) {
       // after the pool has already scrubbed the entry during shutdown or
       // hard-TTL sweep; a throw here would mask the original error.
       const r = newRunner(protocol);
-      await expect(r.stopSideSession("nonexistent", 500)).resolves.toBeUndefined();
+      await expect(
+        r.stopSideSession("nonexistent", 500),
+      ).resolves.toBeUndefined();
     });
 
     test("stopSideSession is idempotent — concurrent second call coalesces", async () => {
@@ -414,13 +420,21 @@ for (const protocol of ["claude-ndjson", "codex-jsonl"] as const) {
       await r.start();
       await r.startSideSession("s1");
       const [ok1, ok2] = await Promise.all([
-        r.stopSideSession("s1", 1000).then(() => true).catch(() => false),
-        r.stopSideSession("s1", 1000).then(() => true).catch(() => false),
+        r
+          .stopSideSession("s1", 1000)
+          .then(() => true)
+          .catch(() => false),
+        r
+          .stopSideSession("s1", 1000)
+          .then(() => true)
+          .catch(() => false),
       ]);
       expect(ok1).toBe(true);
       expect(ok2).toBe(true);
       // Entry is gone.
-      expect(() => r.onSide("s1", "done", () => {})).toThrow(SideSessionNotFound);
+      expect(() => r.onSide("s1", "done", () => {})).toThrow(
+        SideSessionNotFound,
+      );
       // Third call on a now-unknown id must be silent.
       await expect(r.stopSideSession("s1", 500)).resolves.toBeUndefined();
       await r.stop(500);
@@ -444,7 +458,9 @@ describe("CommandRunner side-sessions — startSideSession failure modes", () =>
       logDir: tmpDir,
       sideStartupMs: 2000, // long enough that the exit rejects first
     });
-    await expect(r.startSideSession("s1")).rejects.toThrow(/exited before ready/);
+    await expect(r.startSideSession("s1")).rejects.toThrow(
+      /exited before ready/,
+    );
     // Entry scrubbed: restart with same id succeeds and `onSide` no longer
     // sees a phantom entry.
     expect(() => r.onSide("s1", "done", () => {})).toThrow(SideSessionNotFound);
@@ -502,9 +518,7 @@ describe("CommandRunner side-sessions — attachment forwarding", () => {
       // Side-subprocess log reflects the stdin payload (mock writes incoming
       // traffic to its log via the runner's log pipe). Grep for the
       // attachment paths to confirm encoding landed downstream.
-      const log = await Bun.file(
-        resolve(tmpDir, "alpha.side.s1.log"),
-      ).text();
+      const log = await Bun.file(resolve(tmpDir, "alpha.side.s1.log")).text();
       const text = e.find((x) => x.kind === "text_delta") as
         | { text: string }
         | undefined;

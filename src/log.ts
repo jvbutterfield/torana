@@ -11,7 +11,12 @@
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type LogFormat = "json" | "text";
 
-const LEVELS: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
+const LEVELS: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
 
 let minLevel: number = LEVELS.info;
 let format: LogFormat = "json";
@@ -26,8 +31,13 @@ export function setLogFormat(fmt: LogFormat): void {
 }
 
 export function setSecrets(values: string[]): void {
+  // Redact every configured secret regardless of length. Schema-layer
+  // validation (SecretString in config/schema.ts) already rejects trivially
+  // short webhook/agent-api secrets; bot tokens are Telegram-controlled and
+  // always long. No length filter is applied here so operators cannot
+  // accidentally bypass redaction by setting an otherwise-valid short value.
   // Sort by length descending so overlapping secrets replace longest-first.
-  secrets = [...new Set(values.filter((v) => v.length >= 6))].sort(
+  secrets = [...new Set(values.filter((v) => v.length > 0))].sort(
     (a, b) => b.length - a.length,
   );
 }
@@ -66,13 +76,25 @@ function ts(): string {
   return new Date().toISOString();
 }
 
-function emit(level: LogLevel, module: string, msg: string, extra?: Record<string, unknown>): void {
+function emit(
+  level: LogLevel,
+  module: string,
+  msg: string,
+  extra?: Record<string, unknown>,
+): void {
   if (LEVELS[level] < minLevel) return;
 
   const redactedMsg = redactString(msg);
-  const redactedExtra = extra ? (redactValue(extra) as Record<string, unknown>) : undefined;
+  const redactedExtra = extra
+    ? (redactValue(extra) as Record<string, unknown>)
+    : undefined;
 
-  const line: Record<string, unknown> = { ts: ts(), level, module, msg: redactedMsg };
+  const line: Record<string, unknown> = {
+    ts: ts(),
+    level,
+    module,
+    msg: redactedMsg,
+  };
   if (redactedExtra) Object.assign(line, redactedExtra);
 
   const out = level === "error" ? console.error : console.log;
@@ -82,10 +104,14 @@ function emit(level: LogLevel, module: string, msg: string, extra?: Record<strin
     const extraStr = redactedExtra
       ? " " +
         Object.entries(redactedExtra)
-          .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+          .map(
+            ([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`,
+          )
           .join(" ")
       : "";
-    out(`${line.ts} ${level.toUpperCase().padEnd(5)} ${module}: ${redactedMsg}${extraStr}`);
+    out(
+      `${line.ts} ${level.toUpperCase().padEnd(5)} ${module}: ${redactedMsg}${extraStr}`,
+    );
   }
 }
 
@@ -97,9 +123,15 @@ export interface Logger {
   child(bindings: Record<string, unknown>): Logger;
 }
 
-export function logger(module: string, bindings: Record<string, unknown> = {}): Logger {
-  const merge = (extra?: Record<string, unknown>): Record<string, unknown> | undefined => {
-    if (!extra) return Object.keys(bindings).length > 0 ? { ...bindings } : undefined;
+export function logger(
+  module: string,
+  bindings: Record<string, unknown> = {},
+): Logger {
+  const merge = (
+    extra?: Record<string, unknown>,
+  ): Record<string, unknown> | undefined => {
+    if (!extra)
+      return Object.keys(bindings).length > 0 ? { ...bindings } : undefined;
     return { ...bindings, ...extra };
   };
 

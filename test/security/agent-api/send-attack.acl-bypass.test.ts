@@ -39,7 +39,11 @@ describe("§12.5.5 send-attack.acl-bypass", () => {
         "Idempotency-Key": "acl-bypass-key-abc-efgh-ijklmnop",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text: "please comply", source: "attack", user_id: "999" }),
+      body: JSON.stringify({
+        text: "please comply",
+        source: "attack",
+        user_id: "999",
+      }),
     });
     expect(r.status).toBe(403);
     expect((await r.json()).error).toBe("target_not_authorized");
@@ -61,7 +65,11 @@ describe("§12.5.5 send-attack.acl-bypass", () => {
         "Idempotency-Key": "acl-stale-key-abc-efgh-ijklmnop",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text: "welcome back", source: "attack", user_id: "999" }),
+      body: JSON.stringify({
+        text: "welcome back",
+        source: "attack",
+        user_id: "999",
+      }),
     });
     expect(r.status).toBe(403);
     expect((await r.json()).error).toBe("target_not_authorized");

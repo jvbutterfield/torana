@@ -100,6 +100,7 @@ function setup(
   const config = makeTestConfig([makeTestBotConfig("bot1")], {
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "info",
@@ -143,7 +144,13 @@ function tokenWith(
 function multipartBody(
   parts: Array<
     | { kind: "field"; name: string; value: string }
-    | { kind: "file"; name: string; filename: string; mime: string; bytes: Uint8Array }
+    | {
+        kind: "file";
+        name: string;
+        filename: string;
+        mime: string;
+        bytes: Uint8Array;
+      }
   >,
 ): FormData {
   const form = new FormData();
@@ -322,7 +329,13 @@ describe("send multipart — idempotent replay file rollback", () => {
         { kind: "field", name: "text", value: "first" },
         { kind: "field", name: "source", value: "x" },
         { kind: "field", name: "user_id", value: String(USER_ID) },
-        { kind: "file", name: "f", filename: "a.png", mime: "image/png", bytes: PNG },
+        {
+          kind: "file",
+          name: "f",
+          filename: "a.png",
+          mime: "image/png",
+          bytes: PNG,
+        },
       ]),
     });
     expect(r1.status).toBe(202);
@@ -377,8 +390,20 @@ describe("send multipart — aggregate + count caps", () => {
         { kind: "field", name: "text", value: "hi" },
         { kind: "field", name: "source", value: "x" },
         { kind: "field", name: "user_id", value: String(USER_ID) },
-        { kind: "file", name: "a", filename: "a.png", mime: "image/png", bytes: PNG },
-        { kind: "file", name: "b", filename: "b.png", mime: "image/png", bytes: PNG },
+        {
+          kind: "file",
+          name: "a",
+          filename: "a.png",
+          mime: "image/png",
+          bytes: PNG,
+        },
+        {
+          kind: "file",
+          name: "b",
+          filename: "b.png",
+          mime: "image/png",
+          bytes: PNG,
+        },
       ]),
     });
     expect(r.status).toBe(413);

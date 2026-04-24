@@ -2,19 +2,20 @@
 
 import { describe, expect, test } from "bun:test";
 
-import {
-  AgentApiClient,
-  AgentApiError,
-} from "../../src/agent-api/client.js";
+import { AgentApiClient, AgentApiError } from "../../src/agent-api/client.js";
 import { runBots } from "../../src/cli/bots.js";
 import { ExitCode } from "../../src/cli/shared/exit.js";
 import { CliUsageError } from "../../src/cli/shared/args.js";
 
 function clientStub(impl: Partial<AgentApiClient>): AgentApiClient {
   return Object.assign(
-    new AgentApiClient({ server: "http://x", token: "t", fetchImpl: (() => {
-      throw new Error("not used");
-    }) as unknown as typeof fetch }),
+    new AgentApiClient({
+      server: "http://x",
+      token: "t",
+      fetchImpl: (() => {
+        throw new Error("not used");
+      }) as unknown as typeof fetch,
+    }),
     impl,
   );
 }
@@ -24,8 +25,16 @@ describe("runBots list", () => {
     const client = clientStub({
       listBots: async () => ({
         bots: [
-          { bot_id: "alpha", runner_type: "claude-code", supports_side_sessions: true },
-          { bot_id: "beta", runner_type: "command", supports_side_sessions: false },
+          {
+            bot_id: "alpha",
+            runner_type: "claude-code",
+            supports_side_sessions: true,
+          },
+          {
+            bot_id: "beta",
+            runner_type: "command",
+            supports_side_sessions: false,
+          },
         ],
       }),
     });
@@ -51,14 +60,15 @@ describe("runBots list", () => {
     const client = clientStub({
       listBots: async () => ({
         bots: [
-          { bot_id: "alpha", runner_type: "claude-code", supports_side_sessions: true },
+          {
+            bot_id: "alpha",
+            runner_type: "claude-code",
+            supports_side_sessions: true,
+          },
         ],
       }),
     });
-    const r = await runBots(
-      { argv: ["--json"], action: "list" },
-      { client },
-    );
+    const r = await runBots({ argv: ["--json"], action: "list" }, { client });
     const body = JSON.parse(r.stdout[0]!);
     expect(body.bots).toHaveLength(1);
   });
@@ -94,10 +104,7 @@ describe("runBots list", () => {
 
   test("--help short-circuits", async () => {
     const client = clientStub({});
-    const r = await runBots(
-      { argv: ["--help"], action: "list" },
-      { client },
-    );
+    const r = await runBots({ argv: ["--help"], action: "list" }, { client });
     expect(r.exitCode).toBe(ExitCode.success);
     expect(r.stdout[0]).toContain("Usage: torana bots list");
   });

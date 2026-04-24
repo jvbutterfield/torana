@@ -26,7 +26,13 @@
 // File mode is 0600; `saveProfiles` chmods on every write, `loadProfiles`
 // emits a warning in its `warnings` array when the on-disk perms are wider.
 
-import { existsSync, statSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  statSync,
+  chmodSync,
+  mkdirSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 
@@ -295,10 +301,7 @@ export function upsertProfile(
   return next;
 }
 
-export function removeProfile(
-  state: ProfileState,
-  name: string,
-): ProfileState {
+export function removeProfile(state: ProfileState, name: string): ProfileState {
   if (!Object.prototype.hasOwnProperty.call(state.profiles, name)) {
     throw new ProfileStoreError(
       `profile '${name}' is not defined`,

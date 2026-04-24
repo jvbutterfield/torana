@@ -159,6 +159,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
     version: 1,
     gateway: {
       port,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -218,7 +219,10 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
         max_per_bot: cfg.maxPerBot,
         max_global: cfg.maxGlobal,
       },
-      send: { idempotency_retention_ms: cfg.idempotencyRetentionMs },
+      send: {
+        max_body_bytes: 10 * 1024 * 1024,
+        idempotency_retention_ms: cfg.idempotencyRetentionMs,
+      },
       ask: {
         default_timeout_ms: 30_000,
         max_timeout_ms: 300_000,
@@ -290,9 +294,9 @@ async function takeSample(h: Harness, startMs: number): Promise<Sample> {
   const mem = process.memoryUsage();
   const fdCount = await countFds(process.pid);
   const idempotencyRows = (
-    h.db
-      .query("SELECT COUNT(*) AS n FROM agent_api_idempotency")
-      .get() as { n: number }
+    h.db.query("SELECT COUNT(*) AS n FROM agent_api_idempotency").get() as {
+      n: number;
+    }
   ).n;
   const sideSessionRowsAll = (
     h.db.query("SELECT COUNT(*) AS n FROM side_sessions").get() as {
@@ -301,7 +305,9 @@ async function takeSample(h: Harness, startMs: number): Promise<Sample> {
   ).n;
   const sideSessionRowsLive = (
     h.db
-      .query("SELECT COUNT(*) AS n FROM side_sessions WHERE state != 'stopping'")
+      .query(
+        "SELECT COUNT(*) AS n FROM side_sessions WHERE state != 'stopping'",
+      )
       .get() as { n: number }
   ).n;
   return {
@@ -414,10 +420,7 @@ async function pollUntilDone(
   return false;
 }
 
-async function fireSend(
-  h: Harness,
-  stats: WorkloadStats,
-): Promise<void> {
+async function fireSend(h: Harness, stats: WorkloadStats): Promise<void> {
   stats.sendAttempts += 1;
   const body = {
     text: "soak send " + stats.sendAttempts,
@@ -538,7 +541,9 @@ function aggregate(
   //    short soaks the test harness can force a sweep at the end).
   const idempotencyPeak = Math.max(0, ...samples.map((s) => s.idempotencyRows));
   const idempotencyFinal =
-    samples.length > 0 ? (samples[samples.length - 1]?.idempotencyRows ?? 0) : 0;
+    samples.length > 0
+      ? (samples[samples.length - 1]?.idempotencyRows ?? 0)
+      : 0;
   const idempotencyDropped =
     idempotencyPeak === 0 || idempotencyFinal <= idempotencyPeak;
 
@@ -549,18 +554,16 @@ function aggregate(
 
   // 6. No orphan side_sessions rows at teardown.
   if (orphanRows > 0) {
-    failures.push(`${orphanRows} orphan side_sessions row(s) survived shutdown`);
+    failures.push(
+      `${orphanRows} orphan side_sessions row(s) survived shutdown`,
+    );
   }
 
   // 7. Success rates.
   const askSuccessRate =
-    stats.askAttempts === 0
-      ? 1
-      : stats.askSuccess / stats.askAttempts;
+    stats.askAttempts === 0 ? 1 : stats.askSuccess / stats.askAttempts;
   const sendSuccessRate =
-    stats.sendAttempts === 0
-      ? 1
-      : stats.sendSuccess / stats.sendAttempts;
+    stats.sendAttempts === 0 ? 1 : stats.sendSuccess / stats.sendAttempts;
   if (askSuccessRate < 0.99) {
     failures.push(
       `ask success rate ${(askSuccessRate * 100).toFixed(2)}% < 99% (attempts=${stats.askAttempts} success=${stats.askSuccess})`,
@@ -585,9 +588,8 @@ function aggregate(
   return {
     config: { ...cfg, pid: process.pid },
     samples: samples.length,
-    durationMs: samples.length > 0
-      ? (samples[samples.length - 1]?.elapsedMs ?? 0)
-      : 0,
+    durationMs:
+      samples.length > 0 ? (samples[samples.length - 1]?.elapsedMs ?? 0) : 0,
     rssMedianPostHour,
     rssMinPostHour,
     rssMaxPostHour,
@@ -636,7 +638,10 @@ async function runSoak(): Promise<Report> {
 
   const h = await startSoakHarness(cfg);
   const startMs = Date.now();
-  writeFileSync(statusPath, `running since ${new Date(startMs).toISOString()}\n`);
+  writeFileSync(
+    statusPath,
+    `running since ${new Date(startMs).toISOString()}\n`,
+  );
 
   const stats = newStats();
   const samples: Sample[] = [];
@@ -648,7 +653,8 @@ async function runSoak(): Promise<Report> {
     // 3 out of 4 asks ephemeral; every 4th uses a rotating sticky id.
     const sticky =
       workloadIteration % 4 === 0
-        ? (stickySessionIds[workloadIteration % stickySessionIds.length] ?? null)
+        ? (stickySessionIds[workloadIteration % stickySessionIds.length] ??
+          null)
         : null;
     void fireAsk(h, sticky, stats);
     void fireSend(h, stats);
@@ -668,9 +674,7 @@ async function runSoak(): Promise<Report> {
   }, cfg.sampleIntervalMs);
 
   // Drain workload and samplers for the full duration.
-  await new Promise((resolve) =>
-    setTimeout(resolve, cfg.durationMs),
-  );
+  await new Promise((resolve) => setTimeout(resolve, cfg.durationMs));
 
   clearInterval(workloadTimer);
   clearInterval(sampleTimer);
@@ -696,9 +700,7 @@ async function runSoak(): Promise<Report> {
   // Shutdown sequence with orphan-row snapshot in between.
   await h.gateway.shutdown("soak-teardown");
   const orphanRows = (
-    h.db
-      .query("SELECT COUNT(*) AS n FROM side_sessions")
-      .get() as { n: number }
+    h.db.query("SELECT COUNT(*) AS n FROM side_sessions").get() as { n: number }
   ).n;
   h.db.close();
   await h.fake.stop();

@@ -28,7 +28,10 @@ let dbPath: string;
 let db: GatewayDB;
 let server: Server;
 
-function fakeRegistry(botIds: string[], config: Config): {
+function fakeRegistry(
+  botIds: string[],
+  config: Config,
+): {
   bot(id: string): unknown;
   botIds: string[];
 } {
@@ -74,7 +77,10 @@ function setup(tokens: ResolvedAgentApiToken[]): string {
   return `http://127.0.0.1:${server.port}`;
 }
 
-function stubPool(): { listForBot: () => unknown[]; stop: () => Promise<void> } {
+function stubPool(): {
+  listForBot: () => unknown[];
+  stop: () => Promise<void>;
+} {
   return {
     listForBot: () => [],
     stop: async () => {
@@ -109,7 +115,10 @@ describe("/v1/health (public, no auth)", () => {
     const base = setup([]);
     const r = await fetch(`${base}/v1/health`);
     expect(r.status).toBe(200);
-    const body = (await r.json()) as { ok: boolean; agent_api_enabled: boolean };
+    const body = (await r.json()) as {
+      ok: boolean;
+      agent_api_enabled: boolean;
+    };
     expect(body.ok).toBe(true);
     expect(body.agent_api_enabled).toBe(true);
   });
@@ -146,11 +155,51 @@ describe("/v1 auth preamble", () => {
     expect((await r.json()).error).toBe("invalid_token");
   });
 
-  test("unknown bot → 404 unknown_bot (before auth probe)", async () => {
+  test("unknown bot with a token that is NOT authorized for it → 403 bot_not_permitted (not 404, to prevent enumeration)", async () => {
+    // Enumeration defense: a bearer authorized only for `bot1` must not be
+    // able to distinguish unknown bot IDs from known ones. We check
+    // authorization BEFORE bot existence, so this returns 403 with a
+    // bot_not_permitted error even though the bot does not exist.
     const base = setup([token]);
     const r = await fetch(`${base}/v1/bots/nope/ask`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}` },
+      body: JSON.stringify({ text: "hi" }),
+    });
+    expect(r.status).toBe(403);
+    expect((await r.json()).error).toBe("bot_not_permitted");
+  });
+
+  test("unknown bot probed without auth → 401 missing_auth (bot existence not revealed)", async () => {
+    // Stronger enumeration defense: an unauthenticated caller cannot tell a
+    // registered bot id apart from an unregistered one — both return 401.
+    const base = setup([token]);
+    const r = await fetch(`${base}/v1/bots/nope/ask`, {
+      method: "POST",
+      body: JSON.stringify({ text: "hi" }),
+    });
+    expect(r.status).toBe(401);
+    expect((await r.json()).error).toBe("missing_auth");
+  });
+
+  test("unknown bot WITH a token that lists the unknown id → 404 unknown_bot", async () => {
+    // A token whose bot_ids array actually includes the unknown id will
+    // pass authorization, at which point the registry check becomes the
+    // next gate — and legitimately reports unknown_bot. This path should
+    // only ever fire for a misconfigured deployment where tokens.bot_ids
+    // references a bot id that no longer exists.
+    const liberalSecret = "liberal-secret-value-abcdefghij123";
+    const liberalToken: ResolvedAgentApiToken = {
+      name: "liberal",
+      secret: liberalSecret,
+      hash: hash(liberalSecret),
+      bot_ids: ["bot1", "nope"],
+      scopes: ["ask"],
+    };
+    const base = setup([liberalToken]);
+    const r = await fetch(`${base}/v1/bots/nope/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${liberalSecret}` },
       body: JSON.stringify({ text: "hi" }),
     });
     expect(r.status).toBe(404);

@@ -23,14 +23,13 @@ export class AlertManager {
   private chatId: number | null;
   private deliveryClient: TelegramClient | null;
 
-  constructor(
-    config: Config,
-    clients: Map<BotId, TelegramClient>,
-  ) {
+  constructor(config: Config, clients: Map<BotId, TelegramClient>) {
     const alerts = config.alerts;
     this.cooldownMs = alerts?.cooldown_ms ?? 600_000;
     this.chatId = alerts?.chat_id ?? null;
-    this.deliveryClient = alerts?.via_bot ? clients.get(alerts.via_bot) ?? null : null;
+    this.deliveryClient = alerts?.via_bot
+      ? (clients.get(alerts.via_bot) ?? null)
+      : null;
   }
 
   private shouldAlert(key: string): boolean {
@@ -41,7 +40,11 @@ export class AlertManager {
     return true;
   }
 
-  private async emit(kind: AlertKind, botId: BotId | null, text: string): Promise<void> {
+  private async emit(
+    kind: AlertKind,
+    botId: BotId | null,
+    text: string,
+  ): Promise<void> {
     const key = `${kind}:${botId ?? "_"}`;
     if (!this.shouldAlert(key)) return;
 
@@ -61,7 +64,11 @@ export class AlertManager {
   }
 
   async workerDegraded(botId: BotId, reason: string): Promise<void> {
-    await this.emit("workerDegraded", botId, `⚠️ bot ${botId} degraded: ${reason}`);
+    await this.emit(
+      "workerDegraded",
+      botId,
+      `⚠️ bot ${botId} degraded: ${reason}`,
+    );
   }
 
   async workerCrashLoop(botId: BotId, failures: number): Promise<void> {
@@ -73,7 +80,11 @@ export class AlertManager {
   }
 
   async tokenInvalid(botId: BotId): Promise<void> {
-    await this.emit("tokenInvalid", botId, `🚨 bot ${botId} token invalid (401). Disabled.`);
+    await this.emit(
+      "tokenInvalid",
+      botId,
+      `🚨 bot ${botId} token invalid (401). Disabled.`,
+    );
   }
 
   async mailboxBacklog(botId: BotId, depth: number): Promise<void> {

@@ -42,7 +42,9 @@ export function authorize(
   botId: string,
   required: Scope,
 ): AuthFailure | null {
-  if (!token.bot_ids.includes(botId)) return { kind: "bot_not_permitted", botId };
-  if (!token.scopes.includes(required)) return { kind: "scope_not_permitted", scope: required };
+  if (!token.bot_ids.includes(botId))
+    return { kind: "bot_not_permitted", botId };
+  if (!token.scopes.includes(required))
+    return { kind: "scope_not_permitted", scope: required };
   return null;
 }

@@ -27,16 +27,17 @@ agent_api:
       bot_ids: ["reviewer"]
       scopes: ["ask", "send"]
   side_sessions:
-    idle_ttl_ms: 3_600_000    # 1h of no use → reaped
-    hard_ttl_ms: 86_400_000   # 24h absolute lifetime
+    idle_ttl_ms: 3_600_000 # 1h of no use → reaped
+    hard_ttl_ms: 86_400_000 # 24h absolute lifetime
     max_per_bot: 8
     max_global: 64
   send:
+    max_body_bytes: 104_857_600 # 100 MiB — applies to JSON and multipart
     idempotency_retention_ms: 86_400_000
   ask:
     default_timeout_ms: 60_000
     max_timeout_ms: 300_000
-    max_body_bytes: 104_857_600     # 100 MiB
+    max_body_bytes: 104_857_600 # 100 MiB — applies to JSON and multipart
     max_files_per_request: 10
 ```
 
@@ -64,7 +65,7 @@ there.
                                └─────────────────────────────────┘
 ```
 
-Side-sessions are per-bot subprocess instances that are *separate from* the
+Side-sessions are per-bot subprocess instances that are _separate from_ the
 main Telegram-serving runner. A long-running `ask` from CI cannot block a
 Telegram reply, and vice versa.
 
@@ -89,15 +90,30 @@ Authorization: Bearer <raw-token>
 
 Tokens are validated with a **constant-time SHA-256 compare** — the gateway
 stores only the hash at load time. The raw token is added to the secret
-redaction set so it never lands in logs. Authorization is a two-step check:
+redaction set so it never lands in logs. Token secrets must be at least
+32 characters (schema-enforced — generate with `openssl rand -base64 32`).
 
-1. `authenticate`: does the presented token match any configured token?
-2. `authorize`: does that token's `bot_ids` include this `:bot_id`, and does
-   its `scopes` include the required scope (`ask` or `send`)?
+Authorization runs in this exact order so an unauthenticated or
+under-privileged caller cannot enumerate bot ids:
 
-Both return the same error shape. A turn that belongs to another caller
-returns `404 turn_not_found` — never `403` — so enumeration attacks can't
-distinguish "doesn't exist" from "not yours."
+1. `authenticate` — does the presented bearer match any configured token?
+   Missing or wrong → `401 missing_auth` / `401 invalid_token`. Runs
+   **before** any lookup against `:bot_id`.
+2. `authorize` — does the authenticated token's `bot_ids` include this
+   `:bot_id`, and does its `scopes` include the required scope (`ask` or
+   `send`)? Either miss → `403 bot_not_permitted` /
+   `403 scope_not_permitted`. Returned the same way whether or not
+   `:bot_id` actually names a registered bot — a token-for-A probing bot
+   B cannot tell real bots from non-existent ones.
+3. Registry check — is `:bot_id` actually registered? Only reached when
+   the caller's token is legitimately authorized for that id. Unknown →
+   `404 unknown_bot`, which at this point only fires for misconfigured
+   deployments (token `bot_ids` references a bot id that no longer
+   exists in `bots[]`).
+
+A turn that belongs to another caller returns `404 turn_not_found` —
+never `403` — so enumeration attacks can't distinguish "doesn't exist"
+from "not yours."
 
 ---
 
@@ -130,26 +146,27 @@ up on every pre-commit failure path.
 Allowlisted MIME types (anything else returns
 `attachment_mime_not_allowed`):
 
-| `Content-Type` | Extension written to disk |
-|---|---|
-| `image/jpeg` | `.jpg` |
-| `image/png` | `.png` |
-| `image/webp` | `.webp` |
-| `image/gif` | `.gif` |
-| `application/pdf` | `.pdf` |
+| `Content-Type`    | Extension written to disk |
+| ----------------- | ------------------------- |
+| `image/jpeg`      | `.jpg`                    |
+| `image/png`       | `.png`                    |
+| `image/webp`      | `.webp`                   |
+| `image/gif`       | `.gif`                    |
+| `application/pdf` | `.pdf`                    |
 
 **Responses:**
 
-| Status | Meaning |
-|---|---|
-| `200` | `{text, turn_id, session_id, usage, duration_ms}` — done. |
-| `202` | `{turn_id, session_id, status: "in_progress"}` — runner still working at `timeout_ms`. Poll `GET /v1/turns/:turn_id`. |
-| `400` | `invalid_body`, `invalid_timeout`. |
-| `401` / `403` | `invalid_token`, `bot_not_permitted`, `scope_not_permitted`. |
-| `429` | `side_session_busy` (same id mid-turn) or `side_session_capacity` (pool full). |
-| `500` | `runner_error` — includes `X-Torana-Retriable: true|false` header. |
-| `501` | `runner_does_not_support_side_sessions`. |
-| `503` | `runner_fatal` (side-session torn down) or `gateway_shutting_down`. |
+| Status        | Meaning                                                                                                                                      |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `200`         | `{text, turn_id, session_id, usage, duration_ms}` — done.                                                                                    |
+| `202`         | `{turn_id, session_id, status: "in_progress"}` — runner still working at `timeout_ms`. Poll `GET /v1/turns/:turn_id`.                        |
+| `400`         | `invalid_body`, `invalid_timeout`.                                                                                                           |
+| `401` / `403` | `missing_auth`, `invalid_token`, `bot_not_permitted`, `scope_not_permitted`.                                                                 |
+| `413`         | `body_too_large` — Content-Length or streamed body exceeds `ask.max_body_bytes`. Multipart also counts file + form-field bytes in aggregate. |
+| `429`         | `side_session_busy` (same id mid-turn) or `side_session_capacity` (pool full).                                                               |
+| `500`         | `runner_error` — includes an `X-Torana-Retriable` header whose value is `true` or `false`.                                                   |
+| `501`         | `runner_does_not_support_side_sessions`.                                                                                                     |
+| `503`         | `runner_fatal` (side-session torn down) or `gateway_shutting_down`.                                                                          |
 
 The 202 path is the "you wanted sync but your runner is slow" escape. The
 gateway keeps the side-session locked and wires an **orphan listener** that
@@ -193,17 +210,18 @@ than that get swept hourly.
 
 **ACL re-check.** Even with a valid token, the resolved `user_id` must be
 in `access_control.allowed_user_ids` for the target bot — agent-API tokens
-grant access to *bots*, not to *users*.
+grant access to _bots_, not to _users_.
 
 **Responses:**
 
-| Status | Meaning |
-|---|---|
-| `202` | `{turn_id, status: "queued" | "in_progress"}` — enqueued. |
-| `400` | `invalid_body`, `missing_target`, `missing_idempotency_key`, `invalid_idempotency_key`. |
-| `401` / `403` | auth failures; `chat_not_permitted`, `target_not_authorized`. |
-| `404` | `user_not_opened_bot`. |
-| `500` | `internal_error`. |
+| Status        | Meaning                                                                                 |
+| ------------- | --------------------------------------------------------------------------------------- | --------------------------- |
+| `202`         | `{turn_id, status: "queued"                                                             | "in_progress"}` — enqueued. |
+| `400`         | `invalid_body`, `missing_target`, `missing_idempotency_key`, `invalid_idempotency_key`. |
+| `401` / `403` | auth failures; `chat_not_permitted`, `target_not_authorized`.                           |
+| `404`         | `user_not_opened_bot`.                                                                  |
+| `413`         | `body_too_large` — exceeds `send.max_body_bytes`.                                       |
+| `500`         | `internal_error`.                                                                       |
 
 **Idempotency.** Per `(bot_id, idempotency_key)` pair, within
 `send.idempotency_retention_ms` (default 24h), the gateway returns the
@@ -239,8 +257,16 @@ Read the state of any turn the caller's token owns.
 ```json
 {
   "bots": [
-    {"bot_id": "reviewer", "runner_type": "claude-code", "supports_side_sessions": true},
-    {"bot_id": "drafter",  "runner_type": "codex",       "supports_side_sessions": true}
+    {
+      "bot_id": "reviewer",
+      "runner_type": "claude-code",
+      "supports_side_sessions": true
+    },
+    {
+      "bot_id": "drafter",
+      "runner_type": "codex",
+      "supports_side_sessions": true
+    }
   ]
 }
 ```
@@ -260,7 +286,12 @@ Unauthenticated. Always registered (even when `agent_api.enabled=false`)
 so operators can confirm the binary has Agent-API support compiled in.
 
 ```json
-{"ok": true, "version": "1.0.0", "agent_api_enabled": true, "uptime_secs": 3600}
+{
+  "ok": true,
+  "version": "1.0.0",
+  "agent_api_enabled": true,
+  "uptime_secs": 3600
+}
 ```
 
 ---
@@ -287,17 +318,17 @@ Every agent-API call is metered on the gateway's `/metrics` endpoint (when
 `metrics.enabled=true`). Prefix: `torana_agent_api_*`. Counters, gauges,
 and two histograms:
 
-| Metric | Type | Labels |
-|---|---|---|
-| `torana_agent_api_requests_total` | counter | `bot_id, mode, outcome ∈ {2xx,4xx,5xx,timeout}` |
-| `torana_agent_api_send_idempotent_replays_total` | counter | `bot_id` |
-| `torana_agent_api_side_sessions_started_total` | counter | `bot_id` |
-| `torana_agent_api_side_session_evictions_total` | counter | `bot_id, reason ∈ {idle,hard,lru}` |
-| `torana_agent_api_side_session_capacity_rejected_total` | counter | `bot_id` |
-| `torana_agent_api_ask_orphan_resolutions_total` | counter | `bot_id, outcome ∈ {done,error,fatal,backstop}` |
-| `torana_agent_api_side_sessions_live` | gauge | `bot_id` |
-| `torana_agent_api_request_duration_ms` | histogram | `bot_id, route ∈ {ask,send}` |
-| `torana_agent_api_side_session_acquire_duration_ms` | histogram | `bot_id, outcome ∈ {reuse,spawn,capacity,busy}` |
+| Metric                                                  | Type      | Labels                                          |
+| ------------------------------------------------------- | --------- | ----------------------------------------------- |
+| `torana_agent_api_requests_total`                       | counter   | `bot_id, mode, outcome ∈ {2xx,4xx,5xx,timeout}` |
+| `torana_agent_api_send_idempotent_replays_total`        | counter   | `bot_id`                                        |
+| `torana_agent_api_side_sessions_started_total`          | counter   | `bot_id`                                        |
+| `torana_agent_api_side_session_evictions_total`         | counter   | `bot_id, reason ∈ {idle,hard,lru}`              |
+| `torana_agent_api_side_session_capacity_rejected_total` | counter   | `bot_id`                                        |
+| `torana_agent_api_ask_orphan_resolutions_total`         | counter   | `bot_id, outcome ∈ {done,error,fatal,backstop}` |
+| `torana_agent_api_side_sessions_live`                   | gauge     | `bot_id`                                        |
+| `torana_agent_api_request_duration_ms`                  | histogram | `bot_id, route ∈ {ask,send}`                    |
+| `torana_agent_api_side_session_acquire_duration_ms`     | histogram | `bot_id, outcome ∈ {reuse,spawn,capacity,busy}` |
 
 `ask_timeouts_total` (in the `requests_total` table above, counted once per
 202 handoff) pairs with `ask_orphan_resolutions_total` (counted once per
@@ -333,8 +364,8 @@ Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 
   "token invalid" so callers can't probe for bot existence.
 - **Per-scope gating.** `ask` and `send` are independent; a token scoped
   `["send"]` cannot call `/v1/bots/:id/ask`.
-- **Send ACL re-check.** Agent-API tokens grant access to *bots*, not
-  *users*. The resolved `user_id` is re-validated against the bot's
+- **Send ACL re-check.** Agent-API tokens grant access to _bots_, not
+  _users_. The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.
 - **No enumeration.** Every 404 path for turn reads returns a single
   `turn_not_found` code regardless of the underlying reason.

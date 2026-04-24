@@ -20,7 +20,11 @@ import {
   computeAttachmentsDiskUsage,
 } from "./attachments.js";
 import { isAuthorized } from "./acl.js";
-import { dispatchCommand, parseCommand, type CommandContext } from "./commands.js";
+import {
+  dispatchCommand,
+  parseCommand,
+  type CommandContext,
+} from "./commands.js";
 
 const log = logger("process-update");
 
@@ -110,11 +114,9 @@ export async function processUpdate(
   // Step 4 — reaction ack (fire-and-forget).
   const receivedEmoji = botConfig.reactions.received_emoji;
   if (receivedEmoji) {
-    telegram
-      .setMessageReaction(chatId, messageId, receivedEmoji)
-      .catch(() => {
-        /* best-effort */
-      });
+    telegram.setMessageReaction(chatId, messageId, receivedEmoji).catch(() => {
+      /* best-effort */
+    });
   }
 
   // Slash commands: parse before turn-enqueue so /reset and friends don't get
@@ -185,10 +187,14 @@ export async function processUpdate(
   // Step 6 — attachment download. The disk-usage walk is skipped when the
   // message has nothing to download — the common text-only case doesn't need
   // to `readdir` the entire attachments tree.
-  let attachments: Awaited<ReturnType<typeof downloadAttachments>>["attachments"] = [];
+  let attachments: Awaited<
+    ReturnType<typeof downloadAttachments>
+  >["attachments"] = [];
   let errors: string[] = [];
   if (hasAttachments) {
-    const diskUsage = await computeAttachmentsDiskUsage(config.gateway.data_dir);
+    const diskUsage = await computeAttachmentsDiskUsage(
+      config.gateway.data_dir,
+    );
     if (diskUsage >= config.attachments.disk_usage_cap_bytes) {
       if (deps.alerts) void deps.alerts.attachmentDiskFull();
       await telegram
@@ -212,7 +218,10 @@ export async function processUpdate(
   }
   if (errors.length > 0) {
     for (const err of errors) {
-      log.warn("attachment download issue", { bot_id: botConfig.id, error: err });
+      log.warn("attachment download issue", {
+        bot_id: botConfig.id,
+        error: err,
+      });
     }
   }
 
@@ -261,5 +270,9 @@ export async function processUpdate(
   }
 
   deps.onEnqueued?.(turnId);
-  return { status: "enqueued", turnId, errors: errors.length ? errors : undefined };
+  return {
+    status: "enqueued",
+    turnId,
+    errors: errors.length ? errors : undefined,
+  };
 }

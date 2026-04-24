@@ -45,7 +45,9 @@ e: &e [*d,*d,*d,*d,*d,*d,*d,*d,*d,*d]
     // 1 KiB cap; write 4 KiB.
     writeFileSync(path, "version: 1\n# " + "x".repeat(4000));
     try {
-      expect(() => loadConfigFromFile(path, { maxBytes: 1024 })).toThrow(ConfigLoadError);
+      expect(() => loadConfigFromFile(path, { maxBytes: 1024 })).toThrow(
+        ConfigLoadError,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

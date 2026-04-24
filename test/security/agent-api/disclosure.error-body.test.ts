@@ -101,6 +101,9 @@ describe("§12.5.6 disclosure.error-body", () => {
     const r = errorResponse("internal_error");
     expect(r.status).toBe(500);
     const body = await r.json();
-    expect(body).toEqual({ error: "internal_error", message: "internal error" });
+    expect(body).toEqual({
+      error: "internal_error",
+      message: "internal error",
+    });
   });
 });

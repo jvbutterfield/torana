@@ -58,7 +58,13 @@ export class StreamManager {
 
     if (prev.telegramMessageId) {
       const display = prev.buffer.trim() || "(interrupted)";
-      this.outbox.queueEdit(prev.turnId, botId, prev.chatId, prev.telegramMessageId, display);
+      this.outbox.queueEdit(
+        prev.turnId,
+        botId,
+        prev.chatId,
+        prev.telegramMessageId,
+        display,
+      );
     }
 
     this.activeTurns.delete(botId);
@@ -131,7 +137,9 @@ export class StreamManager {
 
     state.buffer += text;
 
-    if (state.buffer.length >= this.config.streaming.message_length_safe_margin) {
+    if (
+      state.buffer.length >= this.config.streaming.message_length_safe_margin
+    ) {
       this.flushAndSplit(botId);
       return;
     }
@@ -140,7 +148,8 @@ export class StreamManager {
     if (now - state.lastFlushTime >= this.config.streaming.edit_cadence_ms) {
       void this.flush(botId);
     } else if (!state.flushTimer) {
-      const delay = this.config.streaming.edit_cadence_ms - (now - state.lastFlushTime);
+      const delay =
+        this.config.streaming.edit_cadence_ms - (now - state.lastFlushTime);
       state.flushTimer = setTimeout(() => {
         state.flushTimer = null;
         void this.flush(botId);

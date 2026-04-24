@@ -27,11 +27,21 @@ function loadSchema(dbPath: string): void {
 
 class FakeTelegram {
   calls: Array<{ method: string; args: unknown[] }> = [];
-  async setMessageReaction(chatId: number, messageId: number, emoji: string): Promise<boolean> {
-    this.calls.push({ method: "setMessageReaction", args: [chatId, messageId, emoji] });
+  async setMessageReaction(
+    chatId: number,
+    messageId: number,
+    emoji: string,
+  ): Promise<boolean> {
+    this.calls.push({
+      method: "setMessageReaction",
+      args: [chatId, messageId, emoji],
+    });
     return true;
   }
-  async sendMessage(chatId: number, text: string): Promise<{ messageId: number } | null> {
+  async sendMessage(
+    chatId: number,
+    text: string,
+  ): Promise<{ messageId: number } | null> {
     this.calls.push({ method: "sendMessage", args: [chatId, text] });
     return { messageId: 999 };
   }
@@ -72,7 +82,13 @@ function baseUpdate(overrides: Partial<TelegramUpdate> = {}): TelegramUpdate {
 describe("processUpdate", () => {
   test("happy path: enqueues turn and marks inbound enqueued", async () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
-      gateway: { port: 3000, data_dir: tmpDir, db_path: join(tmpDir, "gateway.db"), log_level: "info" },
+      gateway: {
+        port: 3000,
+        bind_host: "127.0.0.1",
+        data_dir: tmpDir,
+        db_path: join(tmpDir, "gateway.db"),
+        log_level: "info",
+      },
     });
     const fake = new FakeTelegram();
     const outcome = await processUpdate(
@@ -86,7 +102,9 @@ describe("processUpdate", () => {
     );
     expect(outcome.status).toBe("enqueued");
     expect(outcome.turnId).toBeGreaterThan(0);
-    expect(fake.calls.some((c) => c.method === "setMessageReaction")).toBe(true);
+    expect(fake.calls.some((c) => c.method === "setMessageReaction")).toBe(
+      true,
+    );
 
     const row = db.getInboundUpdateStatus("alpha", 1);
     expect(row?.status).toBe("enqueued");
@@ -116,7 +134,13 @@ describe("processUpdate", () => {
 
   test("replay: same update_id twice → second returns replay_skipped", async () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
-      gateway: { port: 3000, data_dir: tmpDir, db_path: join(tmpDir, "gateway.db"), log_level: "info" },
+      gateway: {
+        port: 3000,
+        bind_host: "127.0.0.1",
+        data_dir: tmpDir,
+        db_path: join(tmpDir, "gateway.db"),
+        log_level: "info",
+      },
     });
     const fake = new FakeTelegram();
     const deps = {
@@ -134,7 +158,13 @@ describe("processUpdate", () => {
 
   test("unsupported media (voice, no text) → rejected_unsupported_media", async () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
-      gateway: { port: 3000, data_dir: tmpDir, db_path: join(tmpDir, "gateway.db"), log_level: "info" },
+      gateway: {
+        port: 3000,
+        bind_host: "127.0.0.1",
+        data_dir: tmpDir,
+        db_path: join(tmpDir, "gateway.db"),
+        log_level: "info",
+      },
     });
     const fake = new FakeTelegram();
     const update = baseUpdate({

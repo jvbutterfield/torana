@@ -49,6 +49,7 @@ describe("runner side-session defaults (Phase 1 stubs)", () => {
         args: [],
         env: {},
         pass_continue_flag: true,
+        acknowledge_dangerous: true,
       },
       logDir: "/tmp",
     });
@@ -143,7 +144,10 @@ describe("runnerSupportsSideSessions — static mapping", () => {
     expect(runnerSupportsSideSessions({ type: "claude-code" })).toBe(true);
     expect(runnerSupportsSideSessions({ type: "codex" })).toBe(true);
     expect(
-      runnerSupportsSideSessions({ type: "command", protocol: "claude-ndjson" }),
+      runnerSupportsSideSessions({
+        type: "command",
+        protocol: "claude-ndjson",
+      }),
     ).toBe(true);
     expect(
       runnerSupportsSideSessions({ type: "command", protocol: "codex-jsonl" }),
@@ -171,6 +175,7 @@ describe("runnerSupportsSideSessions — static mapping", () => {
         args: [],
         env: {},
         pass_continue_flag: true,
+        acknowledge_dangerous: true,
       },
       logDir: "/tmp",
     });
@@ -196,7 +201,11 @@ describe("runnerSupportsSideSessions — static mapping", () => {
       codex.supportsSideSessions(),
     );
 
-    for (const protocol of ["claude-ndjson", "codex-jsonl", "jsonl-text"] as const) {
+    for (const protocol of [
+      "claude-ndjson",
+      "codex-jsonl",
+      "jsonl-text",
+    ] as const) {
       const cmd = new CommandRunner({
         botId: "bot1",
         config: {

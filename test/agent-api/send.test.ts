@@ -180,9 +180,7 @@ describe("POST /v1/bots/:id/send — happy path", () => {
 
     // Marker-wrapped prompt round-trips via getTurnText.
     const text = db.getTurnText(body.turn_id);
-    expect(text).toBe(
-      '[system-message from "calendar-prep"]\n\nhello there',
-    );
+    expect(text).toBe('[system-message from "calendar-prep"]\n\nhello there');
 
     // Dispatch was woken for this bot.
     expect(registry.dispatchCalls).toContain("bot1");

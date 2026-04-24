@@ -70,7 +70,10 @@ export class BotRegistry {
   /**
    * Transport entry point: deliver a raw TelegramUpdate for the given bot.
    */
-  async handleUpdate(botId: BotId, update: TelegramUpdate): Promise<ProcessUpdateOutcome> {
+  async handleUpdate(
+    botId: BotId,
+    update: TelegramUpdate,
+  ): Promise<ProcessUpdateOutcome> {
     const bot = this.bots.get(botId);
     if (!bot) {
       log.warn("update for unknown bot", { bot_id: botId });
@@ -122,7 +125,12 @@ export class BotRegistry {
 
   private buildCommandContext(
     bot: Bot,
-    args: { chatId: number; messageId: number; fromUserId: number; rawText: string },
+    args: {
+      chatId: number;
+      messageId: number;
+      fromUserId: number;
+      rawText: string;
+    },
   ): CommandContext {
     return {
       botConfig: bot.botConfig,

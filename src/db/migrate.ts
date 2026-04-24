@@ -62,30 +62,38 @@ function readMigrationSql(name: string): string {
 
 /** Detect the schema version. Returns null for an empty DB (no tables). */
 export function detectVersion(db: Database): number | null {
-  const userVersion = (db.query("PRAGMA user_version").get() as { user_version: number })
-    .user_version;
+  const userVersion = (
+    db.query("PRAGMA user_version").get() as { user_version: number }
+  ).user_version;
 
   if (userVersion >= 1) return userVersion;
 
   // user_version == 0: could be fresh, v0 with persona columns, or v1 with missing pragma.
   const table = db
-    .query("SELECT name FROM sqlite_master WHERE type='table' AND name='inbound_updates'")
+    .query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='inbound_updates'",
+    )
     .get();
   if (!table) return null;
 
   // Table exists — inspect columns.
-  const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{ name: string }>;
+  const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{
+    name: string;
+  }>;
   const names = cols.map((c) => c.name);
   if (names.includes("bot_id")) return 1;
   if (names.includes("persona")) return 0;
-  throw new Error(`unknown schema: inbound_updates has neither bot_id nor persona column`);
+  throw new Error(
+    `unknown schema: inbound_updates has neither bot_id nor persona column`,
+  );
 }
 
 const TARGET_VERSION = 3;
 
 const STEP_0001: MigrationStep = {
   id: "0001_persona_to_bot_id",
-  description: "Rename persona → bot_id, remap inbound_updates.status, rebuild indexes",
+  description:
+    "Rename persona → bot_id, remap inbound_updates.status, rebuild indexes",
   // sql is resolved lazily because the migrations/ dir may not ship in some
   // builds; readMigrationSql throws a descriptive error if missing.
   get sql(): string {
@@ -103,7 +111,8 @@ const STEP_0002: MigrationStep = {
 
 const STEP_0003: MigrationStep = {
   id: "0003_runner_session_resume",
-  description: "Add worker_state.codex_thread_id for cross-restart Codex resume",
+  description:
+    "Add worker_state.codex_thread_id for cross-restart Codex resume",
   get sql(): string {
     return readMigrationSql("0003_runner_session_resume.sql");
   },
@@ -138,7 +147,11 @@ export function planMigration(dbPath: string): MigrationPlan {
       };
     }
     if (version === TARGET_VERSION) {
-      return { currentVersion: version, targetVersion: TARGET_VERSION, steps: [] };
+      return {
+        currentVersion: version,
+        targetVersion: TARGET_VERSION,
+        steps: [],
+      };
     }
     if (version === 2) {
       return {
@@ -181,7 +194,10 @@ export interface ApplyOptions {
 }
 
 /** Apply all pending migrations. Returns the plan that was executed. */
-export function applyMigrations(dbPath: string, opts: ApplyOptions = {}): MigrationPlan {
+export function applyMigrations(
+  dbPath: string,
+  opts: ApplyOptions = {},
+): MigrationPlan {
   const plan = planMigration(dbPath);
   if (plan.steps.length === 0) {
     log.info("schema already current", { version: plan.currentVersion });
@@ -200,10 +216,15 @@ export function applyMigrations(dbPath: string, opts: ApplyOptions = {}): Migrat
           copyFileSync(dbPath + suffix, snapshotPath + suffix);
         }
       }
-      log.info("pre-migration snapshot written", { from: dbPath, to: snapshotPath });
+      log.info("pre-migration snapshot written", {
+        from: dbPath,
+        to: snapshotPath,
+      });
       plan.snapshotPath = snapshotPath;
     } else {
-      log.info("pre-migration snapshot already exists — skipping", { path: snapshotPath });
+      log.info("pre-migration snapshot already exists — skipping", {
+        path: snapshotPath,
+      });
       plan.snapshotPath = snapshotPath;
     }
   }
@@ -211,7 +232,10 @@ export function applyMigrations(dbPath: string, opts: ApplyOptions = {}): Migrat
   const db = new Database(dbPath, { create: true });
   try {
     for (const step of plan.steps) {
-      log.info("applying migration", { id: step.id, description: step.description });
+      log.info("applying migration", {
+        id: step.id,
+        description: step.description,
+      });
       db.exec(step.sql);
     }
     log.info("migrations complete", {

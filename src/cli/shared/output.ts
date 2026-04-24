@@ -44,10 +44,7 @@ export function padRight(s: string, n: number): string {
  * Format a list of rows as a fixed-width table. Header is bold-ish (just
  * underlined with dashes — terminals without ANSI render fine).
  */
-export function formatTable(
-  header: string[],
-  rows: string[][],
-): string[] {
+export function formatTable(header: string[], rows: string[][]): string[] {
   const widths = header.map((h, i) =>
     Math.max(h.length, ...rows.map((r) => (r[i] ?? "").length)),
   );

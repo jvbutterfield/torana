@@ -2,11 +2,7 @@
 // so users don't have to know the script path. Calls the same in-process
 // function; keeps test coverage and behavior consistent.
 
-import {
-  CliUsageError,
-  parseFlags,
-  type FlagSpec,
-} from "./shared/args.js";
+import { CliUsageError, parseFlags, type FlagSpec } from "./shared/args.js";
 import { ExitCode } from "./shared/exit.js";
 import { renderText, type Rendered } from "./shared/output.js";
 import {
@@ -65,11 +61,9 @@ export async function runSkills(
     return renderText(SKILLS_HELP.split("\n").slice(0, -1), ExitCode.success);
   }
   if (sub !== "install") {
-    return renderText(
-      [SKILLS_HELP],
-      ExitCode.badUsage,
-      [`skills: unknown subcommand '${sub}'`],
-    );
+    return renderText([SKILLS_HELP], ExitCode.badUsage, [
+      `skills: unknown subcommand '${sub}'`,
+    ]);
   }
   const rest = argv.slice(1);
   try {
@@ -92,7 +86,10 @@ export async function runSkills(
     const hosts: Array<"claude" | "codex"> = [];
     const seen = new Set<string>();
     for (const raw of hostsList) {
-      for (const h of raw.split(",").map((s) => s.trim()).filter((s) => s)) {
+      for (const h of raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s)) {
         if (h !== "claude" && h !== "codex") {
           throw new CliUsageError(
             `skills install: unknown host '${h}' (expected 'claude' or 'codex')`,
@@ -110,7 +107,9 @@ export async function runSkills(
       force: flags.force === true,
       dryRun: flags["dry-run"] === true,
       sourceDir:
-        typeof flags["source-dir"] === "string" ? (flags["source-dir"] as string) : undefined,
+        typeof flags["source-dir"] === "string"
+          ? (flags["source-dir"] as string)
+          : undefined,
       claudeTarget:
         typeof flags["claude-target"] === "string"
           ? (flags["claude-target"] as string)

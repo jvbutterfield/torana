@@ -168,7 +168,11 @@ describe("recordEviction + setSideSessionsLive", () => {
 
   test("every façade function no-ops when metrics is undefined", () => {
     recordAsk(undefined, "alpha", { status: 200, durationMs: 1 });
-    recordSend(undefined, "alpha", { status: 202, replay: false, durationMs: 1 });
+    recordSend(undefined, "alpha", {
+      status: 202,
+      replay: false,
+      durationMs: 1,
+    });
     recordAcquire(undefined, "alpha", "spawn", 1);
     recordEviction(undefined, "alpha", "idle");
     recordOrphanResolution(undefined, "alpha", "done");

@@ -74,7 +74,10 @@ export class WebhookTransport implements Transport {
     );
 
     const allowedUpdates = this.config.transport.allowed_updates;
-    const registerOne = async (botId: BotId, client: TelegramClient): Promise<void> => {
+    const registerOne = async (
+      botId: BotId,
+      client: TelegramClient,
+    ): Promise<void> => {
       const target = `${baseUrl.replace(/\/$/, "")}/webhook/${botId}`;
       try {
         const info = await client.getWebhookInfo();
@@ -95,7 +98,9 @@ export class WebhookTransport implements Transport {
     };
 
     await Promise.all(
-      [...this.clients.entries()].map(([botId, client]) => registerOne(botId, client)),
+      [...this.clients.entries()].map(([botId, client]) =>
+        registerOne(botId, client),
+      ),
     );
   }
 

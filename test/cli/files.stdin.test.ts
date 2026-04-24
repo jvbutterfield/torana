@@ -19,34 +19,51 @@ import { CliUsageError } from "../../src/cli/shared/args.js";
 
 describe("detectMimeFromMagic", () => {
   test("identifies PNG", () => {
-    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+    const bytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0,
+    ]);
     expect(detectMimeFromMagic(bytes)).toBe("image/png");
   });
 
   test("identifies JPEG", () => {
-    expect(detectMimeFromMagic(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
+    expect(detectMimeFromMagic(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe(
+      "image/jpeg",
+    );
   });
 
   test("identifies GIF89a and GIF87a", () => {
-    expect(detectMimeFromMagic(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0]))).toBe("image/gif");
-    expect(detectMimeFromMagic(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 0]))).toBe("image/gif");
+    expect(
+      detectMimeFromMagic(
+        new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0]),
+      ),
+    ).toBe("image/gif");
+    expect(
+      detectMimeFromMagic(
+        new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 0]),
+      ),
+    ).toBe("image/gif");
   });
 
   test("identifies WEBP", () => {
     const bytes = new Uint8Array([
-      0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0,
-      0x57, 0x45, 0x42, 0x50, 0, 0,
+      0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0, 0,
     ]);
     expect(detectMimeFromMagic(bytes)).toBe("image/webp");
   });
 
   test("identifies PDF", () => {
     // %PDF-
-    expect(detectMimeFromMagic(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31]))).toBe("application/pdf");
+    expect(
+      detectMimeFromMagic(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31])),
+    ).toBe("application/pdf");
   });
 
   test("returns undefined for unknown bytes", () => {
-    expect(detectMimeFromMagic(new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]))).toBeUndefined();
+    expect(
+      detectMimeFromMagic(
+        new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      ),
+    ).toBeUndefined();
   });
 
   test("returns undefined for too-short buffers", () => {
@@ -58,7 +75,10 @@ describe("readFileForUpload (on-disk)", () => {
   test("returns bytes + MIME + basename for a real file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "torana-files-"));
     const path = join(dir, "thing.png");
-    writeFileSync(path, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    writeFileSync(
+      path,
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
     const r = await readFileForUpload(path);
     expect(r.data.length).toBe(8);
     expect(r.mime).toBe("image/png");

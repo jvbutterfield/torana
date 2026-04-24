@@ -30,14 +30,32 @@ bots:
       args: ["--agent", "cato"]
       cwd: /data/content
       pass_continue_flag: true
+      acknowledge_dangerous: true # REQUIRED — see below
       env:
         CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
         CLAUDE_CONFIG_DIR: /data/state/claude-config/cato
 ```
 
+### `acknowledge_dangerous` is required
+
+The runner always passes `--dangerously-skip-permissions` to the Claude CLI
+(the CLI's interactive permission prompt cannot be answered over the NDJSON
+protocol torana speaks, so it has to be turned off). That means **every
+turn runs unsandboxed** and inherits host-level file + command access in the
+runner's `cwd`: a leaked Agent API token, a malicious tool output, or a
+prompt injection reaching the runner is equivalent to letting that actor
+shell into the container.
+
+Set `acknowledge_dangerous: true` to confirm you have understood this and
+that the bot is running inside a container, VM, or otherwise hardened
+environment where the blast radius is acceptable. The config loader
+refuses to start a claude-code bot without this flag.
+
+Matches the Codex `approval_mode: yolo` acknowledgement pattern.
+
 ### What `pass_continue_flag` does
 
-When true (default), torana appends `--continue` to `args` on every spawn *except* the first-after-`reset()` — including the first spawn after a gateway restart, so the on-disk Claude session resumes seamlessly across reboots. Disable (`false`) for one-shot runners that should start fresh every turn.
+When true (default), torana appends `--continue` to `args` on every spawn _except_ the first-after-`reset()` — including the first spawn after a gateway restart, so the on-disk Claude session resumes seamlessly across reboots. Disable (`false`) for one-shot runners that should start fresh every turn.
 
 ### Setting up Claude Code
 
@@ -61,7 +79,7 @@ bots:
     runner:
       type: codex
       cli_path: codex
-      args: ["--profile", "torana"]      # optional user extras (e.g. --profile, -c key=value)
+      args: ["--profile", "torana"] # optional user extras (e.g. --profile, -c key=value)
       cwd: /data/projects/cody
       pass_resume_flag: true
       approval_mode: full-auto
@@ -82,13 +100,13 @@ When true (default), the runner captures the `thread_id` from each turn's `threa
 
 ### Approval mode and sandbox
 
-| `approval_mode` | Maps to | Behavior |
-| --- | --- | --- |
-| `full-auto` (default) | `--full-auto` | On-request approvals + workspace-write sandbox. Recommended for unattended bots. |
-| `untrusted` | `-c approval_policy=untrusted` | Approval required for untrusted commands. |
-| `on-request` | `-c approval_policy=on-request` | Codex asks before potentially-impactful actions. |
-| `never` | `-c approval_policy=never` | Codex never asks (still respects sandbox). |
-| `yolo` | `--dangerously-bypass-approvals-and-sandbox` | **Bypasses everything.** Requires `acknowledge_dangerous: true` in config and emits a startup warning. Only use inside an externally hardened environment (container, isolated VM). |
+| `approval_mode`       | Maps to                                      | Behavior                                                                                                                                                                            |
+| --------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `full-auto` (default) | `--full-auto`                                | On-request approvals + workspace-write sandbox. Recommended for unattended bots.                                                                                                    |
+| `untrusted`           | `-c approval_policy=untrusted`               | Approval required for untrusted commands.                                                                                                                                           |
+| `on-request`          | `-c approval_policy=on-request`              | Codex asks before potentially-impactful actions.                                                                                                                                    |
+| `never`               | `-c approval_policy=never`                   | Codex never asks (still respects sandbox).                                                                                                                                          |
+| `yolo`                | `--dangerously-bypass-approvals-and-sandbox` | **Bypasses everything.** Requires `acknowledge_dangerous: true` in config and emits a startup warning. Only use inside an externally hardened environment (container, isolated VM). |
 
 `sandbox` maps to `--sandbox` and accepts `read-only`, `workspace-write` (default), or `danger-full-access`. Skipped when `approval_mode: yolo` or on resume turns (the original session's sandbox is inherited; `codex exec resume` doesn't accept `--sandbox`).
 
@@ -107,7 +125,7 @@ Codex's `--image` flag accepts only image files. Non-image attachments (document
 1. Install: `npm install -g @openai/codex`.
 2. Authenticate one of two ways:
    - **API key (simplest):** set `OPENAI_API_KEY` in `runner.env`. Works without `HOME`.
-   - **OAuth:** `codex login` (browser flow), persists in `~/.codex/`. **You must pass `HOME` (or `CODEX_HOME` pointing at the auth dir) in `runner.env`** — `runner.env` is the *complete* environment for the subprocess, so without `HOME` codex can't find its auth files even though they exist on disk. Use a per-bot `CODEX_HOME` if you run multiple Codex bots so OAuth state doesn't collide.
+   - **OAuth:** `codex login` (browser flow), persists in `~/.codex/`. **You must pass `HOME` (or `CODEX_HOME` pointing at the auth dir) in `runner.env`** — `runner.env` is the _complete_ environment for the subprocess, so without `HOME` codex can't find its auth files even though they exist on disk. Use a per-bot `CODEX_HOME` if you run multiple Codex bots so OAuth state doesn't collide.
 3. (Optional) Configure profiles in `~/.codex/config.toml` and reference them with `args: ["--profile", "<name>"]`.
 
 ## command
@@ -119,12 +137,14 @@ For anything that isn't Claude Code. Choose a wire protocol:
 One JSON line per turn in/out. No session resumption semantics; reset via stdin envelope.
 
 **stdin (torana → runner):**
+
 ```json
 {"type":"turn","turn_id":"1","text":"hello","attachments":[]}
 {"type":"reset"}
 ```
 
 **stdout (runner → torana):**
+
 ```json
 {"type":"ready"}
 {"type":"text","turn_id":"1","text":"streaming chunk"}
@@ -142,7 +162,7 @@ runner:
   protocol: jsonl-text
   cmd: ["bun", "my-runner.ts"]
   cwd: ./my-runner
-  on_reset: signal       # send {"type":"reset"} on stdin
+  on_reset: signal # send {"type":"reset"} on stdin
   env:
     MY_API_KEY: ${MY_API_KEY}
 ```

@@ -14,7 +14,13 @@
 //   - redactToken masks everything after the first 4 chars.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, statSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
+import {
+  mkdtempSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,7 +42,9 @@ function tmp(): { dir: string; path: string } {
 
 describe("defaultProfilesPath", () => {
   test("honors XDG_CONFIG_HOME when set", () => {
-    const p = defaultProfilesPath({ XDG_CONFIG_HOME: "/tmp/xdg" } as NodeJS.ProcessEnv);
+    const p = defaultProfilesPath({
+      XDG_CONFIG_HOME: "/tmp/xdg",
+    } as NodeJS.ProcessEnv);
     expect(p).toBe("/tmp/xdg/torana/config.toml");
   });
 
@@ -85,13 +93,20 @@ describe("loadProfiles", () => {
     const r = loadProfiles(path);
     expect(r.state.defaultProfile).toBe("prod");
     expect(Object.keys(r.state.profiles).sort()).toEqual(["local", "prod"]);
-    expect(r.state.profiles.prod).toEqual({ server: "https://example.com", token: "tok-abcdef" });
+    expect(r.state.profiles.prod).toEqual({
+      server: "https://example.com",
+      token: "tok-abcdef",
+    });
     expect(r.warnings).toEqual([]);
   });
 
   test("warns when file mode is wider than 0600 but still returns state", () => {
     const { path } = tmp();
-    writeFileSync(path, 'default = "p"\n[profile.p]\nserver = "x"\ntoken = "y"\n', { mode: 0o644 });
+    writeFileSync(
+      path,
+      'default = "p"\n[profile.p]\nserver = "x"\ntoken = "y"\n',
+      { mode: 0o644 },
+    );
     chmodSync(path, 0o644);
     const r = loadProfiles(path);
     expect(r.warnings.length).toBe(1);
@@ -101,15 +116,21 @@ describe("loadProfiles", () => {
 
   test("throws ProfileStoreError on top-level non-object TOML", () => {
     const { path } = tmp();
-    writeFileSync(path, 'this is not valid toml {{{', { mode: 0o600 });
+    writeFileSync(path, "this is not valid toml {{{", { mode: 0o600 });
     expect(() => loadProfiles(path)).toThrow(ProfileStoreError);
   });
 
   test("rejects profile with non-string server", () => {
     const { path } = tmp();
-    writeFileSync(path, '[profile.x]\nserver = 42\ntoken = "ok"\n', { mode: 0o600 });
+    writeFileSync(path, '[profile.x]\nserver = 42\ntoken = "ok"\n', {
+      mode: 0o600,
+    });
     let caught: unknown;
-    try { loadProfiles(path); } catch (e) { caught = e; }
+    try {
+      loadProfiles(path);
+    } catch (e) {
+      caught = e;
+    }
     expect(caught).toBeInstanceOf(ProfileStoreError);
     expect((caught as ProfileStoreError).code).toBe("invalid_profile");
   });
@@ -122,7 +143,11 @@ describe("loadProfiles", () => {
       { mode: 0o600 },
     );
     let caught: unknown;
-    try { loadProfiles(path); } catch (e) { caught = e; }
+    try {
+      loadProfiles(path);
+    } catch (e) {
+      caught = e;
+    }
     expect(caught).toBeInstanceOf(ProfileStoreError);
     expect((caught as ProfileStoreError).code).toBe("invalid_profile");
     expect((caught as Error).message).toContain("ghost");
@@ -130,16 +155,24 @@ describe("loadProfiles", () => {
 
   test("rejects malformed profile name", () => {
     const { path } = tmp();
-    writeFileSync(path, '[profile."has space"]\nserver = "x"\ntoken = "y"\n', { mode: 0o600 });
+    writeFileSync(path, '[profile."has space"]\nserver = "x"\ntoken = "y"\n', {
+      mode: 0o600,
+    });
     let caught: unknown;
-    try { loadProfiles(path); } catch (e) { caught = e; }
+    try {
+      loadProfiles(path);
+    } catch (e) {
+      caught = e;
+    }
     expect(caught).toBeInstanceOf(ProfileStoreError);
     expect((caught as ProfileStoreError).code).toBe("invalid_profile");
   });
 
   test("rejects empty server string", () => {
     const { path } = tmp();
-    writeFileSync(path, '[profile.x]\nserver = ""\ntoken = "y"\n', { mode: 0o600 });
+    writeFileSync(path, '[profile.x]\nserver = ""\ntoken = "y"\n', {
+      mode: 0o600,
+    });
     expect(() => loadProfiles(path)).toThrow(ProfileStoreError);
   });
 });
@@ -160,7 +193,10 @@ describe("saveProfiles", () => {
     const state: ProfileState = {
       defaultProfile: "prod",
       profiles: {
-        prod: { server: "https://api.example.com:443/prefix", token: "tok-prod-xyz" },
+        prod: {
+          server: "https://api.example.com:443/prefix",
+          token: "tok-prod-xyz",
+        },
         local: { server: "http://127.0.0.1:8080", token: "tok-local" },
       },
     };
@@ -169,12 +205,15 @@ describe("saveProfiles", () => {
     expect(r.state).toEqual(state);
   });
 
-  test("round-trip preserves tokens with \", \\, and newlines", () => {
+  test('round-trip preserves tokens with ", \\, and newlines', () => {
     const { path } = tmp();
     const state: ProfileState = {
       defaultProfile: "weird",
       profiles: {
-        weird: { server: "http://x", token: 'tok with "quotes" and \\ and \n newline' },
+        weird: {
+          server: "http://x",
+          token: 'tok with "quotes" and \\ and \n newline',
+        },
       },
     };
     saveProfiles(path, state);
@@ -208,19 +247,33 @@ describe("saveProfiles", () => {
 
 describe("upsertProfile / removeProfile", () => {
   test("first upsert becomes default automatically", () => {
-    const next = upsertProfile({ profiles: {} }, "first", { server: "s", token: "t" });
+    const next = upsertProfile({ profiles: {} }, "first", {
+      server: "s",
+      token: "t",
+    });
     expect(next.defaultProfile).toBe("first");
   });
 
   test("second upsert keeps existing default unless --default is set", () => {
-    const s1 = upsertProfile({ profiles: {} }, "a", { server: "s", token: "t" });
+    const s1 = upsertProfile({ profiles: {} }, "a", {
+      server: "s",
+      token: "t",
+    });
     const s2 = upsertProfile(s1, "b", { server: "s2", token: "t2" });
     expect(s2.defaultProfile).toBe("a");
   });
 
   test("upsert with makeDefault promotes to default", () => {
-    const s1 = upsertProfile({ profiles: {} }, "a", { server: "s", token: "t" });
-    const s2 = upsertProfile(s1, "b", { server: "s2", token: "t2" }, { makeDefault: true });
+    const s1 = upsertProfile({ profiles: {} }, "a", {
+      server: "s",
+      token: "t",
+    });
+    const s2 = upsertProfile(
+      s1,
+      "b",
+      { server: "s2", token: "t2" },
+      { makeDefault: true },
+    );
     expect(s2.defaultProfile).toBe("b");
     expect(Object.keys(s2.profiles).sort()).toEqual(["a", "b"]);
   });
@@ -246,7 +299,11 @@ describe("upsertProfile / removeProfile", () => {
   test("remove of a missing profile throws", () => {
     const s: ProfileState = { profiles: { a: { server: "s", token: "t" } } };
     let caught: unknown;
-    try { removeProfile(s, "ghost"); } catch (e) { caught = e; }
+    try {
+      removeProfile(s, "ghost");
+    } catch (e) {
+      caught = e;
+    }
     expect(caught).toBeInstanceOf(ProfileStoreError);
     expect((caught as ProfileStoreError).code).toBe("unknown_profile");
   });

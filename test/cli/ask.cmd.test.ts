@@ -2,19 +2,20 @@
 
 import { describe, expect, test } from "bun:test";
 
-import {
-  AgentApiClient,
-  AgentApiError,
-} from "../../src/agent-api/client.js";
+import { AgentApiClient, AgentApiError } from "../../src/agent-api/client.js";
 import { runAsk } from "../../src/cli/ask.js";
 import { ExitCode } from "../../src/cli/shared/exit.js";
 import { CliUsageError } from "../../src/cli/shared/args.js";
 
 function clientStub(impl: Partial<AgentApiClient>): AgentApiClient {
   return Object.assign(
-    new AgentApiClient({ server: "http://x", token: "t", fetchImpl: (() => {
-      throw new Error("not used");
-    }) as unknown as typeof fetch }),
+    new AgentApiClient({
+      server: "http://x",
+      token: "t",
+      fetchImpl: (() => {
+        throw new Error("not used");
+      }) as unknown as typeof fetch,
+    }),
     impl,
   );
 }
@@ -29,10 +30,7 @@ describe("runAsk — happy path", () => {
         session_id: "eph-1",
       }),
     });
-    const r = await runAsk(
-      { argv: ["alpha", "hello"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["alpha", "hello"] }, { client });
     expect(r.stdout).toEqual(["echo: hello"]);
     expect(r.exitCode).toBe(ExitCode.success);
     expect(r.stderr).toEqual([]);
@@ -48,10 +46,7 @@ describe("runAsk — happy path", () => {
         usage: { input_tokens: 1, output_tokens: 2 },
       }),
     });
-    const r = await runAsk(
-      { argv: ["alpha", "hello", "--json"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["alpha", "hello", "--json"] }, { client });
     expect(r.exitCode).toBe(ExitCode.success);
     const body = JSON.parse(r.stdout[0]!);
     expect(body.text).toBe("ok");
@@ -66,10 +61,7 @@ describe("runAsk — happy path", () => {
         session_id: "eph-9",
       }),
     });
-    const r = await runAsk(
-      { argv: ["alpha", "slow query"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["alpha", "slow query"] }, { client });
     expect(r.exitCode).toBe(ExitCode.timeout);
     expect(r.stdout).toEqual(["99"]);
     expect(r.stderr.some((l) => l.includes("torana turns get 99"))).toBe(true);
@@ -119,7 +111,10 @@ describe("runAsk — happy path", () => {
       { client, readFile: reader },
     );
     expect(Array.isArray(receivedFiles)).toBe(true);
-    const arr = receivedFiles as Array<{ filename: string; contentType: string }>;
+    const arr = receivedFiles as Array<{
+      filename: string;
+      contentType: string;
+    }>;
     expect(arr).toHaveLength(1);
     expect(arr[0]!.filename).toBe("x.png");
     expect(arr[0]!.contentType).toBe("image/png");
@@ -157,10 +152,7 @@ describe("runAsk — error paths", () => {
         });
       },
     });
-    const r = await runAsk(
-      { argv: ["alpha", "hello"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["alpha", "hello"] }, { client });
     expect(r.exitCode).toBe(ExitCode.capacity);
     expect(r.stdout).toEqual([]);
     expect(r.stderr.some((l) => l.includes("side_session_busy"))).toBe(true);
@@ -176,10 +168,7 @@ describe("runAsk — error paths", () => {
         });
       },
     });
-    const r = await runAsk(
-      { argv: ["alpha", "x"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["alpha", "x"] }, { client });
     expect(r.exitCode).toBe(ExitCode.badUsage);
   });
 
@@ -193,10 +182,7 @@ describe("runAsk — error paths", () => {
         });
       },
     });
-    const r = await runAsk(
-      { argv: ["alpha", "x", "--json"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["alpha", "x", "--json"] }, { client });
     expect(r.exitCode).toBe(ExitCode.serverError);
     expect(r.stderr).toEqual([]);
     const body = JSON.parse(r.stdout[0]!);
@@ -206,9 +192,9 @@ describe("runAsk — error paths", () => {
 
   test("missing positional <text> throws CliUsageError", async () => {
     const client = clientStub({});
-    await expect(
-      runAsk({ argv: ["alpha"] }, { client }),
-    ).rejects.toThrow(CliUsageError);
+    await expect(runAsk({ argv: ["alpha"] }, { client })).rejects.toThrow(
+      CliUsageError,
+    );
   });
 
   test("too many positional args throws CliUsageError", async () => {
@@ -229,10 +215,7 @@ describe("runAsk — error paths", () => {
 describe("runAsk — help", () => {
   test("--help short-circuits with help text + exit 0", async () => {
     const client = clientStub({});
-    const r = await runAsk(
-      { argv: ["--help"] },
-      { client },
-    );
+    const r = await runAsk({ argv: ["--help"] }, { client });
     expect(r.exitCode).toBe(ExitCode.success);
     expect(r.stdout[0]).toContain("Usage: torana ask");
   });

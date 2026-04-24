@@ -19,7 +19,9 @@ afterEach(async () => {
 describe("§12.5.4 resource.disk-fill", () => {
   const secret = "disk-fill-secret-value-abcd1234";
   const token = mkToken("cos", secret, { scopes: ["ask"] });
-  const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const PNG_BYTES = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]);
 
   test("when disk cap is already reached, new uploads → 507 insufficient_storage", async () => {
     h = startHarness({
@@ -32,7 +34,10 @@ describe("§12.5.4 resource.disk-fill", () => {
 
     const form = new FormData();
     form.append("text", "hi");
-    form.append("file_0", new File([PNG_BYTES], "x.png", { type: "image/png" }));
+    form.append(
+      "file_0",
+      new File([PNG_BYTES], "x.png", { type: "image/png" }),
+    );
 
     // Exercise the parser directly with a stub disk-usage probe that
     // reports already-full. Going through HTTP is noisier and the
@@ -68,7 +73,10 @@ describe("§12.5.4 resource.disk-fill", () => {
     // Simulate by dropping one file via a first (allowed) upload.
     const form1 = new FormData();
     form1.append("text", "seed");
-    form1.append("file_0", new File([PNG_BYTES], "seed.png", { type: "image/png" }));
+    form1.append(
+      "file_0",
+      new File([PNG_BYTES], "seed.png", { type: "image/png" }),
+    );
     const r1 = await parseMultipartRequest(
       new Request(`${h.base}/v1/bots/bot1/ask`, {
         method: "POST",
@@ -86,7 +94,10 @@ describe("§12.5.4 resource.disk-fill", () => {
     // Second upload with disk probe over-reporting → rejected.
     const form2 = new FormData();
     form2.append("text", "second");
-    form2.append("file_0", new File([PNG_BYTES], "b.png", { type: "image/png" }));
+    form2.append(
+      "file_0",
+      new File([PNG_BYTES], "b.png", { type: "image/png" }),
+    );
     const r2 = await parseMultipartRequest(
       new Request(`${h.base}/v1/bots/bot1/ask`, {
         method: "POST",
@@ -110,7 +121,10 @@ describe("§12.5.4 resource.disk-fill", () => {
 
     const form = new FormData();
     form.append("text", "prompt");
-    form.append("file_0", new File([PNG_BYTES], "p.png", { type: "image/png" }));
+    form.append(
+      "file_0",
+      new File([PNG_BYTES], "p.png", { type: "image/png" }),
+    );
 
     let probeCalled = 0;
     let writeObserved = false;

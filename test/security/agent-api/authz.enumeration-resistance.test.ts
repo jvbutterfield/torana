@@ -68,7 +68,16 @@ describe("§12.5.2 authz.enumeration-resistance", () => {
     // this via raw SQL since the public insert helpers are purpose-
     // specific.
     h = startHarness({ tokens: [attacker] });
-    const db = (h.db as unknown as { _db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown; run: (...a: unknown[]) => unknown } } })._db;
+    const db = (
+      h.db as unknown as {
+        _db: {
+          prepare: (s: string) => {
+            get: (...a: unknown[]) => unknown;
+            run: (...a: unknown[]) => unknown;
+          };
+        };
+      }
+    )._db;
     db.prepare(
       `INSERT INTO inbound_updates (id, bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json)
        VALUES (1, 'bot1', 1, 100, 1, '1', '{}')`,

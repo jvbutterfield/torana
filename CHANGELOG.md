@@ -6,6 +6,106 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+Five security fixes landed together ahead of the 1.0.0 cut. Three of them
+are breaking config changes — see **Upgrade notes** below before deploying.
+
+- **(P1) claude-code runner now requires `acknowledge_dangerous: true`.**
+  The runner has always passed `--dangerously-skip-permissions` to the
+  Claude CLI (required for torana's NDJSON protocol to work) — every turn
+  has therefore run unsandboxed with host-level access in `cwd`. That was
+  implicit; it is now explicit. The config loader rejects any claude-code
+  bot without `acknowledge_dangerous: true`, with a message pointing at
+  the container/VM isolation guidance in
+  [docs/runners.md](docs/runners.md). Mirrors the existing Codex
+  `approval_mode: yolo` acknowledgement pattern.
+
+- **(P2) Agent API auth ordering is now enumeration-resistant.** `/v1/bots/:id/*`
+  previously checked `registry.bot(botId)` BEFORE authenticating the bearer
+  token, so an unauthenticated caller could distinguish valid bot ids
+  (`401`) from invalid ones (`404 unknown_bot`). The wrapper now runs
+  authenticate → authorize (token→bot+scope) → registry lookup in that
+  order. An unauthenticated caller gets the same `401` whether or not the
+  bot exists; a token-for-A probing bot B gets `403 bot_not_permitted`
+  with no signal about bot B's existence. `404 unknown_bot` is reachable
+  only when the caller's own token is legitimately authorized for that id
+  — a misconfiguration indicator, not an enumeration primitive.
+
+- **(P2) Webhook and Agent API secrets must be at least 32 characters.**
+  `transport.webhook.secret` and `agent_api.tokens[].secret_ref` previously
+  accepted any non-empty string; they now fail schema validation at load
+  time if shorter than 32 chars. At 32 chars a random base64/hex value
+  provides ~192 bits of entropy — overwhelmingly above any realistic
+  brute-force threshold. The redaction collector in `src/log.ts` /
+  `collectSecrets` also loses its old `length >= 6` filter: every
+  configured secret is redacted regardless of length, so operators cannot
+  accidentally bypass redaction.
+
+- **(P2) Request bodies on `/v1/*` writes now get a streaming size cap.**
+  Both ask and send previously called `req.json()` / `req.formData()`
+  directly, trusting Content-Length when present. A caller with a valid
+  token could send a chunked (no Content-Length) or lying Content-Length
+  body and force memory buffering before any cap fired. Added
+  `agent_api.send.max_body_bytes` to match `agent_api.ask.max_body_bytes`;
+  both handlers now:
+  - precheck Content-Length against the applicable cap and return
+    `413 body_too_large` before reading the body, and
+  - stream `req.body` chunk-by-chunk when no (or a missing) Content-Length
+    is present, aborting the reader the moment accumulated bytes exceed
+    the cap.
+
+  Multipart aggregate accounting now also includes the UTF-8 byte sizes
+  of every string field (including `text`). A text-only multipart payload
+  is bound by the same cap as a file payload — you cannot bypass
+  `max_body_bytes` by sending 100 MB of `text=` with zero files.
+
+- **(P3) Gateway now binds to `127.0.0.1` by default.** New
+  `gateway.bind_host` setting (default `127.0.0.1`). `/health`, `/metrics`,
+  `/dashboard`, and the Agent API are no longer exposed on non-loopback
+  interfaces unless the operator opts in. Container and PaaS deployments
+  that need external reachability must explicitly set
+  `bind_host: "0.0.0.0"` (or a specific interface IP).
+
+### Upgrade notes
+
+This release contains **three breaking config changes**. A pre-existing
+config that loaded on rc.6 may refuse to load on rc.7 if any of these
+apply:
+
+1. **`bots[].runner.acknowledge_dangerous` is required for every
+   claude-code bot.** Add `acknowledge_dangerous: true` under each
+   claude-code runner block. The loader will print a clear error telling
+   you which bot needs it. If you are running outside a container / VM,
+   re-read [docs/runners.md](docs/runners.md) before acknowledging.
+
+2. **`transport.webhook.secret` and `agent_api.tokens[].secret_ref` must
+   be ≥ 32 chars.** Rotate any shorter secret. Generate replacements with
+   `openssl rand -base64 32`. Telegram webhook secrets can be rotated
+   with `torana webhook set` on the next start (torana re-registers the
+   webhook with the new value automatically).
+
+3. **`gateway.bind_host` defaults to `127.0.0.1`.** If your deployment
+   reaches torana from outside the host (Docker bridge, LAN, a PaaS
+   health check on a non-loopback IP, a reverse proxy on a different
+   container), set `gateway.bind_host: "0.0.0.0"` explicitly — existing
+   deployments that relied on the old `0.0.0.0` behaviour will start
+   refusing remote connections otherwise. PaaS users in particular
+   should double-check: the existing Railway/Heroku/Fly/Render note in
+   [docs/configuration.md](docs/configuration.md) now covers this
+   alongside the `PORT` gotcha.
+
+4. **New field `agent_api.send.max_body_bytes`** (default 100 MiB). No
+   action required — existing configs pick up the default. Lower it if
+   you want a tighter cap on `/v1/bots/:id/send` requests.
+
+5. **Enumeration-resistant auth ordering.** Clients that relied on
+   `/v1/bots/:id/*` returning `404 unknown_bot` for typos against a bot
+   the caller's token does not cover will now see `403 bot_not_permitted`
+   instead. `404 unknown_bot` still fires, but only when the caller's
+   token lists the unknown id in its `bot_ids` — i.e., the misconfigured
+   deployment case.
+
 ## [1.0.0-rc.6] - 2026-04-21
 
 ### Changed
@@ -88,11 +188,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `TORANA_TOKEN` env, and named profiles (see below). Stable exit codes
   (0/1/2/3/4/5/6/7) for scripting. See [docs/cli.md](docs/cli.md).
 - **CLI profile store.** `torana config init | add-profile | list-profiles |
-  remove-profile | show` manages a TOML file at
+remove-profile | show` manages a TOML file at
   `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600). Every agent-api
   subcommand resolves credentials with the precedence
   `flag > env > --profile NAME > default profile`. `torana doctor
-  --profile NAME` runs the R001..R003 remote probes against the resolved
+--profile NAME` runs the R001..R003 remote probes against the resolved
   server.
 - **`--file @-` on `torana ask` / `torana inject`.** Reads attachment bytes
   from stdin with magic-byte MIME detection (PNG, JPEG, GIF, WebP, PDF;
@@ -100,7 +200,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a second `@-` on the same call is a usage error.
 - **Skills + Codex plugin.** `skills/torana-ask/SKILL.md` and
   `skills/torana-inject/SKILL.md` ship with the package. `torana skills
-  install --host=claude|codex` copies them into
+install --host=claude|codex` copies them into
   `$CLAUDE_CONFIG_DIR/skills` / `$XDG_DATA_HOME/agents/skills` (default
   refuses on divergence; `--force` overwrites). `codex-plugin/` contains
   a manifest + marketplace.json entry for one-line Codex install; a

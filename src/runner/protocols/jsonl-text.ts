@@ -24,8 +24,17 @@ export interface JsonlTextInput {
   attachments?: Attachment[];
 }
 
-export function encodeTurn(turnId: TurnId, text: string, attachments: Attachment[]): string {
-  const envelope: JsonlTextInput = { type: "turn", turn_id: turnId, text, attachments };
+export function encodeTurn(
+  turnId: TurnId,
+  text: string,
+  attachments: Attachment[],
+): string {
+  const envelope: JsonlTextInput = {
+    type: "turn",
+    turn_id: turnId,
+    text,
+    attachments,
+  };
   return JSON.stringify(envelope) + "\n";
 }
 
@@ -37,7 +46,10 @@ export function encodeReset(): string {
 export type JsonlTextParser = LineBufferedParser;
 
 export function createJsonlTextParser(): JsonlTextParser {
-  function translate(raw: unknown, onEvent: (event: RunnerEvent) => void): void {
+  function translate(
+    raw: unknown,
+    onEvent: (event: RunnerEvent) => void,
+  ): void {
     if (!raw || typeof raw !== "object") return;
     const ev = raw as Record<string, unknown>;
     const type = ev.type;
@@ -63,14 +75,16 @@ export function createJsonlTextParser(): JsonlTextParser {
         turnId,
         stopReason: normalizeStopReason(ev.stop_reason),
         usage: extractUsage(ev),
-        finalText: typeof ev.final_text === "string" ? ev.final_text : undefined,
+        finalText:
+          typeof ev.final_text === "string" ? ev.final_text : undefined,
       });
       return;
     }
 
     if (type === "error") {
       const turnId = typeof ev.turn_id === "string" ? ev.turn_id : null;
-      const message = typeof ev.message === "string" ? ev.message : "runner error";
+      const message =
+        typeof ev.message === "string" ? ev.message : "runner error";
       const retriable = ev.retriable === true;
       if (!turnId) return;
       onEvent({ kind: "error", turnId, message, retriable });

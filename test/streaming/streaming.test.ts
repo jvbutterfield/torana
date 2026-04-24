@@ -25,7 +25,9 @@ import type { Config } from "../../src/config/schema.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadSchema(dbPath: string): void {
-  const sql = readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") + "\nPRAGMA user_version=1;";
+  const sql =
+    readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") +
+    "\nPRAGMA user_version=1;";
   const raw = new Database(dbPath, { create: true });
   raw.exec(sql);
   raw.close();
@@ -50,21 +52,43 @@ beforeEach(() => {
   const db = new GatewayDB(join(tmpDir, "gateway.db"));
 
   let placeholderMsgId = 9001;
-  const telegramCalls: Array<{ method: string; body: Record<string, unknown> }> = [];
-  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
-    const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+  const telegramCalls: Array<{
+    method: string;
+    body: Record<string, unknown>;
+  }> = [];
+  const fetchImpl = (async (
+    url: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const urlStr =
+      typeof url === "string"
+        ? url
+        : url instanceof URL
+          ? url.toString()
+          : url.url;
     const match = urlStr.match(/\/bot[^/]+\/(.+)$/);
     const method = match?.[1] ?? "";
     let body: Record<string, unknown> = {};
     if (init?.body && typeof init.body === "string") {
-      try { body = JSON.parse(init.body); } catch { /* ignore */ }
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        /* ignore */
+      }
     }
     telegramCalls.push({ method, body });
     if (method === "sendMessage") {
       placeholderMsgId += 1;
-      return Response.json({ ok: true, result: { message_id: placeholderMsgId } });
+      return Response.json({
+        ok: true,
+        result: { message_id: placeholderMsgId },
+      });
     }
-    if (method === "editMessageText" || method === "setMessageReaction" || method === "sendChatAction") {
+    if (
+      method === "editMessageText" ||
+      method === "setMessageReaction" ||
+      method === "sendChatAction"
+    ) {
       return Response.json({ ok: true, result: true });
     }
     return Response.json({ ok: true, result: true });
@@ -74,6 +98,7 @@ beforeEach(() => {
   const config = makeTestConfig([botConfig], {
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -104,7 +129,9 @@ beforeEach(() => {
     outbox,
     telegramCalls,
     config,
-    setPlaceholderMessageId(id) { placeholderMsgId = id - 1; },
+    setPlaceholderMessageId(id) {
+      placeholderMsgId = id - 1;
+    },
     seedTurn(botId, chatId = 111) {
       const inboundId = db.insertUpdate(
         botId,
@@ -170,7 +197,9 @@ describe("StreamManager.appendText", () => {
     await new Promise((r) => setTimeout(r, 250));
     // flush() in StreamManager sets lastFlushTime = Date.now() BEFORE calling
     // fireAndForgetEdit; subsequent append <100ms later is debounced via timer.
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
     expect(edits.length).toBeGreaterThan(0);
     expect(edits[0].body.text).toContain("hello");
   });
@@ -206,8 +235,12 @@ describe("StreamManager.appendText", () => {
     // Now drain everything.
     await harness.outbox.drain(200);
 
-    const sends = harness.telegramCalls.filter((c) => c.method === "sendMessage");
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    const sends = harness.telegramCalls.filter(
+      (c) => c.method === "sendMessage",
+    );
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
     const allTexts = [
       ...sends.map((c) => String(c.body.text)),
       ...edits.map((c) => String(c.body.text)),
@@ -251,8 +284,12 @@ describe("StreamManager.finalizeTurn", () => {
     await harness.streaming.finalizeTurn("alpha", big);
     await harness.outbox.drain(300);
 
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
-    const sends = harness.telegramCalls.filter((c) => c.method === "sendMessage");
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
+    const sends = harness.telegramCalls.filter(
+      (c) => c.method === "sendMessage",
+    );
     expect(edits.length).toBeGreaterThan(0);
     expect(sends.length).toBeGreaterThan(0);
   });
@@ -266,7 +303,9 @@ describe("StreamManager.finalizeTurn", () => {
     await harness.streaming.finalizeTurn("alpha", "");
     await harness.outbox.drain(100);
 
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
     // No edits should have been queued in finalize.
     expect(edits).toHaveLength(0);
   });
@@ -281,8 +320,12 @@ describe("StreamManager.finalizeTurn", () => {
     await harness.streaming.finalizeTurn("alpha", "final authoritative text");
     await harness.outbox.drain(300);
 
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
-    expect(edits.some((e) => String(e.body.text).includes("final authoritative"))).toBe(true);
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
+    expect(
+      edits.some((e) => String(e.body.text).includes("final authoritative")),
+    ).toBe(true);
   });
 
   // Regression: fast-runner race — finalize runs before the placeholder send
@@ -302,8 +345,12 @@ describe("StreamManager.finalizeTurn", () => {
     // stashed final text by editing the placeholder instead of orphaning it.
     await harness.outbox.drain(300);
 
-    const sends = harness.telegramCalls.filter((c) => c.method === "sendMessage");
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    const sends = harness.telegramCalls.filter(
+      (c) => c.method === "sendMessage",
+    );
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
     // Exactly one sendMessage (the placeholder itself); exactly one edit
     // carrying the final text to the same message_id.
     expect(sends).toHaveLength(1);
@@ -324,8 +371,12 @@ describe("StreamManager.finalizeTurn", () => {
     await harness.streaming.finalizeTurn("alpha", big);
     await harness.outbox.drain(400);
 
-    const sends = harness.telegramCalls.filter((c) => c.method === "sendMessage");
-    const edits = harness.telegramCalls.filter((c) => c.method === "editMessageText");
+    const sends = harness.telegramCalls.filter(
+      (c) => c.method === "sendMessage",
+    );
+    const edits = harness.telegramCalls.filter(
+      (c) => c.method === "editMessageText",
+    );
     // Placeholder send + one fresh send for chunk[1]; edit for chunk[0].
     expect(sends.length).toBeGreaterThanOrEqual(2);
     expect(edits.length).toBeGreaterThanOrEqual(1);
@@ -368,7 +419,9 @@ describe("StreamManager.cancelTurn", () => {
     const pending = harness.db.getPendingOutbox();
     const edits = pending.filter((p) => p.kind === "edit");
     expect(edits.length).toBeGreaterThan(0);
-    const payload = JSON.parse(edits[edits.length - 1].payload_json) as { text: string };
+    const payload = JSON.parse(edits[edits.length - 1].payload_json) as {
+      text: string;
+    };
     expect(payload.text).toBe("(interrupted)");
   });
 
@@ -404,10 +457,14 @@ describe("StreamManager.splitMessage (via finalize with over-limit text)", () =>
     await harness.outbox.drain(300);
 
     const texts = harness.telegramCalls
-      .filter((c) => c.method === "editMessageText" || c.method === "sendMessage")
+      .filter(
+        (c) => c.method === "editMessageText" || c.method === "sendMessage",
+      )
       .map((c) => String(c.body.text));
     // First chunk ends at newline (length ~60).
-    expect(texts.some((t) => t.startsWith("aaaaa") && !t.includes("bbbbb"))).toBe(true);
+    expect(
+      texts.some((t) => t.startsWith("aaaaa") && !t.includes("bbbbb")),
+    ).toBe(true);
     // Second chunk starts with newline + b-run.
     expect(texts.some((t) => t.includes("bbbbb"))).toBe(true);
   });
@@ -426,7 +483,9 @@ describe("StreamManager.splitMessage (via finalize with over-limit text)", () =>
 
     // Count emitted pieces whose text length <= limit.
     const texts = harness.telegramCalls
-      .filter((c) => c.method === "editMessageText" || c.method === "sendMessage")
+      .filter(
+        (c) => c.method === "editMessageText" || c.method === "sendMessage",
+      )
       .map((c) => String(c.body.text));
     for (const t of texts) {
       expect(t.length).toBeLessThanOrEqual(100);

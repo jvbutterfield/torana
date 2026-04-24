@@ -30,7 +30,9 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeConfig(overrides: Partial<CodexRunnerConfig> = {}): CodexRunnerConfig {
+function makeConfig(
+  overrides: Partial<CodexRunnerConfig> = {},
+): CodexRunnerConfig {
   return {
     type: "codex",
     cli_path: "codex",
@@ -51,7 +53,15 @@ function makeConfig(overrides: Partial<CodexRunnerConfig> = {}): CodexRunnerConf
 
 function track(runner: CodexRunner) {
   const events: RunnerEvent[] = [];
-  const kinds = ["ready", "text_delta", "done", "error", "fatal", "rate_limit", "status"] as const;
+  const kinds = [
+    "ready",
+    "text_delta",
+    "done",
+    "error",
+    "fatal",
+    "rate_limit",
+    "status",
+  ] as const;
   for (const k of kinds) {
     runner.on(k, (ev) => events.push(ev as RunnerEvent));
   }
@@ -90,7 +100,10 @@ describeOrSkip("CodexRunner against live codex CLI", () => {
     await waitForTurn("done", "T1", 60_000);
 
     const text = events
-      .filter((e): e is Extract<RunnerEvent, { kind: "text_delta" }> => e.kind === "text_delta")
+      .filter(
+        (e): e is Extract<RunnerEvent, { kind: "text_delta" }> =>
+          e.kind === "text_delta",
+      )
       .map((e) => e.text)
       .join("");
     expect(text.length).toBeGreaterThan(0);
@@ -126,7 +139,8 @@ describeOrSkip("CodexRunner against live codex CLI", () => {
 
     const firstNumber = events
       .filter(
-        (e): e is Extract<RunnerEvent, { kind: "text_delta" }> => e.kind === "text_delta",
+        (e): e is Extract<RunnerEvent, { kind: "text_delta" }> =>
+          e.kind === "text_delta",
       )
       .map((e) => e.text)
       .join("");

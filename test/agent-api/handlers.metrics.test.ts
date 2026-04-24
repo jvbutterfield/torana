@@ -29,7 +29,10 @@ function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -59,7 +62,9 @@ interface SetupOpts {
   runnerUnsupported?: boolean;
 }
 
-async function setup(opts: SetupOpts = {}): Promise<{ base: string; secret: string }> {
+async function setup(
+  opts: SetupOpts = {},
+): Promise<{ base: string; secret: string }> {
   const scopes = opts.scopes ?? (["ask", "send"] as ("ask" | "send")[]);
   tmpDir = mkdtempSync(join(tmpdir(), "torana-handlers-metrics-"));
   const dbPath = join(tmpDir, "gateway.db");
@@ -73,12 +78,15 @@ async function setup(opts: SetupOpts = {}): Promise<{ base: string; secret: stri
       args: ["run", MOCK, opts.mockMode ?? "normal"],
       env: {},
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   });
   const config = makeTestConfig([bot]);
   config.agent_api.enabled = true;
-  if (opts.maxPerBot !== undefined) config.agent_api.side_sessions.max_per_bot = opts.maxPerBot;
-  if (opts.maxGlobal !== undefined) config.agent_api.side_sessions.max_global = opts.maxGlobal;
+  if (opts.maxPerBot !== undefined)
+    config.agent_api.side_sessions.max_per_bot = opts.maxPerBot;
+  if (opts.maxGlobal !== undefined)
+    config.agent_api.side_sessions.max_global = opts.maxGlobal;
   metrics = new Metrics(config);
 
   runner = new ClaudeCodeRunner({
@@ -170,7 +178,10 @@ describe("ask handler → Metrics", () => {
     const { base, secret } = await setup({ scopes: ["ask"] });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(r.status).toBe(200);
@@ -189,7 +200,10 @@ describe("ask handler → Metrics", () => {
     const { base, secret } = await setup({ scopes: ["ask"] });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({}),
     });
     expect(r.status).toBe(400);
@@ -306,11 +320,17 @@ describe("send handler → Metrics", () => {
 
 describe("ask handler failure paths → Metrics", () => {
   test("202 timeout → ask_requests_2xx + ask_timeouts_total + orphan handoff", async () => {
-    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "very-slow" });
+    const { base, secret } = await setup({
+      scopes: ["ask"],
+      mockMode: "very-slow",
+    });
     // very-slow mock stalls 2s before result; clamp timeout to 1000ms (min).
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "slow", timeout_ms: 1000 }),
     });
     expect(r.status).toBe(202);
@@ -332,10 +352,16 @@ describe("ask handler failure paths → Metrics", () => {
   }, 15_000);
 
   test("500 runner_error → ask_requests_5xx", async () => {
-    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "error-turn" });
+    const { base, secret } = await setup({
+      scopes: ["ask"],
+      mockMode: "error-turn",
+    });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(r.status).toBe(500);
@@ -346,10 +372,16 @@ describe("ask handler failure paths → Metrics", () => {
   }, 15_000);
 
   test("503 runner_fatal (crash-on-turn) → ask_requests_5xx", async () => {
-    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "crash-on-turn" });
+    const { base, secret } = await setup({
+      scopes: ["ask"],
+      mockMode: "crash-on-turn",
+    });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(r.status).toBe(503);
@@ -359,14 +391,22 @@ describe("ask handler failure paths → Metrics", () => {
   }, 15_000);
 
   test("501 runner_does_not_support_side_sessions → ask_requests_5xx", async () => {
-    const { base, secret } = await setup({ scopes: ["ask"], runnerUnsupported: true });
+    const { base, secret } = await setup({
+      scopes: ["ask"],
+      runnerUnsupported: true,
+    });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(r.status).toBe(501);
-    expect((await r.json()).error).toBe("runner_does_not_support_side_sessions");
+    expect((await r.json()).error).toBe(
+      "runner_does_not_support_side_sessions",
+    );
     const snap = metrics!.agentApiSnapshot().bot1.counters;
     expect(snap.ask_requests_5xx).toBe(1);
   });
@@ -381,14 +421,20 @@ describe("ask handler failure paths → Metrics", () => {
     // First ask holds the only side-session.
     const first = fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "first", session_id: "held" }),
     });
     // Give it a moment to acquire before we fire the second.
     await new Promise((r) => setTimeout(r, 80));
     const second = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "second", session_id: "other" }),
     });
     expect(second.status).toBe(429);
@@ -401,16 +447,25 @@ describe("ask handler failure paths → Metrics", () => {
   }, 15_000);
 
   test("429 side_session_busy (same session_id mid-turn) → ask_requests_4xx", async () => {
-    const { base, secret } = await setup({ scopes: ["ask"], mockMode: "slow-echo" });
+    const { base, secret } = await setup({
+      scopes: ["ask"],
+      mockMode: "slow-echo",
+    });
     const both = await Promise.all([
       fetch(`${base}/v1/bots/bot1/ask`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ text: "a", session_id: "same" }),
       }),
       fetch(`${base}/v1/bots/bot1/ask`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify({ text: "b", session_id: "same" }),
       }),
     ]);
@@ -461,7 +516,9 @@ describe("send handler failure paths → Metrics", () => {
       }),
     ]);
     for (const r of both) expect(r.status).toBe(202);
-    const turnIds = await Promise.all(both.map(async (r) => (await r.json()).turn_id));
+    const turnIds = await Promise.all(
+      both.map(async (r) => (await r.json()).turn_id),
+    );
     expect(turnIds[0]).toBe(turnIds[1]);
 
     const snap = metrics!.agentApiSnapshot().bot1.counters;

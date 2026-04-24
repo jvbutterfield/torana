@@ -39,7 +39,13 @@ function hash(s: string): Uint8Array {
 function multipartBody(
   parts: Array<
     | { kind: "field"; name: string; value: string }
-    | { kind: "file"; name: string; filename: string; mime: string; bytes: Uint8Array }
+    | {
+        kind: "file";
+        name: string;
+        filename: string;
+        mime: string;
+        bytes: Uint8Array;
+      }
   >,
 ): FormData {
   const form = new FormData();
@@ -95,11 +101,13 @@ async function setup(
       args: ["run", MOCK, "normal"],
       env: {},
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   });
   const config = makeTestConfig([bot], {
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "info",
@@ -180,7 +188,13 @@ describe("POST /v1/bots/:id/ask — multipart happy path", () => {
       headers: { Authorization: `Bearer ${secret}` },
       body: multipartBody([
         { kind: "field", name: "text", value: "hello" },
-        { kind: "file", name: "f", filename: "a.png", mime: "image/png", bytes: PNG },
+        {
+          kind: "file",
+          name: "f",
+          filename: "a.png",
+          mime: "image/png",
+          bytes: PNG,
+        },
       ]),
     });
     expect(r.status).toBe(200);
@@ -239,7 +253,13 @@ describe("POST /v1/bots/:id/ask — multipart rejections leave no files", () => 
       body: multipartBody([
         { kind: "field", name: "text", value: "hi" },
         { kind: "field", name: "session_id", value: "has space" },
-        { kind: "file", name: "f", filename: "a.png", mime: "image/png", bytes: PNG },
+        {
+          kind: "file",
+          name: "f",
+          filename: "a.png",
+          mime: "image/png",
+          bytes: PNG,
+        },
       ]),
     });
     expect(r.status).toBe(400);

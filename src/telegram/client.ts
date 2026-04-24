@@ -1,9 +1,6 @@
 import { logger } from "../log.js";
 import type { BotId } from "../config/schema.js";
-import type {
-  TelegramUpdate,
-  TelegramWebhookInfo,
-} from "./types.js";
+import type { TelegramUpdate, TelegramWebhookInfo } from "./types.js";
 
 const log = logger("telegram");
 
@@ -57,7 +54,12 @@ export type SendResult =
 
 export type EditResult =
   | { ok: true }
-  | { ok: false; retriable: boolean; notModified: boolean; description: string };
+  | {
+      ok: false;
+      retriable: boolean;
+      notModified: boolean;
+      description: string;
+    };
 
 /**
  * Thin HTTP client for the Telegram Bot API. `botId` is just a tag used in logs;
@@ -72,11 +74,17 @@ export class TelegramClient {
   constructor(opts: TelegramClientOptions) {
     this.botId = opts.botId;
     this.token = opts.token;
-    this.apiBaseUrl = (opts.apiBaseUrl ?? "https://api.telegram.org").replace(/\/$/, "");
+    this.apiBaseUrl = (opts.apiBaseUrl ?? "https://api.telegram.org").replace(
+      /\/$/,
+      "",
+    );
     this.fetchImpl = opts.fetchImpl ?? fetch;
   }
 
-  private async api<T>(method: string, body?: Record<string, unknown>): Promise<T> {
+  private async api<T>(
+    method: string,
+    body?: Record<string, unknown>,
+  ): Promise<T> {
     const url = `${this.apiBaseUrl}/bot${this.token}/${method}`;
     let resp: Response;
     try {
@@ -100,7 +108,12 @@ export class TelegramClient {
       );
     }
     if (!data.ok) {
-      throw new TelegramError(method, resp.status, data.error_code, data.description);
+      throw new TelegramError(
+        method,
+        resp.status,
+        data.error_code,
+        data.description,
+      );
     }
     return data.result;
   }
@@ -163,12 +176,19 @@ export class TelegramClient {
     const body: Record<string, unknown> = { chat_id: chatId, text };
     if (parseMode) body.parse_mode = parseMode;
     try {
-      const result = await this.api<{ message_id: number }>("sendMessage", body);
+      const result = await this.api<{ message_id: number }>(
+        "sendMessage",
+        body,
+      );
       return { ok: true, messageId: result.message_id };
     } catch (err) {
       const retriable = err instanceof TelegramError ? err.isRetriable : true;
       const description = err instanceof Error ? err.message : String(err);
-      log.warn("sendMessage failed", { bot_id: this.botId, chat_id: chatId, error: description });
+      log.warn("sendMessage failed", {
+        bot_id: this.botId,
+        chat_id: chatId,
+        error: description,
+      });
       return { ok: false, retriable, description };
     }
   }
@@ -196,8 +216,7 @@ export class TelegramClient {
       // finalizeTurn queues the terminal edit. Treat as success.
       const notModified = /message is not modified/i.test(description);
       const retriable =
-        !notModified &&
-        (err instanceof TelegramError ? err.isRetriable : true);
+        !notModified && (err instanceof TelegramError ? err.isRetriable : true);
       log.debug("editMessageText failed", {
         bot_id: this.botId,
         not_modified: notModified,
@@ -275,7 +294,9 @@ export class TelegramClient {
 
   // --- Attachments ---
 
-  async getFile(fileId: string): Promise<{ file_path: string; file_size?: number } | null> {
+  async getFile(
+    fileId: string,
+  ): Promise<{ file_path: string; file_size?: number } | null> {
     try {
       const result = await this.api<{ file_path: string; file_size?: number }>(
         "getFile",

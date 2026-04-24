@@ -129,7 +129,10 @@ beforeEach(() => {
   /* per-test setup */
 });
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -299,7 +302,10 @@ describe("POST /v1/bots/:id/ask — Codex runner", () => {
       headers: { Authorization: `Bearer ${secret}` },
     });
     expect(turnRes.status).toBe(200);
-    const turnBody = (await turnRes.json()) as { status: string; text?: string };
+    const turnBody = (await turnRes.json()) as {
+      status: string;
+      text?: string;
+    };
     expect(turnBody.status).toBe("done");
     expect(turnBody.text).toBe("echo: cached");
   }, 20_000);

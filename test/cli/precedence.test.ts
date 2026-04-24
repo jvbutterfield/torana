@@ -51,7 +51,11 @@ describe("resolveCredentials precedence", () => {
   });
 
   test("named profile beats default profile when flag+env are absent", () => {
-    const r = resolveCredentials({ profileName: "beta", profiles: STORE, env: EMPTY_ENV });
+    const r = resolveCredentials({
+      profileName: "beta",
+      profiles: STORE,
+      env: EMPTY_ENV,
+    });
     expect(r.server).toBe("http://beta-named");
     expect(r.token).toBe("tok-beta");
     expect(r.trace).toEqual(["server:profile:beta", "token:profile:beta"]);
@@ -114,7 +118,11 @@ describe("resolveCredentials precedence", () => {
   test("error when --profile references an unknown name", () => {
     let caught: unknown;
     try {
-      resolveCredentials({ profileName: "ghost", profiles: STORE, env: EMPTY_ENV });
+      resolveCredentials({
+        profileName: "ghost",
+        profiles: STORE,
+        env: EMPTY_ENV,
+      });
     } catch (e) {
       caught = e;
     }
@@ -147,11 +155,16 @@ describe("resolveCredentials precedence", () => {
 
 describe("traceLines", () => {
   test("empty unless verbose or TORANA_DEBUG=1", () => {
-    expect(traceLines(["server:flag", "token:env"], { env: EMPTY_ENV })).toEqual([]);
+    expect(
+      traceLines(["server:flag", "token:env"], { env: EMPTY_ENV }),
+    ).toEqual([]);
   });
 
   test("emits trace line when verbose=true", () => {
-    const lines = traceLines(["server:flag", "token:env"], { verbose: true, env: EMPTY_ENV });
+    const lines = traceLines(["server:flag", "token:env"], {
+      verbose: true,
+      env: EMPTY_ENV,
+    });
     expect(lines.length).toBe(1);
     expect(lines[0]).toContain("server:flag");
     expect(lines[0]).toContain("token:env");

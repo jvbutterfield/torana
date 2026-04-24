@@ -103,7 +103,9 @@ describe("Metrics", () => {
     expect(body).toContain('bot_state{bot_id="alpha"} 2');
     expect(body).toContain('bot_state{bot_id="beta"} 1');
     expect(body).toContain("# HELP outbox_attempts_total");
-    expect(body).toMatch(/outbox_attempts_total\{bot_id="beta",result="retry"\} 2/);
+    expect(body).toMatch(
+      /outbox_attempts_total\{bot_id="beta",result="retry"\} 2/,
+    );
     expect(body).toContain("# HELP telegram_api_calls_total");
     // Ends with trailing newline.
     expect(body.endsWith("\n")).toBe(true);
@@ -111,7 +113,9 @@ describe("Metrics", () => {
 });
 
 describe("AlertManager", () => {
-  function makeClient(sends: Array<{ chatId: number; text: string }>): TelegramClient {
+  function makeClient(
+    sends: Array<{ chatId: number; text: string }>,
+  ): TelegramClient {
     return {
       async sendMessage(chatId: number, text: string) {
         sends.push({ chatId, text });
@@ -130,9 +134,12 @@ describe("AlertManager", () => {
   });
 
   test("configured alerts block → sends via the via_bot client", async () => {
-    const config = makeTestConfig([makeTestBotConfig("alpha"), makeTestBotConfig("beta")], {
-      alerts: { chat_id: 99_999, via_bot: "beta", cooldown_ms: 0 },
-    });
+    const config = makeTestConfig(
+      [makeTestBotConfig("alpha"), makeTestBotConfig("beta")],
+      {
+        alerts: { chat_id: 99_999, via_bot: "beta", cooldown_ms: 0 },
+      },
+    );
     const sends: Array<{ chatId: number; text: string }> = [];
     const clients = new Map([
       ["alpha", makeClient([])], // subject bot — not the delivery bot
@@ -160,9 +167,12 @@ describe("AlertManager", () => {
   });
 
   test("cooldown: different keys are independent", async () => {
-    const config = makeTestConfig([makeTestBotConfig("alpha"), makeTestBotConfig("beta")], {
-      alerts: { chat_id: 1, via_bot: "alpha", cooldown_ms: 60_000 },
-    });
+    const config = makeTestConfig(
+      [makeTestBotConfig("alpha"), makeTestBotConfig("beta")],
+      {
+        alerts: { chat_id: 1, via_bot: "alpha", cooldown_ms: 60_000 },
+      },
+    );
     const sends: Array<{ chatId: number; text: string }> = [];
     const clients = new Map([
       ["alpha", makeClient(sends)],
@@ -195,7 +205,9 @@ describe("AlertManager", () => {
       alerts: { chat_id: 1, via_bot: "alpha", cooldown_ms: 0 },
     });
     const failClient = {
-      async sendMessage() { throw new Error("network"); },
+      async sendMessage() {
+        throw new Error("network");
+      },
     } as unknown as TelegramClient;
     const a = new AlertManager(config, new Map([["alpha", failClient]]));
     // Must not throw.

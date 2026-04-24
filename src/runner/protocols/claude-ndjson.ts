@@ -25,8 +25,13 @@ export interface ClaudeNdjsonParseOptions {
 
 export type ClaudeNdjsonParser = LineBufferedParser;
 
-export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): ClaudeNdjsonParser {
-  function translate(raw: unknown, onEvent: (event: RunnerEvent) => void): void {
+export function createClaudeNdjsonParser(
+  opts: ClaudeNdjsonParseOptions,
+): ClaudeNdjsonParser {
+  function translate(
+    raw: unknown,
+    onEvent: (event: RunnerEvent) => void,
+  ): void {
     if (!raw || typeof raw !== "object") return;
     const ev = raw as Record<string, unknown>;
     const type = ev.type;
@@ -44,7 +49,11 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
       if (innerType === "content_block_delta") {
         const delta = inner.delta as Record<string, unknown> | undefined;
         if (!delta) return;
-        if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text) {
+        if (
+          delta.type === "text_delta" &&
+          typeof delta.text === "string" &&
+          delta.text
+        ) {
           const turnId = opts.currentTurnId();
           if (turnId !== null) {
             onEvent({ kind: "text_delta", turnId, text: delta.text });
@@ -55,10 +64,16 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
       }
 
       if (innerType === "content_block_start") {
-        const block = inner.content_block as Record<string, unknown> | undefined;
+        const block = inner.content_block as
+          | Record<string, unknown>
+          | undefined;
         if (block?.type === "tool_use") {
           const turnId = opts.currentTurnId();
-          onEvent({ kind: "status", turnId: turnId ?? undefined, phase: "tool_use" });
+          onEvent({
+            kind: "status",
+            turnId: turnId ?? undefined,
+            phase: "tool_use",
+          });
         }
         return;
       }
@@ -75,7 +90,8 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
       if (turnId === null) return;
 
       const isError = ev.is_error === true;
-      const duration = typeof ev.duration_ms === "number" ? ev.duration_ms : undefined;
+      const duration =
+        typeof ev.duration_ms === "number" ? ev.duration_ms : undefined;
       const finalText = typeof ev.result === "string" ? ev.result : undefined;
 
       if (isError) {
@@ -104,7 +120,11 @@ export function createClaudeNdjsonParser(opts: ClaudeNdjsonParseOptions): Claude
       if (!info || info.status === "allowed") return;
       const retryAfterMs = parseRetryAfter(info) ?? 60_000;
       const turnId = opts.currentTurnId();
-      onEvent({ kind: "rate_limit", turnId: turnId ?? undefined, retry_after_ms: retryAfterMs });
+      onEvent({
+        kind: "rate_limit",
+        turnId: turnId ?? undefined,
+        retry_after_ms: retryAfterMs,
+      });
       return;
     }
 

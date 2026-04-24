@@ -49,6 +49,7 @@ function cfgFor(overrides: Partial<Config> = {}): Config {
   const c = makeTestConfig([bot], {
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "info",
@@ -93,7 +94,10 @@ function multipartRequest(
       );
     }
   }
-  const req = new Request("http://local/v1/test", { method: "POST", body: form });
+  const req = new Request("http://local/v1/test", {
+    method: "POST",
+    body: form,
+  });
   // If the caller doesn't want content-length (simulates a client that
   // streams), rebuild the Request without the header.
   if (opts.omitContentLength) {
@@ -221,8 +225,20 @@ describe("parseMultipartRequest — rejection paths", () => {
   test("count > max_files_per_request → too_many_files", async () => {
     cfg.agent_api.ask.max_files_per_request = 1;
     const req = multipartRequest([
-      { kind: "file", name: "a", filename: "a.png", mime: "image/png", bytes: PNG_HEADER },
-      { kind: "file", name: "b", filename: "b.png", mime: "image/png", bytes: PNG_HEADER },
+      {
+        kind: "file",
+        name: "a",
+        filename: "a.png",
+        mime: "image/png",
+        bytes: PNG_HEADER,
+      },
+      {
+        kind: "file",
+        name: "b",
+        filename: "b.png",
+        mime: "image/png",
+        bytes: PNG_HEADER,
+      },
     ]);
     const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
     expect(r.kind).toBe("err");
@@ -234,7 +250,13 @@ describe("parseMultipartRequest — rejection paths", () => {
   test("file bigger than per-file cap → attachment_too_large", async () => {
     cfg.attachments.max_bytes = 4; // PNG header is 8 bytes
     const req = multipartRequest([
-      { kind: "file", name: "a", filename: "a.png", mime: "image/png", bytes: PNG_HEADER },
+      {
+        kind: "file",
+        name: "a",
+        filename: "a.png",
+        mime: "image/png",
+        bytes: PNG_HEADER,
+      },
     ]);
     const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
     expect(r.kind).toBe("err");
@@ -263,7 +285,13 @@ describe("parseMultipartRequest — rejection paths", () => {
     cfg.agent_api.ask.max_body_bytes = 4; // PNG+PDF totals 12 bytes
     const req = multipartRequest(
       [
-        { kind: "file", name: "a", filename: "a.png", mime: "image/png", bytes: PNG_HEADER },
+        {
+          kind: "file",
+          name: "a",
+          filename: "a.png",
+          mime: "image/png",
+          bytes: PNG_HEADER,
+        },
         {
           kind: "file",
           name: "b",
@@ -272,6 +300,20 @@ describe("parseMultipartRequest — rejection paths", () => {
           bytes: PDF_HEADER,
         },
       ],
+      { omitContentLength: true },
+    );
+    const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
+    expect(r.kind).toBe("err");
+    if (r.kind === "err") expect(r.code).toBe("body_too_large");
+  });
+
+  test("aggregate size includes text + form fields — text-only payload over cap → body_too_large", async () => {
+    // Text-only multipart must be subject to the same cap as file payloads.
+    // If field bytes were excluded, an attacker could bypass max_body_bytes
+    // by sending 100 MB of `text=` with zero files and chunked encoding.
+    cfg.agent_api.ask.max_body_bytes = 64;
+    const req = multipartRequest(
+      [{ kind: "field", name: "text", value: "x".repeat(200) }],
       { omitContentLength: true },
     );
     const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
@@ -332,10 +374,7 @@ describe("cleanupFiles", () => {
 });
 
 describe("sweepUnreferencedAgentApiFiles", () => {
-  async function writeFileAt(
-    path: string,
-    ageMs: number,
-  ): Promise<void> {
+  async function writeFileAt(path: string, ageMs: number): Promise<void> {
     await mkdir(join(tmpDir, "attachments", BOT_ID), { recursive: true });
     await writeFile(path, "x");
     const now = Date.now();

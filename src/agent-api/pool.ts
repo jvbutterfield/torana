@@ -138,16 +138,22 @@ export class SideSessionPool {
    * Acquire a side-session entry. Caller MUST eventually call release(),
    * typically in a finally block.
    */
-  async acquire(botId: string, sessionId: string | null): Promise<AcquireResult> {
+  async acquire(
+    botId: string,
+    sessionId: string | null,
+  ): Promise<AcquireResult> {
     const startMs = this.clock();
-    const recordOutcome = (outcome: "reuse" | "spawn" | "capacity" | "busy"): void => {
+    const recordOutcome = (
+      outcome: "reuse" | "spawn" | "capacity" | "busy",
+    ): void => {
       recordAcquire(this.metrics, botId, outcome, this.clock() - startMs);
     };
 
     if (this.shuttingDown) return { kind: "gateway_shutting_down" };
 
     const bot = this.registry.bot(botId);
-    if (!bot) return { kind: "runner_error", message: `unknown bot '${botId}'` };
+    if (!bot)
+      return { kind: "runner_error", message: `unknown bot '${botId}'` };
     if (!bot.runner.supportsSideSessions()) {
       return { kind: "runner_does_not_support_side_sessions" };
     }
@@ -219,7 +225,11 @@ export class SideSessionPool {
    * Safe to call while the session is in-flight; stopSideSession on the
    * runner handles SIGTERM → SIGKILL escalation.
    */
-  async stop(botId: string, sessionId: string, graceMs?: number): Promise<void> {
+  async stop(
+    botId: string,
+    sessionId: string,
+    graceMs?: number,
+  ): Promise<void> {
     const key = entryKey(botId, sessionId);
     const entry = this.entries.get(key);
     if (!entry) return;
@@ -414,7 +424,11 @@ export class SideSessionPool {
           // Block new acquires; release() drops inflight → scheduleStop.
           recordEviction(this.metrics, entry.botId, "hard");
           entry.state = "stopping";
-          this.db.markSideSessionState(entry.botId, entry.sessionId, "stopping");
+          this.db.markSideSessionState(
+            entry.botId,
+            entry.sessionId,
+            "stopping",
+          );
           this.publishLiveGauge(entry.botId);
         }
         continue;

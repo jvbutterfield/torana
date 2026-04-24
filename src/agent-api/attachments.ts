@@ -92,6 +92,13 @@ export interface ParseMultipartOptions {
    * to the real `computeAttachmentsDiskUsage`.
    */
   computeDiskUsage?: (dataDir: string) => Promise<number>;
+  /**
+   * Body-size cap. Callers pass the handler-specific cap
+   * (agent_api.ask.max_body_bytes for /ask, agent_api.send.max_body_bytes
+   * for /send). Defaults to `agent_api.ask.max_body_bytes` if omitted to
+   * preserve historical behaviour.
+   */
+  maxBodyBytes?: number;
 }
 
 /**
@@ -119,7 +126,11 @@ export async function parseMultipartRequest(
 
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("multipart/form-data")) {
-    return { kind: "err", code: "invalid_body", detail: "expected multipart/form-data" };
+    return {
+      kind: "err",
+      code: "invalid_body",
+      detail: "expected multipart/form-data",
+    };
   }
 
   // Early aggregate check via Content-Length (stream-reading with hard abort
@@ -127,7 +138,7 @@ export async function parseMultipartRequest(
   // v1 threat model — the subsequent formData() call buffers, and we're
   // checking a known-valid header before we allocate any buffer).
   const contentLength = Number(req.headers.get("content-length") ?? 0);
-  const maxBody = config.agent_api.ask.max_body_bytes;
+  const maxBody = opts.maxBodyBytes ?? config.agent_api.ask.max_body_bytes;
   if (contentLength > 0 && contentLength > maxBody) {
     return {
       kind: "err",
@@ -172,10 +183,17 @@ export async function parseMultipartRequest(
   }
 
   // Aggregate-size fallback when Content-Length is absent (some clients
-  // drop it for multipart). Sum decoded file sizes and compare against
-  // the same cap.
+  // drop it for multipart). Sum decoded file sizes PLUS the UTF-8 byte
+  // sizes of every string field (including `text`) so a caller cannot
+  // bypass max_body_bytes by submitting, e.g., 100 MB of text and no
+  // files — text-only traffic must obey the same cap as files.
   let aggregate = 0;
   for (const { file } of rawFiles) aggregate += file.size;
+  const te = new TextEncoder();
+  if (textField) aggregate += te.encode(textField).byteLength;
+  for (const [name, value] of Object.entries(fields)) {
+    aggregate += te.encode(name).byteLength + te.encode(value).byteLength;
+  }
   if (aggregate > maxBody) {
     return {
       kind: "err",

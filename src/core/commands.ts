@@ -28,12 +28,12 @@ export interface BotStatusSnapshot {
   disabled_reason: string | null;
 }
 
-export type CommandResult =
-  | { handled: true }
-  | { handled: false };
+export type CommandResult = { handled: true } | { handled: false };
 
 /** Parse a leading /command from text. Returns null if the message isn't a command. */
-export function parseCommand(text: string): { trigger: string; rest: string } | null {
+export function parseCommand(
+  text: string,
+): { trigger: string; rest: string } | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
   const space = trimmed.search(/\s/);
@@ -45,7 +45,9 @@ export async function dispatchCommand(
   ctx: CommandContext,
   parsed: { trigger: string; rest: string },
 ): Promise<CommandResult> {
-  const binding = ctx.botConfig.commands.find((c) => c.trigger === parsed.trigger);
+  const binding = ctx.botConfig.commands.find(
+    (c) => c.trigger === parsed.trigger,
+  );
   if (!binding) return { handled: false };
 
   switch (binding.action) {

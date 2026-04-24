@@ -116,7 +116,10 @@ export class ClaudeCodeRunner implements AgentRunner {
     this.protocolFlags = opts.protocolFlags ?? ClaudeCodeRunner.PROTOCOL_FLAGS;
   }
 
-  on<E extends RunnerEventKind>(event: E, handler: RunnerEventHandler<E>): Unsubscribe {
+  on<E extends RunnerEventKind>(
+    event: E,
+    handler: RunnerEventHandler<E>,
+  ): Unsubscribe {
     return this.emitter.on(event, handler);
   }
 
@@ -445,7 +448,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     entry.activeTurn = null;
     if (entry.resolveReady) {
       entry.rejectReady?.(
-        new Error(`claude side-session subprocess exited before ready (code=${code})`),
+        new Error(
+          `claude side-session subprocess exited before ready (code=${code})`,
+        ),
       );
       entry.resolveReady = null;
       entry.rejectReady = null;
@@ -475,7 +480,11 @@ export class ClaudeCodeRunner implements AgentRunner {
     entry.emitter.emit(ev);
   }
 
-  sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {
+  sendTurn(
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult {
     // Order matters: a runner mid-turn has status "busy", and the caller
     // needs to distinguish that from "hasn't finished starting yet".
     if (this.activeTurn !== null) {
@@ -578,7 +587,11 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   private buildArgs(freshSession: boolean): string[] {
     const base = [...this.protocolFlags, ...this.config.args];
-    if (this.config.pass_continue_flag && !freshSession && !base.includes("--continue")) {
+    if (
+      this.config.pass_continue_flag &&
+      !freshSession &&
+      !base.includes("--continue")
+    ) {
       base.push("--continue");
     }
     return base;
@@ -595,7 +608,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     return env;
   }
 
-  private async readStdout(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async readStdout(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const parser = createClaudeNdjsonParser({
@@ -618,7 +633,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
   }
 
-  private async readStderr(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async readStderr(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
 
@@ -640,7 +657,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
   }
 
-  private async watchExit(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async watchExit(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const exitCode = await proc.exited;
     if (this.proc !== proc) return; // stale
 
@@ -650,7 +669,10 @@ export class ClaudeCodeRunner implements AgentRunner {
 
     if (this.stopping) return;
 
-    this.log.warn("subprocess exited", { code: exitCode, hadTurn: this.activeTurn !== null });
+    this.log.warn("subprocess exited", {
+      code: exitCode,
+      hadTurn: this.activeTurn !== null,
+    });
 
     // Fresh-session respawn always wins over fatal — it's a requested restart.
     if (this.pendingFreshSession) {
@@ -664,7 +686,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     // layer into persisted state that a redactor can't know about (upstream
     // API keys in a stack trace, etc.). The full stderr is already captured
     // to the per-bot log file for operator debugging.
-    const fatalCode: "auth" | "exit" = this.looksLikeAuthFailure() ? "auth" : "exit";
+    const fatalCode: "auth" | "exit" = this.looksLikeAuthFailure()
+      ? "auth"
+      : "exit";
     this.emitter.emit({
       kind: "fatal",
       code: fatalCode,

@@ -150,7 +150,9 @@ export async function downloadAttachments(
 
 function isContainedIn(candidate: string, dir: string): boolean {
   const resolvedDir = isAbsolute(dir) ? dir : resolve(dir);
-  const resolvedCandidate = isAbsolute(candidate) ? candidate : resolve(candidate);
+  const resolvedCandidate = isAbsolute(candidate)
+    ? candidate
+    : resolve(candidate);
   return (
     resolvedCandidate === resolvedDir ||
     resolvedCandidate.startsWith(resolvedDir + "/") ||
@@ -162,7 +164,9 @@ function isContainedIn(candidate: string, dir: string): boolean {
  * Compute the total size (bytes) of files under `attachments/` across all bots.
  * Used by the disk-cap circuit breaker.
  */
-export async function computeAttachmentsDiskUsage(dataDir: string): Promise<number> {
+export async function computeAttachmentsDiskUsage(
+  dataDir: string,
+): Promise<number> {
   const root = resolve(dataDir, "attachments");
   try {
     return await sumDir(root);
@@ -231,7 +235,8 @@ export async function sweepExpiredAttachments(
     let paths: string[] = [];
     try {
       const parsed = JSON.parse(row.attachment_paths_json);
-      if (Array.isArray(parsed)) paths = parsed.filter((p) => typeof p === "string");
+      if (Array.isArray(parsed))
+        paths = parsed.filter((p) => typeof p === "string");
     } catch {
       /* malformed — still clear the column so it doesn't keep coming back */
     }

@@ -4,7 +4,14 @@
 // ~/.claude or ~/.agents trees.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, statSync, mkdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  statSync,
+  mkdirSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -68,7 +75,9 @@ describe("installSkills (helper)", () => {
     const ask = r.actions.find((a) => a.skill === "torana-ask");
     expect(ask?.action).toBe("refused-different");
     // The user-edited file must still be intact.
-    expect(readFileSync(join(claude, "torana-ask", "SKILL.md"), "utf-8")).toContain("user edits");
+    expect(
+      readFileSync(join(claude, "torana-ask", "SKILL.md"), "utf-8"),
+    ).toContain("user edits");
   });
 
   test("--force overwrites a modified target", () => {
@@ -121,7 +130,9 @@ describe("installSkills (helper)", () => {
 
 describe("target path resolution", () => {
   test("claudeSkillsDir honors $CLAUDE_CONFIG_DIR", () => {
-    const p = claudeSkillsDir({ CLAUDE_CONFIG_DIR: "/tmp/cc" } as NodeJS.ProcessEnv);
+    const p = claudeSkillsDir({
+      CLAUDE_CONFIG_DIR: "/tmp/cc",
+    } as NodeJS.ProcessEnv);
     expect(p).toBe("/tmp/cc/skills");
   });
 
@@ -131,7 +142,9 @@ describe("target path resolution", () => {
   });
 
   test("codexSkillsDir honors $XDG_DATA_HOME", () => {
-    const p = codexSkillsDir({ XDG_DATA_HOME: "/tmp/xdg" } as NodeJS.ProcessEnv);
+    const p = codexSkillsDir({
+      XDG_DATA_HOME: "/tmp/xdg",
+    } as NodeJS.ProcessEnv);
     expect(p).toBe("/tmp/xdg/agents/skills");
   });
 
@@ -208,7 +221,9 @@ describe("torana skills CLI", () => {
       REPO_SKILLS,
     ]);
     expect(r.exitCode).toBe(1);
-    expect(readFileSync(join(claude, "torana-ask", "SKILL.md"), "utf-8")).toBe("user-edits");
+    expect(readFileSync(join(claude, "torana-ask", "SKILL.md"), "utf-8")).toBe(
+      "user-edits",
+    );
   });
 
   test("unknown subcommand prints help + exits 2", async () => {

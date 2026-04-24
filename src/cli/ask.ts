@@ -76,7 +76,9 @@ export interface AskRunDeps {
    * Reads a file from disk or stdin (overridable for tests). The path is
    * `@-` to request stdin bytes.
    */
-  readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
+  readFile?: (
+    path: string,
+  ) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
 }
 
 export async function runAsk(
@@ -160,14 +162,10 @@ export async function runAsk(
   }
 
   // in_progress — print turn_id on stdout for `torana turns get`
-  return renderText(
-    [String(response.turn_id)],
-    ExitCode.timeout,
-    [
-      `# ask returned 202 in_progress; poll with: torana turns get ${response.turn_id}`,
-      `# session_id: ${response.session_id}`,
-    ],
-  );
+  return renderText([String(response.turn_id)], ExitCode.timeout, [
+    `# ask returned 202 in_progress; poll with: torana turns get ${response.turn_id}`,
+    `# session_id: ${response.session_id}`,
+  ]);
 }
 
 function stringFlag(
@@ -214,7 +212,11 @@ export function renderError(err: unknown, wantJson: boolean): Rendered {
     };
   }
   if (err instanceof CliUsageError) {
-    return { stdout: [], stderr: [`usage: ${err.message}`], exitCode: ExitCode.badUsage };
+    return {
+      stdout: [],
+      stderr: [`usage: ${err.message}`],
+      exitCode: ExitCode.badUsage,
+    };
   }
   const msg = err instanceof Error ? err.message : String(err);
   return { stdout: [], stderr: [`error: ${msg}`], exitCode: ExitCode.internal };

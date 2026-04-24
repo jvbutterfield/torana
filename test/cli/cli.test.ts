@@ -5,7 +5,13 @@
 // is used per test; an in-memory fake Telegram serves getMe for C004.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, chmodSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  chmodSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +23,10 @@ import { loadConfigFromFile } from "../../src/config/load.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_ENTRY = resolve(__dirname, "../../src/cli.ts");
-const ECHO_RUNNER = resolve(__dirname, "../integration/fixtures/test-runner.ts");
+const ECHO_RUNNER = resolve(
+  __dirname,
+  "../integration/fixtures/test-runner.ts",
+);
 
 let tmpDir: string;
 
@@ -233,7 +242,10 @@ describe("CLI doctor (unit tests via runDoctor)", () => {
       const urlStr = typeof url === "string" ? url : url.toString();
       if (urlStr.endsWith("/getMe")) {
         return new Response(
-          JSON.stringify({ ok: true, result: { id: 42, username: "alpha_bot" } }),
+          JSON.stringify({
+            ok: true,
+            result: { id: 42, username: "alpha_bot" },
+          }),
         );
       }
       return new Response("", { status: 200 });
@@ -280,7 +292,9 @@ bots:
     applyMigrations(join(tmpDir, "gateway.db"));
 
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ ok: true, result: { id: 1 } }))) as unknown as typeof fetch;
+      new Response(
+        JSON.stringify({ ok: true, result: { id: 1 } }),
+      )) as unknown as typeof fetch;
 
     const { config } = loadConfigFromFile(cfg);
     const result = await runDoctor({ config, configPath: cfg, fetchImpl });
@@ -296,7 +310,11 @@ bots:
 
     const fetchImpl = (async () =>
       new Response(
-        JSON.stringify({ ok: false, error_code: 401, description: "Unauthorized" }),
+        JSON.stringify({
+          ok: false,
+          error_code: 401,
+          description: "Unauthorized",
+        }),
         { status: 401 },
       )) as unknown as typeof fetch;
 
@@ -330,7 +348,9 @@ bots:
     const { config } = loadConfigFromFile(cfg);
     // doctor runs against the config's data_dir, which doesn't exist.
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ ok: true, result: { id: 1 } }))) as unknown as typeof fetch;
+      new Response(
+        JSON.stringify({ ok: true, result: { id: 1 } }),
+      )) as unknown as typeof fetch;
     const result = await runDoctor({ config, configPath: cfg, fetchImpl });
     const c002 = result.checks.find((c) => c.id === "C002");
     expect(c002?.status).toBe("fail");
@@ -341,7 +361,9 @@ bots:
     applyMigrations(join(tmpDir, "gateway.db"));
     chmodSync(cfg, 0o644); // world-readable
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ ok: true, result: { id: 1 } }))) as unknown as typeof fetch;
+      new Response(
+        JSON.stringify({ ok: true, result: { id: 1 } }),
+      )) as unknown as typeof fetch;
     const { config } = loadConfigFromFile(cfg);
     const result = await runDoctor({ config, configPath: cfg, fetchImpl });
     const c007 = result.checks.find((c) => c.id === "C007");
@@ -360,7 +382,7 @@ transport:
   default_mode: webhook
   webhook:
     base_url: https://example.invalid
-    secret: abcdef
+    secret: abcdef-padded-to-satisfy-min-32-chars
 access_control:
   allowed_user_ids: [111]
 bots:
@@ -393,7 +415,13 @@ describe("CLI doctor (subprocess)", () => {
     applyMigrations(join(tmpDir, "gateway.db"));
     // getMe call will fail on the real api.telegram.org with this fake token,
     // so we expect a non-zero exit. What we're testing here is the JSON shape.
-    const { stdout } = await runCli(["doctor", "--config", cfg, "--format", "json"]);
+    const { stdout } = await runCli([
+      "doctor",
+      "--config",
+      cfg,
+      "--format",
+      "json",
+    ]);
     // stdout should be valid JSON (even on failure).
     const parsed = JSON.parse(stdout);
     expect(Array.isArray(parsed.checks)).toBe(true);
@@ -419,7 +447,9 @@ describe("CLI doctor (subprocess)", () => {
         { env: { XDG_CONFIG_HOME: xdg } },
       );
       expect(exitCode).toBe(2);
-      expect(stderr).toMatch(/profile 'prod' not found|no profile store available/);
+      expect(stderr).toMatch(
+        /profile 'prod' not found|no profile store available/,
+      );
     } finally {
       rmSync(xdg, { recursive: true, force: true });
     }

@@ -98,7 +98,11 @@ function seedTurn(): number {
   });
 }
 
-function attach(listener: OrphanListenerManager, turnId: number, backstopMs?: number): void {
+function attach(
+  listener: OrphanListenerManager,
+  turnId: number,
+  backstopMs?: number,
+): void {
   listener.attach({
     runner: runner as unknown as AgentRunner,
     botId: "bot1",
@@ -114,8 +118,16 @@ describe("OrphanListenerManager — metric emission per resolution", () => {
     const turnId = seedTurn();
     attach(listener, turnId);
 
-    runner.emit("s1", { kind: "text_delta", turnId: String(turnId), text: "hello " });
-    runner.emit("s1", { kind: "text_delta", turnId: String(turnId), text: "world" });
+    runner.emit("s1", {
+      kind: "text_delta",
+      turnId: String(turnId),
+      text: "hello ",
+    });
+    runner.emit("s1", {
+      kind: "text_delta",
+      turnId: String(turnId),
+      text: "world",
+    });
     runner.emit("s1", {
       kind: "done",
       turnId: String(turnId),
@@ -237,7 +249,11 @@ describe("OrphanListenerManager — metric emission per resolution", () => {
     const turnId = seedTurn();
     attach(listener, turnId);
 
-    runner.emit("s1", { kind: "done", turnId: String(turnId), finalText: "ok" });
+    runner.emit("s1", {
+      kind: "done",
+      turnId: String(turnId),
+      finalText: "ok",
+    });
     expect(pool.releases.length).toBe(1);
   });
 });

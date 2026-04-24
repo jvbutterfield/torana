@@ -29,7 +29,9 @@ let tmpDir: string;
 let db: GatewayDB;
 
 function loadSchema(dbPath: string): void {
-  const sql = readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") + "\nPRAGMA user_version=1;";
+  const sql =
+    readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") +
+    "\nPRAGMA user_version=1;";
   const raw = new Database(dbPath, { create: true });
   raw.exec(sql);
   raw.close();
@@ -39,11 +41,17 @@ function loadSchema(dbPath: string): void {
  * Programmable fake Telegram API. `getUpdates` behavior is driven by a queue
  * of responses; each call consumes the next. Empty queue: hang until aborted.
  */
-function scriptedFetch(script: Array<Response | "hang" | "network-error">): typeof fetch {
+function scriptedFetch(
+  script: Array<Response | "hang" | "network-error">,
+): typeof fetch {
   let idx = 0;
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const urlStr =
-      typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      typeof url === "string"
+        ? url
+        : url instanceof URL
+          ? url.toString()
+          : url.url;
     if (urlStr.endsWith("/deleteWebhook")) {
       return new Response(JSON.stringify({ ok: true, result: true }));
     }
@@ -59,7 +67,9 @@ function scriptedFetch(script: Array<Response | "hang" | "network-error">): type
       return new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal;
         if (signal?.aborted) return reject(new Error("aborted"));
-        signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
       });
     }
     return next.clone();
@@ -71,9 +81,12 @@ function okUpdates(updates: TelegramUpdate[]): Response {
 }
 
 function errResp(status: number, desc: string, ec = status): Response {
-  return new Response(JSON.stringify({ ok: false, error_code: ec, description: desc }), {
-    status,
-  });
+  return new Response(
+    JSON.stringify({ ok: false, error_code: ec, description: desc }),
+    {
+      status,
+    },
+  );
 }
 
 function buildTransport(opts: {
@@ -176,16 +189,15 @@ describe("PollingTransport — error handling", () => {
   });
 
   test("network error is retried with backoff (same as 5xx)", async () => {
-    const fetchImpl = scriptedFetch([
-      "network-error",
-      okUpdates([]),
-    ]);
+    const fetchImpl = scriptedFetch(["network-error", okUpdates([])]);
     const transport = buildTransport({ fetchImpl, backoff_base_ms: 30 });
 
     let sawGetUpdates = 0;
     // Wrap fetchImpl to count calls (script already counts them, but we want
     // to verify that the retry happened).
-    await transport.start(async () => { /* no updates in this test */ });
+    await transport.start(async () => {
+      /* no updates in this test */
+    });
     await new Promise((r) => setTimeout(r, 200));
     await transport.stop();
     // No assertion on sawGetUpdates count — we're testing that the network
@@ -199,9 +211,16 @@ describe("PollingTransport — error handling", () => {
     // hang the 4th call so stop() can cleanly cancel it (a mock that returns
     // `okUpdates([])` synchronously would starve the setTimeout macrotask).
     const calls: number[] = [];
-    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       const urlStr =
-        typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
       if (urlStr.endsWith("/deleteWebhook")) {
         return new Response(JSON.stringify({ ok: true, result: true }));
       }
@@ -217,16 +236,20 @@ describe("PollingTransport — error handling", () => {
       return new Promise<Response>((_resolve, reject) => {
         const signal = init?.signal;
         if (signal?.aborted) return reject(new Error("aborted"));
-        signal?.addEventListener(
-          "abort",
-          () => reject(new Error("aborted")),
-          { once: true },
-        );
+        signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
       });
     }) as unknown as typeof fetch;
 
-    const transport = buildTransport({ fetchImpl, backoff_base_ms: 50, backoff_cap_ms: 10_000 });
-    await transport.start(async () => { /* */ });
+    const transport = buildTransport({
+      fetchImpl,
+      backoff_base_ms: 50,
+      backoff_cap_ms: 10_000,
+    });
+    await transport.start(async () => {
+      /* */
+    });
 
     // Wait long enough for 3 failures + backoffs: 50 + 100 + 200 = 350ms + overhead.
     await new Promise((r) => setTimeout(r, 800));
@@ -246,7 +269,11 @@ describe("PollingTransport — error handling", () => {
     let getUpdatesCalls = 0;
     const fetchImpl = (async (url: string | URL | Request) => {
       const urlStr =
-        typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
       if (urlStr.includes("/getUpdates")) getUpdatesCalls += 1;
       if (urlStr.endsWith("/deleteWebhook")) {
         return new Response(JSON.stringify({ ok: true, result: true }));
@@ -254,7 +281,9 @@ describe("PollingTransport — error handling", () => {
       return okUpdates([]);
     }) as unknown as typeof fetch;
     const transport = buildTransport({ fetchImpl, disabled: true });
-    await transport.start(async () => { /* */ });
+    await transport.start(async () => {
+      /* */
+    });
     await new Promise((r) => setTimeout(r, 200));
     await transport.stop();
     expect(getUpdatesCalls).toBe(0);
@@ -266,7 +295,9 @@ describe("PollingTransport — stop / abort", () => {
     // Always hang (simulating a real long-poll with no updates).
     const fetchImpl = scriptedFetch(["hang"]);
     const transport = buildTransport({ fetchImpl });
-    await transport.start(async () => { /* */ });
+    await transport.start(async () => {
+      /* */
+    });
 
     // Give start time to register the pending request.
     await new Promise((r) => setTimeout(r, 100));

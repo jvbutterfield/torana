@@ -51,6 +51,7 @@ function claudeBot(): BotConfig {
       // anyway.
       env: inheritedEnv(),
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   };
 }
@@ -118,8 +119,7 @@ describeOrSkip("§12.4 ask-claude — real claude binary, full HTTP stack", () =
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        text:
-          "Remember the number 4217. Acknowledge with just the word: ok.",
+        text: "Remember the number 4217. Acknowledge with just the word: ok.",
         session_id: sessionId,
         timeout_ms: 60_000,
       }),

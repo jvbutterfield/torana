@@ -120,11 +120,19 @@ function authed(
 ): (req: Request, params: Record<string, string>) => Promise<Response> {
   return async (req, params) => {
     const botId = params.bot_id!;
-    if (!deps.registry.bot(botId)) return errorResponse("unknown_bot");
+    // Authenticate FIRST so unauthenticated callers cannot probe bot
+    // existence by comparing "unknown_bot" against "missing_auth"/"invalid_token".
     const a = authenticate(deps.tokens, req.headers.get("Authorization"));
     if ("kind" in a) return mapAuthFailure(a);
+    // Authorization (token→bot+scope) comes next: a token that is not
+    // permitted for this bot gets the same response regardless of whether
+    // the bot exists, so enumeration stays blocked even for authenticated
+    // but unauthorized callers.
     const authz = authorize(a.token, botId, scope);
     if (authz) return mapAuthFailure(authz);
+    // Only reveal the bot-existence signal to a caller whose token is
+    // authorized for this exact bot id.
+    if (!deps.registry.bot(botId)) return errorResponse("unknown_bot");
     return handler(req, { ...params, token: a.token, botId });
   };
 }

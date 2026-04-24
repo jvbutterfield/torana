@@ -42,10 +42,7 @@ const CODEX_MOCK = resolve(
   "../runner/fixtures/command-codex-mock.ts",
 );
 // Any executable is fine for jsonl-text (the 501 path rejects before spawn).
-const JSONL_MOCK = resolve(
-  __dirname,
-  "../integration/fixtures/test-runner.ts",
-);
+const JSONL_MOCK = resolve(__dirname, "../integration/fixtures/test-runner.ts");
 
 function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());

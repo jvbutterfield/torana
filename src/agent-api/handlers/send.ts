@@ -28,6 +28,7 @@ import { resolveChatId } from "../chat-resolve.js";
 import { wrapSystemMessage } from "../marker.js";
 import { isAuthorized } from "../../core/acl.js";
 import { cleanupFiles, parseMultipartRequest } from "../attachments.js";
+import { readJsonBody } from "../body.js";
 import { recordSend } from "../metrics.js";
 
 export interface SendDeps extends AgentApiDeps {
@@ -41,7 +42,16 @@ export function handleSend(deps: SendDeps): AuthedHandler {
     const outcome: { replay: boolean } = { replay: false };
     const resp = await inner(req, params, outcome);
     recordSend(deps.metrics, params.botId, {
-      status: resp.status as 202 | 400 | 401 | 403 | 404 | 429 | 500 | 501 | 503,
+      status: resp.status as
+        | 202
+        | 400
+        | 401
+        | 403
+        | 404
+        | 429
+        | 500
+        | 501
+        | 503,
       replay: outcome.replay,
       durationMs: Date.now() - startMs,
     } as Parameters<typeof recordSend>[2]);
@@ -96,6 +106,7 @@ function handleSendInner(
           deps.config,
           botId,
           requestId,
+          { maxBodyBytes: deps.config.agent_api.send.max_body_bytes },
         );
         if (parsed.kind === "err") {
           return errorResponse(parsed.code, parsed.detail);
@@ -108,11 +119,14 @@ function handleSendInner(
           chat_id: parsed.fields.chat_id,
         };
       } else {
-        try {
-          bodyRaw = await req.json();
-        } catch {
-          return errorResponse("invalid_body", "body must be JSON");
+        const read = await readJsonBody(
+          req,
+          deps.config.agent_api.send.max_body_bytes,
+        );
+        if (read.kind === "err") {
+          return errorResponse(read.code, read.detail);
         }
+        bodyRaw = read.value;
       }
     } catch (err) {
       // parseMultipartRequest's error path already cleaned up its own

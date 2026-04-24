@@ -8,10 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import {
-  AgentApiClient,
-  AgentApiError,
-} from "../../src/agent-api/client.js";
+import { AgentApiClient, AgentApiError } from "../../src/agent-api/client.js";
 
 interface RecordedCall {
   url: string;
@@ -87,11 +84,19 @@ describe("AgentApiClient.listBots", () => {
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(200, {
         bots: [
-          { bot_id: "alpha", runner_type: "claude-code", supports_side_sessions: true },
+          {
+            bot_id: "alpha",
+            runner_type: "claude-code",
+            supports_side_sessions: true,
+          },
         ],
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.listBots();
     expect(r.bots).toHaveLength(1);
     expect(r.bots[0]!.bot_id).toBe("alpha");
@@ -101,7 +106,11 @@ describe("AgentApiClient.listBots", () => {
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(401, { error: "invalid_token", message: "bad bearer" }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.listBots();
       throw new Error("should have thrown");
@@ -126,8 +135,16 @@ describe("AgentApiClient.ask", () => {
         duration_ms: 12,
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
-    const r = await c.ask("alpha", { text: "hi", session_id: "s1", timeout_ms: 5000 });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
+    const r = await c.ask("alpha", {
+      text: "hi",
+      session_id: "s1",
+      timeout_ms: 5000,
+    });
     expect(r.status).toBe("done");
     if (r.status !== "done") return;
     expect(r.text).toBe("echo: hi");
@@ -155,7 +172,11 @@ describe("AgentApiClient.ask", () => {
         status: "in_progress",
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.ask("alpha", { text: "slow" });
     expect(r.status).toBe("in_progress");
     if (r.status !== "in_progress") return;
@@ -167,7 +188,11 @@ describe("AgentApiClient.ask", () => {
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(503, { error: "runner_fatal", message: "spawn died" }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.ask("alpha", { text: "x" });
       throw new Error("should have thrown");
@@ -187,18 +212,18 @@ describe("AgentApiClient.ask", () => {
         session_id: "eph-y",
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
-    await c.ask(
-      "alpha",
-      { text: "look at this" },
-      [
-        {
-          data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
-          filename: "diff.png",
-          contentType: "image/png",
-        },
-      ],
-    );
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
+    await c.ask("alpha", { text: "look at this" }, [
+      {
+        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        filename: "diff.png",
+        contentType: "image/png",
+      },
+    ]);
     const call = calls[0]!;
     expect(call.body).toBeInstanceOf(FormData);
     const fd = call.body as FormData;
@@ -217,7 +242,11 @@ describe("AgentApiClient.ask", () => {
     const fetchImpl = (async () => {
       throw new TypeError("fetch failed");
     }) as unknown as typeof fetch;
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.listBots();
       throw new Error("should have thrown");
@@ -231,7 +260,11 @@ describe("AgentApiClient.ask", () => {
   test("malformed JSON response → AgentApiError malformed_response", async () => {
     const fetchImpl = (async () =>
       new Response("<html>oops", { status: 200 })) as unknown as typeof fetch;
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.listBots();
       throw new Error("should have thrown");
@@ -242,8 +275,14 @@ describe("AgentApiClient.ask", () => {
 
   test("non-JSON 5xx body still surfaces as AgentApiError", async () => {
     const fetchImpl = (async () =>
-      new Response("upstream timeout", { status: 502 })) as unknown as typeof fetch;
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+      new Response("upstream timeout", {
+        status: 502,
+      })) as unknown as typeof fetch;
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.ask("alpha", { text: "hi" });
       throw new Error("should have thrown");
@@ -262,7 +301,11 @@ describe("AgentApiClient.send", () => {
     const { fetchImpl, calls } = recordingFetch(() =>
       jsonResponse(202, { turn_id: 42, status: "queued" }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.send(
       "alpha",
       { text: "9am standup", source: "calendar", user_id: "12345" },
@@ -285,7 +328,11 @@ describe("AgentApiClient.send", () => {
     const { fetchImpl, calls } = recordingFetch(() =>
       jsonResponse(202, { turn_id: 1, status: "queued" }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     await c.send(
       "alpha",
       { text: "see attached", source: "monitor", chat_id: 7 },
@@ -315,7 +362,11 @@ describe("AgentApiClient.send", () => {
         message: "not in ACL",
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.send(
         "alpha",
@@ -335,7 +386,11 @@ describe("AgentApiClient.getTurn", () => {
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(200, { turn_id: 5, status: "in_progress" }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.getTurn(5);
     expect(r.status).toBe("in_progress");
     expect(r.turn_id).toBe(5);
@@ -351,7 +406,11 @@ describe("AgentApiClient.getTurn", () => {
         duration_ms: 33,
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.getTurn(5);
     expect(r.status).toBe("done");
     if (r.status !== "done") return;
@@ -368,7 +427,11 @@ describe("AgentApiClient.getTurn", () => {
         error: "interrupted_by_gateway_restart",
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.getTurn(9);
     expect(r.status).toBe("failed");
     if (r.status !== "failed") return;
@@ -382,7 +445,11 @@ describe("AgentApiClient.getTurn", () => {
         message: "older than 24h",
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.getTurn(99);
       throw new Error("should have thrown");
@@ -410,7 +477,11 @@ describe("AgentApiClient.listSessions + deleteSession", () => {
         ],
       }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     const r = await c.listSessions("alpha");
     expect(r.sessions).toHaveLength(1);
     expect(calls[0]!.url).toBe("http://x/v1/bots/alpha/sessions");
@@ -420,7 +491,11 @@ describe("AgentApiClient.listSessions + deleteSession", () => {
     const { fetchImpl, calls } = recordingFetch(
       () => new Response(null, { status: 204 }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     await c.deleteSession("alpha", "sess-1");
     expect(calls[0]!.method).toBe("DELETE");
     expect(calls[0]!.url).toBe("http://x/v1/bots/alpha/sessions/sess-1");
@@ -430,7 +505,11 @@ describe("AgentApiClient.listSessions + deleteSession", () => {
     const { fetchImpl } = recordingFetch(() =>
       jsonResponse(404, { error: "session_not_found" }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     try {
       await c.deleteSession("alpha", "missing");
       throw new Error("should have thrown");
@@ -445,7 +524,11 @@ describe("URL component encoding", () => {
     const { fetchImpl, calls } = recordingFetch(() =>
       jsonResponse(200, { bots: [] }),
     );
-    const c = new AgentApiClient({ server: "http://x", token: TOKEN, fetchImpl });
+    const c = new AgentApiClient({
+      server: "http://x",
+      token: TOKEN,
+      fetchImpl,
+    });
     await c.listSessions("a/b");
     expect(calls[0]!.url).toBe("http://x/v1/bots/a%2Fb/sessions");
   });

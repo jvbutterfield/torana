@@ -2,19 +2,20 @@
 
 import { describe, expect, test } from "bun:test";
 
-import {
-  AgentApiClient,
-  AgentApiError,
-} from "../../src/agent-api/client.js";
+import { AgentApiClient, AgentApiError } from "../../src/agent-api/client.js";
 import { runTurns } from "../../src/cli/turns.js";
 import { ExitCode } from "../../src/cli/shared/exit.js";
 import { CliUsageError } from "../../src/cli/shared/args.js";
 
 function clientStub(impl: Partial<AgentApiClient>): AgentApiClient {
   return Object.assign(
-    new AgentApiClient({ server: "http://x", token: "t", fetchImpl: (() => {
-      throw new Error("not used");
-    }) as unknown as typeof fetch }),
+    new AgentApiClient({
+      server: "http://x",
+      token: "t",
+      fetchImpl: (() => {
+        throw new Error("not used");
+      }) as unknown as typeof fetch,
+    }),
     impl,
   );
 }
@@ -54,7 +55,9 @@ describe("runTurns get", () => {
     });
     const r = await runTurns({ argv: ["5"], action: "get" }, { client });
     expect(r.exitCode).toBe(ExitCode.serverError);
-    expect(r.stdout.some((l) => l.includes("interrupted_by_gateway_restart"))).toBe(true);
+    expect(
+      r.stdout.some((l) => l.includes("interrupted_by_gateway_restart")),
+    ).toBe(true);
   });
 
   test("--json mode", async () => {

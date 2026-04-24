@@ -46,7 +46,9 @@ export function handleGetTurn(deps: AgentApiDeps): RouteHandler {
         return jsonResponse(200, { turn_id: turnId, status: "in_progress" });
 
       case "completed": {
-        const completedAtMs = turn.completed_at ? Date.parse(turn.completed_at) : NaN;
+        const completedAtMs = turn.completed_at
+          ? Date.parse(turn.completed_at)
+          : NaN;
         const now = (deps.clock ?? Date.now)();
         const age = Number.isFinite(completedAtMs) ? now - completedAtMs : 0;
         if (age > TURN_RESULT_TTL_MS) {
@@ -96,8 +98,10 @@ function parseUsage(
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const out: { input_tokens?: number; output_tokens?: number } = {};
-    if (typeof parsed.input_tokens === "number") out.input_tokens = parsed.input_tokens;
-    if (typeof parsed.output_tokens === "number") out.output_tokens = parsed.output_tokens;
+    if (typeof parsed.input_tokens === "number")
+      out.input_tokens = parsed.input_tokens;
+    if (typeof parsed.output_tokens === "number")
+      out.output_tokens = parsed.output_tokens;
     return Object.keys(out).length ? out : undefined;
   } catch {
     return undefined;

@@ -6,7 +6,13 @@ import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
 import type { ResolvedAgentApiToken } from "./config/load.js";
-import { logger, setLogLevel, setLogFormat, setSecrets, autoFormat } from "./log.js";
+import {
+  logger,
+  setLogLevel,
+  setLogFormat,
+  setSecrets,
+  autoFormat,
+} from "./log.js";
 import { GatewayDB } from "./db/gateway-db.js";
 import { applyMigrations } from "./db/migrate.js";
 import { TelegramClient } from "./telegram/client.js";
@@ -46,7 +52,9 @@ export interface RunningGateway {
   shutdown(signal: string): Promise<void>;
 }
 
-export async function startGateway(opts: StartOptions): Promise<RunningGateway> {
+export async function startGateway(
+  opts: StartOptions,
+): Promise<RunningGateway> {
   const { config } = opts;
   setLogLevel(config.gateway.log_level);
   setLogFormat(config.gateway.log_format ?? autoFormat());
@@ -127,7 +135,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   runCrashRecovery(db, clients);
 
   // HTTP server + router.
-  const server = createServer({ port: config.gateway.port });
+  const server = createServer({
+    port: config.gateway.port,
+    hostname: config.gateway.bind_host,
+  });
   registerFixedRoutes(server, config, db, metrics, registry);
 
   // /v1/health is always available — operators need to confirm the binary
@@ -159,15 +170,18 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       }),
     );
     const retention = config.agent_api.send.idempotency_retention_ms;
-    agentApiIdempotencySweep = setInterval(() => {
-      try {
-        db.sweepIdempotency(Date.now() - retention);
-      } catch (err) {
-        log.warn("idempotency sweep failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }, 60 * 60 * 1000);
+    agentApiIdempotencySweep = setInterval(
+      () => {
+        try {
+          db.sweepIdempotency(Date.now() - retention);
+        } catch (err) {
+          log.warn("idempotency sweep failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+      60 * 60 * 1000,
+    );
     (agentApiIdempotencySweep as unknown as { unref?: () => void }).unref?.();
     log.info("agent_api routes registered", { tokens: tokens.length });
   }
@@ -202,7 +216,9 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
 
   await Promise.all(
     transports.map((t) =>
-      t.start((botId, update) => registry.handleUpdate(botId, update).then(() => {})),
+      t.start((botId, update) =>
+        registry.handleUpdate(botId, update).then(() => {}),
+      ),
     ),
   );
 
@@ -229,7 +245,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
         config.attachments.retention_secs,
       );
       if (result.turns > 0) {
-        log.info("attachment sweeper", { turns: result.turns, files: result.files });
+        log.info("attachment sweeper", {
+          turns: result.turns,
+          files: result.files,
+        });
       }
     } catch (err) {
       log.warn("attachment sweeper failed", {
@@ -240,7 +259,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   // Run once at startup to clear anything left over from the prior process,
   // then on a fixed cadence.
   void runSweeper();
-  const attachmentSweeperTimer = setInterval(() => void runSweeper(), 60 * 60 * 1000);
+  const attachmentSweeperTimer = setInterval(
+    () => void runSweeper(),
+    60 * 60 * 1000,
+  );
 
   // Agent-API orphan-file sweep: catches the crash window between a
   // multipart write and the DB commit. Only relevant when agent-api is
@@ -263,7 +285,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       });
     }
   };
-  const orphanSweeperTimer = setInterval(() => void runOrphanSweep(), 60 * 60 * 1000);
+  const orphanSweeperTimer = setInterval(
+    () => void runOrphanSweep(),
+    60 * 60 * 1000,
+  );
   (orphanSweeperTimer as unknown as { unref?: () => void }).unref?.();
 
   let shutdownStarted = false;
@@ -276,8 +301,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       shutdownStarted = true;
       log.info("shutting down", { signal });
 
-      const deadline =
-        Date.now() + config.shutdown.hard_timeout_secs * 1000;
+      const deadline = Date.now() + config.shutdown.hard_timeout_secs * 1000;
 
       // Hard-cutoff watchdog: if the orderly path hangs, exit 1.
       const hardTimer = setTimeout(() => {
@@ -365,7 +389,9 @@ export function warnOnEmptyAcl(config: Config): void {
 
 export function warnOnYoloCodexBots(config: Config): void {
   const bots = config.bots
-    .filter((b) => b.runner.type === "codex" && b.runner.approval_mode === "yolo")
+    .filter(
+      (b) => b.runner.type === "codex" && b.runner.approval_mode === "yolo",
+    )
     .map((b) => b.id);
   if (bots.length === 0) return;
   log.warn(
@@ -463,11 +489,16 @@ export function runCrashRecovery(
       const client = clients.get(turn.bot_id);
       if (client) {
         const display = ss.buffer_text?.trim() || "(restarted)";
-        void client.editMessageText(turn.chat_id, ss.active_telegram_message_id, display).catch(() => {});
+        void client
+          .editMessageText(turn.chat_id, ss.active_telegram_message_id, display)
+          .catch(() => {});
       }
     }
     if (!turn.first_output_at) {
-      log.info("re-queueing orphaned turn", { turn_id: turn.id, bot_id: turn.bot_id });
+      log.info("re-queueing orphaned turn", {
+        turn_id: turn.id,
+        bot_id: turn.bot_id,
+      });
       db.requeueTurn(turn.id);
       db.cancelPendingOutboxForTurn(turn.id);
     } else {
@@ -488,7 +519,10 @@ export function runCrashRecovery(
 
   const pending = db.getPendingOutbox();
   for (const row of pending) {
-    if (row.kind === "edit" && db.hasSupersedingEdit(row.telegram_message_id, row.id)) {
+    if (
+      row.kind === "edit" &&
+      db.hasSupersedingEdit(row.telegram_message_id, row.id)
+    ) {
       db.markOutboxFailed(row.id, "superseded by later send");
     }
   }

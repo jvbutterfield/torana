@@ -34,34 +34,54 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeConfig(mode: string, pass_continue_flag = true): ClaudeCodeRunnerConfig {
+function makeConfig(
+  mode: string,
+  pass_continue_flag = true,
+): ClaudeCodeRunnerConfig {
   return {
     type: "claude-code",
     cli_path: "bun",
     args: ["run", MOCK, mode],
     env: {},
     pass_continue_flag,
+    acknowledge_dangerous: true,
   };
 }
 
 /** Subscribe to every runner event; returns collected + helper. */
 function track(runner: ClaudeCodeRunner): {
   events: RunnerEvent[];
-  waitFor: (kind: RunnerEvent["kind"], timeoutMs?: number) => Promise<RunnerEvent>;
+  waitFor: (
+    kind: RunnerEvent["kind"],
+    timeoutMs?: number,
+  ) => Promise<RunnerEvent>;
 } {
   const events: RunnerEvent[] = [];
-  const kinds = ["ready", "text_delta", "done", "error", "fatal", "rate_limit", "status"] as const;
+  const kinds = [
+    "ready",
+    "text_delta",
+    "done",
+    "error",
+    "fatal",
+    "rate_limit",
+    "status",
+  ] as const;
   for (const k of kinds) {
     runner.on(k, (ev) => events.push(ev as RunnerEvent));
   }
-  const waitFor = async (kind: RunnerEvent["kind"], timeoutMs = 5000): Promise<RunnerEvent> => {
+  const waitFor = async (
+    kind: RunnerEvent["kind"],
+    timeoutMs = 5000,
+  ): Promise<RunnerEvent> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const found = events.find((e) => e.kind === kind);
       if (found) return found;
       await new Promise((r) => setTimeout(r, 25));
     }
-    throw new Error(`waitFor(${kind}) timed out. Events: ${JSON.stringify(events)}`);
+    throw new Error(
+      `waitFor(${kind}) timed out. Events: ${JSON.stringify(events)}`,
+    );
   };
   return { events, waitFor };
 }
@@ -190,7 +210,10 @@ describe("ClaudeCodeRunner lifecycle", () => {
     });
     const { waitFor } = track(runner);
     await runner.start();
-    const ev = (await waitFor("fatal", 5000)) as { kind: "fatal"; code?: string };
+    const ev = (await waitFor("fatal", 5000)) as {
+      kind: "fatal";
+      code?: string;
+    };
     expect(ev.code).toBe("exit");
   }, 20_000);
 
@@ -204,7 +227,11 @@ describe("ClaudeCodeRunner lifecycle", () => {
     });
     const { waitFor } = track(runner);
     await runner.start();
-    const ev = (await waitFor("fatal", 5000)) as { kind: "fatal"; code?: string; message: string };
+    const ev = (await waitFor("fatal", 5000)) as {
+      kind: "fatal";
+      code?: string;
+      message: string;
+    };
     // Auth signal lives in `code`, not in the message: the message must not
     // carry subprocess stderr (which could contain third-party secrets).
     expect(ev.code).toBe("auth");
@@ -226,7 +253,10 @@ describe("ClaudeCodeRunner lifecycle", () => {
     const turn = runner.sendTurn("T1", "hello", []);
     expect(turn.accepted).toBe(true);
 
-    const ev = (await waitFor("fatal", 5000)) as { kind: "fatal"; code?: string };
+    const ev = (await waitFor("fatal", 5000)) as {
+      kind: "fatal";
+      code?: string;
+    };
     expect(ev.code).toBe("exit");
     expect(runner.isReady()).toBe(false);
   }, 20_000);
@@ -252,6 +282,7 @@ describe("ClaudeCodeRunner lifecycle", () => {
         args: ["run", MOCK, "replay-continue"],
         env: {},
         pass_continue_flag: true,
+        acknowledge_dangerous: true,
       },
       logDir: tmpDir,
       protocolFlags: [],
@@ -281,7 +312,9 @@ describe("ClaudeCodeRunner lifecycle", () => {
 
     // First spawn should have included --continue (pass_continue_flag && !freshSession),
     // second (post-reset) should NOT include --continue.
-    const initLines = content.split("\n").filter((l) => l.includes("\"subtype\":\"init\""));
+    const initLines = content
+      .split("\n")
+      .filter((l) => l.includes('"subtype":"init"'));
     expect(initLines.length).toBeGreaterThanOrEqual(2);
     const first = JSON.parse(initLines[0]) as { argv: string[] };
     const second = JSON.parse(initLines[1]) as { argv: string[] };

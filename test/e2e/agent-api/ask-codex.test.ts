@@ -62,8 +62,7 @@ describeOrSkip("§12.4 ask-codex — real codex binary, full HTTP stack", () => 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        text:
-          "Reply with EXACTLY the single word: pong. No other text, no punctuation.",
+        text: "Reply with EXACTLY the single word: pong. No other text, no punctuation.",
         timeout_ms: 60_000,
       }),
     });
@@ -107,8 +106,7 @@ describeOrSkip("§12.4 ask-codex — real codex binary, full HTTP stack", () => 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        text:
-          "Pick the integer 7349 and remember it. Acknowledge with the single word: ok.",
+        text: "Pick the integer 7349 and remember it. Acknowledge with the single word: ok.",
         session_id: sessionId,
         timeout_ms: 60_000,
       }),
@@ -128,8 +126,7 @@ describeOrSkip("§12.4 ask-codex — real codex binary, full HTTP stack", () => 
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        text:
-          "What integer did I ask you to remember? Reply with ONLY the integer.",
+        text: "What integer did I ask you to remember? Reply with ONLY the integer.",
         session_id: sessionId,
         timeout_ms: 60_000,
       }),

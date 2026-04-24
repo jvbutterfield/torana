@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { loadConfigFromString, interpolate, ConfigLoadError } from "../../src/config/load.js";
+import {
+  loadConfigFromString,
+  interpolate,
+  ConfigLoadError,
+} from "../../src/config/load.js";
 
 const MINIMAL = `
 version: 1
@@ -16,6 +20,7 @@ bots:
     runner:
       type: claude-code
       cli_path: claude
+      acknowledge_dangerous: true
 `;
 
 describe("config/load", () => {
@@ -49,7 +54,10 @@ describe("config/load", () => {
   });
 
   test("rejects webhook mode without base_url", () => {
-    const raw = MINIMAL.replace("default_mode: polling", "default_mode: webhook");
+    const raw = MINIMAL.replace(
+      "default_mode: polling",
+      "default_mode: webhook",
+    );
     expect(() => loadConfigFromString(raw)).toThrow(/base_url/);
   });
 
@@ -59,7 +67,10 @@ describe("config/load", () => {
   });
 
   test("applies ${VAR:-default} fallback", () => {
-    const raw = MINIMAL.replace("BOTTOK:AAAAAA", "${MISSING_VAR:-fallback-token}");
+    const raw = MINIMAL.replace(
+      "BOTTOK:AAAAAA",
+      "${MISSING_VAR:-fallback-token}",
+    );
     const { config } = loadConfigFromString(raw, { env: {} });
     expect(config.bots[0].token).toBe("fallback-token");
   });
@@ -68,12 +79,16 @@ describe("config/load", () => {
     const raw = MINIMAL.replace("BOTTOK:AAAAAA", "${EMPTY:-}");
     // `${EMPTY:-}` interpolates to "" which YAML parses as null, which Zod
     // rejects (string required). Either way, the load fails.
-    expect(() => loadConfigFromString(raw, { env: {} })).toThrow(ConfigLoadError);
+    expect(() => loadConfigFromString(raw, { env: {} })).toThrow(
+      ConfigLoadError,
+    );
   });
 
   test("rejects config file > max size", () => {
     const bigRaw = MINIMAL + "\n# padding: " + "x".repeat(2_000_000);
-    expect(() => loadConfigFromString(bigRaw, { maxBytes: 1_000_000 })).not.toThrow();
+    expect(() =>
+      loadConfigFromString(bigRaw, { maxBytes: 1_000_000 }),
+    ).not.toThrow();
     // size cap applies to file loader; string loader has no cap by design.
   });
 
@@ -105,7 +120,9 @@ describe("config/load", () => {
 
   test("interpolate: ${VAR} inside a double-quoted string IS still interpolated", () => {
     const raw = 'key: "hash # and ${HELLO}"\n';
-    expect(interpolate(raw, { HELLO: "world" })).toBe('key: "hash # and world"\n');
+    expect(interpolate(raw, { HELLO: "world" })).toBe(
+      'key: "hash # and world"\n',
+    );
   });
 
   test("interpolate: missing-var error reports line and column", () => {
@@ -123,7 +140,7 @@ describe("config/load", () => {
   test("rejects duplicate bot ids", () => {
     const raw = `
 version: 1
-gateway: { port: 3000, data_dir: /tmp/t }
+gateway: { port: 3000, bind_host: "127.0.0.1", data_dir: /tmp/t }
 transport: { default_mode: polling }
 access_control: { allowed_user_ids: [1] }
 bots:
@@ -156,7 +173,7 @@ alerts:
 
   test("codex runner: minimal config applies sensible defaults", () => {
     const raw = MINIMAL.replace(
-      "    runner:\n      type: claude-code\n      cli_path: claude",
+      "    runner:\n      type: claude-code\n      cli_path: claude\n      acknowledge_dangerous: true",
       "    runner:\n      type: codex",
     );
     const { config } = loadConfigFromString(raw);
@@ -173,7 +190,7 @@ alerts:
 
   test("codex approval_mode='yolo' without acknowledge_dangerous is rejected", () => {
     const raw = MINIMAL.replace(
-      "    runner:\n      type: claude-code\n      cli_path: claude",
+      "    runner:\n      type: claude-code\n      cli_path: claude\n      acknowledge_dangerous: true",
       "    runner:\n      type: codex\n      approval_mode: yolo",
     );
     expect(() => loadConfigFromString(raw)).toThrow(/acknowledge_dangerous/);
@@ -181,7 +198,7 @@ alerts:
 
   test("codex approval_mode='yolo' with acknowledge_dangerous=true is accepted", () => {
     const raw = MINIMAL.replace(
-      "    runner:\n      type: claude-code\n      cli_path: claude",
+      "    runner:\n      type: claude-code\n      cli_path: claude\n      acknowledge_dangerous: true",
       "    runner:\n      type: codex\n      approval_mode: yolo\n      acknowledge_dangerous: true",
     );
     const { config } = loadConfigFromString(raw);
@@ -208,6 +225,7 @@ bots:
     token: T1
     runner:
       type: claude-code
+      acknowledge_dangerous: true
   - id: codex_bot
     token: T2
     runner:
@@ -221,6 +239,57 @@ bots:
     if (config.bots[1].runner.type === "codex") {
       expect(config.bots[1].runner.model).toBe("gpt-5");
     }
+  });
+
+  test("gateway.bind_host defaults to 127.0.0.1 (loopback — safer default)", () => {
+    const { config } = loadConfigFromString(MINIMAL);
+    expect(config.gateway.bind_host).toBe("127.0.0.1");
+  });
+
+  test("gateway.bind_host accepts 0.0.0.0 opt-in for container / PaaS exposure", () => {
+    const raw = MINIMAL.replace(
+      "  port: 3000",
+      '  port: 3000\n  bind_host: "0.0.0.0"',
+    );
+    const { config } = loadConfigFromString(raw);
+    expect(config.gateway.bind_host).toBe("0.0.0.0");
+  });
+
+  test("claude-code runner without acknowledge_dangerous is rejected", () => {
+    // --dangerously-skip-permissions is always passed; operators must
+    // acknowledge the unsandboxed posture explicitly. Matches the Codex
+    // yolo gate.
+    const raw = MINIMAL.replace("      acknowledge_dangerous: true\n", "");
+    expect(() => loadConfigFromString(raw)).toThrow(/acknowledge_dangerous/);
+  });
+
+  test("webhook.secret < 32 chars is rejected (high-entropy minimum)", () => {
+    const raw = MINIMAL.replace(
+      "default_mode: polling",
+      "default_mode: webhook",
+    ).replace(
+      "access_control:",
+      "  webhook:\n    base_url: https://example.test\n    secret: too-short\naccess_control:",
+    );
+    expect(() => loadConfigFromString(raw)).toThrow(/at least 32 characters/);
+  });
+
+  test("webhook.secret exactly 32 chars is accepted", () => {
+    const longSecret = "a".repeat(32);
+    const raw = MINIMAL.replace(
+      "default_mode: polling",
+      "default_mode: webhook",
+    ).replace(
+      "access_control:",
+      `  webhook:\n    base_url: https://example.test\n    secret: ${longSecret}\naccess_control:`,
+    );
+    const { config } = loadConfigFromString(raw);
+    expect(config.transport.webhook?.secret).toBe(longSecret);
+  });
+
+  test("agent_api.send.max_body_bytes defaults to 100 MiB", () => {
+    const { config } = loadConfigFromString(MINIMAL);
+    expect(config.agent_api.send.max_body_bytes).toBe(100 * 1024 * 1024);
   });
 
   test("command runner accepts new codex-jsonl protocol", () => {

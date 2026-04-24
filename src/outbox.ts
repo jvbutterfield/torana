@@ -68,8 +68,19 @@ export class OutboxProcessor {
     });
   }
 
-  queueSend(turnId: number, botId: BotId, chatId: number, text: string): number {
-    return this.db.insertOutbox(turnId, botId, chatId, "send", JSON.stringify({ text }));
+  queueSend(
+    turnId: number,
+    botId: BotId,
+    chatId: number,
+    text: string,
+  ): number {
+    return this.db.insertOutbox(
+      turnId,
+      botId,
+      chatId,
+      "send",
+      JSON.stringify({ text }),
+    );
   }
 
   queueSendWithCallback(
@@ -109,7 +120,9 @@ export class OutboxProcessor {
   ): Promise<void> {
     const client = this.clients.get(botId);
     if (!client) return;
-    await client.editMessageText(chatId, messageId, text).catch(() => undefined);
+    await client
+      .editMessageText(chatId, messageId, text)
+      .catch(() => undefined);
   }
 
   private async processPending(): Promise<void> {

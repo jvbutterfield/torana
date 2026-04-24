@@ -40,7 +40,8 @@ function shippedMarkdownFiles(): string[] {
     if (depth > 4) return;
     for (const entry of readdirSync(dir)) {
       if (entry.startsWith(".")) continue;
-      if (entry === "node_modules" || entry === "dist" || entry === "data") continue;
+      if (entry === "node_modules" || entry === "dist" || entry === "data")
+        continue;
       if (entry === "tasks") continue;
       if (entry === "test") continue;
       const full = join(dir, entry);
@@ -141,7 +142,9 @@ describe("docs/agent-api.md", () => {
   test("documents the orphan-resolutions counter added with the orphan-listener wiring", () => {
     const body = read(path);
     expect(body).toContain("torana_agent_api_ask_orphan_resolutions_total");
-    expect(body).toMatch(/outcome.*done.*error.*fatal.*backstop|done.*error.*fatal.*backstop/);
+    expect(body).toMatch(
+      /outcome.*done.*error.*fatal.*backstop|done.*error.*fatal.*backstop/,
+    );
   });
 });
 
@@ -242,8 +245,12 @@ describe("CHANGELOG.md — top-of-file Agent API entry", () => {
     // in the most recent version section post-cut. Allow either by
     // scanning from [Unreleased] through the SECOND version heading.
     const firstVersion = body.indexOf("\n## [1.", unreleasedIdx);
-    const secondVersion = firstVersion > 0 ? body.indexOf("\n## [1.", firstVersion + 5) : -1;
-    const slice = secondVersion > 0 ? body.slice(unreleasedIdx, secondVersion) : body.slice(unreleasedIdx);
+    const secondVersion =
+      firstVersion > 0 ? body.indexOf("\n## [1.", firstVersion + 5) : -1;
+    const slice =
+      secondVersion > 0
+        ? body.slice(unreleasedIdx, secondVersion)
+        : body.slice(unreleasedIdx);
     expect(slice).toContain("Agent API");
     expect(slice).toContain("side-session");
   });

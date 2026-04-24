@@ -64,12 +64,16 @@ export async function runTurns(
   }
 
   if (positional.length !== 1) {
-    throw new CliUsageError("turns get requires exactly one <turn_id> argument");
+    throw new CliUsageError(
+      "turns get requires exactly one <turn_id> argument",
+    );
   }
   const turnIdRaw = positional[0]!;
   const turnId = Number(turnIdRaw);
   if (!Number.isInteger(turnId) || turnId < 1) {
-    throw new CliUsageError(`turn_id must be a positive integer (got '${turnIdRaw}')`);
+    throw new CliUsageError(
+      `turn_id must be a positive integer (got '${turnIdRaw}')`,
+    );
   }
 
   const wantJson = flags.json === true;

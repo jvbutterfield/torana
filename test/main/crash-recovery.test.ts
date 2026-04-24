@@ -39,7 +39,10 @@ interface RecordedCall {
   text?: string;
 }
 
-function makeRecordingClient(): { client: TelegramClient; calls: RecordedCall[] } {
+function makeRecordingClient(): {
+  client: TelegramClient;
+  calls: RecordedCall[];
+} {
   const calls: RecordedCall[] = [];
   const client = {
     async sendMessage(chatId: number, text: string) {
@@ -114,7 +117,11 @@ describe("runCrashRecovery", () => {
 
     runCrashRecovery(db, new Map([["alpha", client]]));
 
-    const row = db.query("SELECT status, started_at, worker_generation FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      .query(
+        "SELECT status, started_at, worker_generation FROM turns WHERE id=?",
+      )
+      .get(turnId) as {
       status: string;
       started_at: string | null;
       worker_generation: number | null;
@@ -144,7 +151,9 @@ describe("runCrashRecovery", () => {
 
     runCrashRecovery(db, new Map([["alpha", client]]));
 
-    const row = db.query("SELECT status, error_text FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      .query("SELECT status, error_text FROM turns WHERE id=?")
+      .get(turnId) as {
       status: string;
       error_text: string | null;
     };
@@ -242,9 +251,18 @@ describe("runCrashRecovery", () => {
     db.initWorkerState("alpha");
     db.initWorkerState("beta");
     db.updateWorkerState("alpha", { status: "ready", pid: 1234 });
-    db.updateWorkerState("beta", { status: "degraded", consecutive_failures: 7 });
+    db.updateWorkerState("beta", {
+      status: "degraded",
+      consecutive_failures: 7,
+    });
 
-    runCrashRecovery(db, new Map([["alpha", client], ["beta", client]]));
+    runCrashRecovery(
+      db,
+      new Map([
+        ["alpha", client],
+        ["beta", client],
+      ]),
+    );
 
     const alpha = db.getWorkerState("alpha");
     const beta = db.getWorkerState("beta");
@@ -290,16 +308,29 @@ describe("runCrashRecovery", () => {
     // alpha: running+first_output → interrupted
     const tA = seedRunningTurn("alpha", 111, true, { updateId: 1 });
     db.initStreamState(tA);
-    db.updateStreamState(tA, { active_telegram_message_id: 100, buffer_text: "A text" });
+    db.updateStreamState(tA, {
+      active_telegram_message_id: 100,
+      buffer_text: "A text",
+    });
     // beta: running, no first_output → requeued
     const tB = seedRunningTurn("beta", 222, false, { updateId: 2 });
     db.initWorkerState("alpha");
     db.initWorkerState("beta");
 
-    runCrashRecovery(db, new Map([["alpha", cA], ["beta", cB]]));
+    runCrashRecovery(
+      db,
+      new Map([
+        ["alpha", cA],
+        ["beta", cB],
+      ]),
+    );
 
-    const rowA = db.query("SELECT status FROM turns WHERE id=?").get(tA) as { status: string };
-    const rowB = db.query("SELECT status FROM turns WHERE id=?").get(tB) as { status: string };
+    const rowA = db.query("SELECT status FROM turns WHERE id=?").get(tA) as {
+      status: string;
+    };
+    const rowB = db.query("SELECT status FROM turns WHERE id=?").get(tB) as {
+      status: string;
+    };
     expect(rowA.status).toBe("interrupted");
     expect(rowB.status).toBe("queued");
 

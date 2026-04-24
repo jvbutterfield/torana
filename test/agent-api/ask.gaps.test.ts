@@ -96,6 +96,7 @@ async function setup(opts: SetupOpts): Promise<Setup> {
     args: ["run", CLAUDE_MOCK, opts.mockMode ?? "normal"],
     env: {},
     pass_continue_flag: false,
+    acknowledge_dangerous: true,
   };
   const codexCfg = {
     type: "codex" as const,
@@ -351,7 +352,9 @@ describe("POST /v1/bots/:id/ask — 501 runner_does_not_support_side_sessions (U
       body: JSON.stringify({ text: "hi" }),
     });
     expect(r.status).toBe(501);
-    expect((await r.json()).error).toBe("runner_does_not_support_side_sessions");
+    expect((await r.json()).error).toBe(
+      "runner_does_not_support_side_sessions",
+    );
   });
 });
 

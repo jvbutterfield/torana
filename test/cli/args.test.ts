@@ -106,7 +106,9 @@ describe("parseFlags", () => {
   });
 
   test("bool flag with =value rejected", () => {
-    expect(() => parseFlags(["--json=yes"], spec)).toThrow(/does not take a value/);
+    expect(() => parseFlags(["--json=yes"], spec)).toThrow(
+      /does not take a value/,
+    );
   });
 
   test("repeated single-value flag rejected", () => {
@@ -152,9 +154,9 @@ describe("resolveCredentials", () => {
   });
 
   test("missing server throws", () => {
-    expect(() =>
-      resolveCredentials({ flagToken: "t", env: {} }),
-    ).toThrow(/--server/);
+    expect(() => resolveCredentials({ flagToken: "t", env: {} })).toThrow(
+      /--server/,
+    );
   });
 
   test("missing token throws", () => {

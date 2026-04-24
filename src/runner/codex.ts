@@ -209,7 +209,10 @@ export class CodexRunner implements AgentRunner {
     queueMicrotask(() => {
       // The entry could have been stopped before the microtask fires; only
       // emit ready if it's still in "ready" state.
-      if (this.sideSessions.get(sessionId) === entry && entry.status === "ready") {
+      if (
+        this.sideSessions.get(sessionId) === entry &&
+        entry.status === "ready"
+      ) {
         entry.emitter.emit({ kind: "ready" });
       }
     });
@@ -737,7 +740,8 @@ export class CodexRunner implements AgentRunner {
     // sandbox policy is inherited from the original session), `--profile`,
     // `--output-schema`, `--cd`, etc. Verified against codex-cli 0.121.0.
     args.push("exec");
-    const resuming = this.config.pass_resume_flag && this.currentThreadId !== null;
+    const resuming =
+      this.config.pass_resume_flag && this.currentThreadId !== null;
     if (resuming) {
       args.push("resume", this.currentThreadId!);
     }
