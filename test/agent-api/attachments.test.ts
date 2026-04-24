@@ -42,7 +42,9 @@ const REQ_ID = "testreq-0000";
 const PNG_HEADER = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
 ]);
-const PDF_HEADER = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+// `%PDF-` — the magic-byte sniffer requires 5 bytes (detects the dash so
+// PostScript `%!PS` can't be mistaken for PDF).
+const PDF_HEADER = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
 
 function cfgFor(overrides: Partial<Config> = {}): Config {
   const bot = makeTestBotConfig(BOT_ID);
@@ -319,6 +321,52 @@ describe("parseMultipartRequest — rejection paths", () => {
     const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
     expect(r.kind).toBe("err");
     if (r.kind === "err") expect(r.code).toBe("body_too_large");
+  });
+
+  test("declared MIME doesn't match magic bytes → attachment_mime_not_allowed", async () => {
+    // Declare image/png but send JPEG magic bytes. If the gateway trusted
+    // the declared MIME alone, the bytes would land at `<uuid>.png` —
+    // viewers / runners downstream would trust the `.png` extension.
+    const JPEG_HEADER = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]);
+    const req = multipartRequest([
+      {
+        kind: "file",
+        name: "a",
+        filename: "lies.png",
+        mime: "image/png",
+        bytes: JPEG_HEADER,
+      },
+    ]);
+    const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
+    expect(r.kind).toBe("err");
+    if (r.kind === "err") {
+      expect(r.code).toBe("attachment_mime_not_allowed");
+      expect(r.detail).toContain("does not match magic bytes");
+    }
+    // Nothing should be on disk from a pre-write rejection.
+    expect(await attachmentsDirEntries()).toEqual([]);
+  });
+
+  test("declared allowlisted MIME with unrecognisable bytes → attachment_mime_not_allowed", async () => {
+    // A payload of "random trash" with an image/png declared MIME. This
+    // catches shell scripts / HTML / executables masquerading as images.
+    const TRASH = new TextEncoder().encode("#!/bin/sh\necho pwned\n");
+    const req = multipartRequest([
+      {
+        kind: "file",
+        name: "a",
+        filename: "pwned.png",
+        mime: "image/png",
+        bytes: TRASH,
+      },
+    ]);
+    const r = await parseMultipartRequest(req, cfg, BOT_ID, REQ_ID);
+    expect(r.kind).toBe("err");
+    if (r.kind === "err") {
+      expect(r.code).toBe("attachment_mime_not_allowed");
+      expect(r.detail).toContain("do not match");
+    }
+    expect(await attachmentsDirEntries()).toEqual([]);
   });
 
   test("disallowed MIME → attachment_mime_not_allowed", async () => {

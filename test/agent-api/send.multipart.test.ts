@@ -34,7 +34,8 @@ const KEY_A = "idem-key-multipart-0001";
 const KEY_B = "idem-key-multipart-0002";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+// `%PDF-` — matches the 5-byte magic-byte check in src/mime-magic.ts.
+const PDF = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
 
 function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());

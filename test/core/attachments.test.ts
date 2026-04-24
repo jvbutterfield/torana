@@ -151,7 +151,8 @@ describe("downloadAttachments", () => {
   });
 
   test("document: extension is derived from mime type, allowlist only", async () => {
-    const bytes = new Uint8Array([1, 2, 3]);
+    // Valid PDF magic bytes — matches mime_type: application/pdf below.
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
     const client = makeFakeClient([
       {
         fileId: "doc1",
@@ -590,10 +591,28 @@ describe("downloadAttachments - max_per_turn enforcement", () => {
     // (Photos and documents are mutually exclusive in the current codepath, but
     //  we can test by configuring max_per_turn=1.)
     config.attachments.max_per_turn = 1;
-    const bytes = new Uint8Array(3);
+    // JPEG magic bytes (minimum 3 bytes: FF D8 FF). The photo path now
+    // requires the downloaded bytes to match image/jpeg magic — supplying
+    // valid JPEG here exercises the max_per_turn path rather than being
+    // rejected up-front on MIME mismatch.
+    const photoBytes = new Uint8Array([0xff, 0xd8, 0xff]);
+    // PNG magic for the document — needs to match declared image/png.
+    const docBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
     const client = makeFakeClient([
-      { fileId: "p1", filePath: "x1", bytes, fileSize: bytes.length },
-      { fileId: "d1", filePath: "x2", bytes, fileSize: bytes.length },
+      {
+        fileId: "p1",
+        filePath: "x1",
+        bytes: photoBytes,
+        fileSize: photoBytes.length,
+      },
+      {
+        fileId: "d1",
+        filePath: "x2",
+        bytes: docBytes,
+        fileSize: docBytes.length,
+      },
     ]);
     const message: TelegramMessage = {
       message_id: 1,
@@ -605,14 +624,14 @@ describe("downloadAttachments - max_per_turn enforcement", () => {
           file_unique_id: "u",
           width: 1,
           height: 1,
-          file_size: bytes.length,
+          file_size: photoBytes.length,
         },
       ],
       document: {
         file_id: "d1",
         file_unique_id: "u",
         mime_type: "image/png",
-        file_size: bytes.length,
+        file_size: docBytes.length,
       },
     };
     const result = await downloadAttachments(

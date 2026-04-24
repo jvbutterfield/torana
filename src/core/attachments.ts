@@ -11,6 +11,7 @@ import type { BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { TelegramClient } from "../telegram/client.js";
 import type { TelegramMessage, Attachment } from "../telegram/types.js";
+import { detectMimeFromMagic } from "../mime-magic.js";
 
 const log = logger("attachments");
 
@@ -73,6 +74,21 @@ export async function downloadAttachments(
       return;
     }
     // Photos from Telegram are JPEG by convention; mime is not carried.
+    // Verify the actual bytes match JPEG magic before writing — Telegram's
+    // CDN is trusted but we cannot rule out a compromised upstream or a
+    // MITM replacement that ships non-JPEG bytes under the photo endpoint.
+    // Refusing non-JPEG here prevents a non-image landing with a `.jpg`
+    // extension and being handed to a runner (e.g. codex `--image`).
+    const rawBytes = new Uint8Array(bytes);
+    const detected = detectMimeFromMagic(rawBytes);
+    if (detected !== "image/jpeg") {
+      errors.push(
+        detected
+          ? `photo bytes are ${detected}, expected image/jpeg`
+          : "photo bytes do not match image/jpeg magic",
+      );
+      return;
+    }
     const ext = ".jpg";
     const filename = `${updateId}-${index}${ext}`;
     const target = join(dir, filename);
@@ -80,7 +96,7 @@ export async function downloadAttachments(
       errors.push("attachment path outside data dir");
       return;
     }
-    await writeFile(target, new Uint8Array(bytes));
+    await writeFile(target, rawBytes);
     attachments.push({
       kind: "photo",
       path: target,
@@ -115,6 +131,25 @@ export async function downloadAttachments(
       errors.push("document exceeded max_bytes after download");
       return;
     }
+    // If the document's declared MIME is in our allowlist, verify the
+    // actual bytes match — a Telegram user (or anyone spoofing one) can
+    // upload a document with any `mime_type` header but arbitrary content.
+    // If the declared MIME is NOT in the allowlist, we already write with
+    // a `.bin` extension and the runner has to opt-in to process it, so
+    // the sniffing below only runs on the allowlisted path where the
+    // extension would otherwise claim a content type we shouldn't trust.
+    const rawBytes = new Uint8Array(bytes);
+    if (doc.mime_type && doc.mime_type in EXT_ALLOWLIST) {
+      const detected = detectMimeFromMagic(rawBytes);
+      if (detected !== doc.mime_type) {
+        errors.push(
+          detected
+            ? `document declared ${doc.mime_type} but bytes are ${detected}`
+            : `document declared ${doc.mime_type} but bytes do not match any allowed type`,
+        );
+        return;
+      }
+    }
     const ext = extensionFor(doc.mime_type);
     const filename = `${updateId}-${index}${ext}`;
     const target = join(dir, filename);
@@ -122,7 +157,7 @@ export async function downloadAttachments(
       errors.push("attachment path outside data dir");
       return;
     }
-    await writeFile(target, new Uint8Array(bytes));
+    await writeFile(target, rawBytes);
     attachments.push({
       kind: "document",
       path: target,

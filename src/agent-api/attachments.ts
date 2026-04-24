@@ -28,6 +28,7 @@ import type { BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { Attachment } from "../telegram/types.js";
 import { computeAttachmentsDiskUsage } from "../core/attachments.js";
+import { detectMimeFromMagic } from "../mime-magic.js";
 
 const log = logger("agent-api-attachments");
 
@@ -254,6 +255,28 @@ export async function parseMultipartRequest(
           { code: "attachment_too_large" as const },
         );
       }
+      // Magic-byte MIME validation. Up to this point we've trusted the
+      // multipart part's declared Content-Type header. A caller can declare
+      // any allowlisted MIME (say, `image/png`) and send arbitrary bytes —
+      // an HTML file with embedded JS, a shell script, an EICAR test
+      // signature, anything. The gateway-controlled on-disk name has an
+      // `.png` extension and the runner (or any downstream viewer) sees
+      // what it thinks is a PNG. Sniff the actual bytes and refuse to
+      // write if the declared MIME doesn't match what the content actually
+      // is. We reject rather than coerce, so a mislabeled-but-recognised
+      // payload (e.g. JPEG declared as PNG) still errors rather than
+      // silently landing under a corrected extension.
+      const detected = detectMimeFromMagic(bytes);
+      if (detected !== mime) {
+        throw Object.assign(
+          new Error(
+            detected
+              ? `declared mime '${mime}' does not match magic bytes (detected '${detected}')`
+              : `declared mime '${mime}' but file bytes do not match any allowed type`,
+          ),
+          { code: "attachment_mime_not_allowed" as const },
+        );
+      }
       await writeFile(target, bytes);
       written.push({
         kind: "document",
@@ -273,6 +296,13 @@ export async function parseMultipartRequest(
       return {
         kind: "err",
         code: "attachment_too_large",
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    if (code === "attachment_mime_not_allowed") {
+      return {
+        kind: "err",
+        code: "attachment_mime_not_allowed",
         detail: err instanceof Error ? err.message : String(err),
       };
     }
