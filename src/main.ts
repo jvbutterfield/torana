@@ -463,11 +463,40 @@ function registerFixedRoutes(
       const url = new URL(req.url);
       const rel = url.pathname.slice(mountPath.length) || "/";
       const backendUrl = `${target}${rel}${url.search}`;
+
+      // Strip hop-by-hop and sensitive request headers before forwarding:
+      //   - Authorization, Cookie, Proxy-Authorization: keeping these would
+      //     leak Agent-API bearer tokens, browser session cookies, or any
+      //     upstream auth header through the dashboard proxy.
+      //   - Idempotency-Key, X-Telegram-Bot-Api-Secret-Token: torana-internal
+      //     secrets the dashboard must never see.
+      //   - Host: the fetch() rewrites this correctly; copying the gateway's
+      //     Host to the backend confuses virtual-hosted upstreams.
+      // Retain everything else so request routing + Accept/Accept-Language
+      // still work for the dashboard UI.
+      const forwardedHeaders = new Headers(req.headers);
+      for (const h of [
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "idempotency-key",
+        "x-telegram-bot-api-secret-token",
+        "host",
+      ]) {
+        forwardedHeaders.delete(h);
+      }
+
       try {
+        // - method: GET is enforced by the router (we only register GET);
+        //   passing req.method preserves that explicitly.
+        // - redirect: "manual" stops fetch from following a backend Location:
+        //   header. Without this the proxy can be used as an open redirect
+        //   / SSRF stepping-stone into anywhere the gateway host can reach.
         const proxyReq = new Request(backendUrl, {
           method: req.method,
-          headers: req.headers,
+          headers: forwardedHeaders,
           body: req.body,
+          redirect: "manual",
         });
         return await fetch(proxyReq);
       } catch {

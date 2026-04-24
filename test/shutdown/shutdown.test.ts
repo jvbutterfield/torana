@@ -92,7 +92,11 @@ function makeConfig(options: {
       hard_timeout_secs: 25,
       ...(options.shutdown ?? {}),
     },
-    dashboard: { enabled: false, mount_path: "/dashboard" },
+    dashboard: {
+      enabled: false,
+      mount_path: "/dashboard",
+      allow_non_loopback_proxy_target: false,
+    },
     metrics: { enabled: false },
     attachments: {
       max_bytes: 20 * 1024 * 1024,

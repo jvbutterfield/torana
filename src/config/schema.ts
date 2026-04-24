@@ -30,6 +30,23 @@ const SecretString = z
     "secret must be at least 32 characters (use a long, random value; generate with e.g. `openssl rand -base64 32`)",
   );
 
+/**
+ * True for `http://127.0.0.1…`, `http://[::1]…`, `http://localhost…`, or any
+ * `unix:…` scheme. Used by the dashboard-proxy validation — an operator can
+ * opt out of this check, but the default refuses to proxy to arbitrary
+ * network destinations.
+ */
+function isLoopbackUrl(url: string): boolean {
+  if (url.startsWith("unix:")) return true;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "127.0.0.1" || host === "::1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
+
 // Coerce env-interpolated strings into numbers. ${VAR} always yields a string.
 const NumberCoerce = z.coerce.number();
 const IntCoerce = z.coerce.number().int();
@@ -168,9 +185,23 @@ export const DashboardSchema = z
     enabled: BoolPermissive.default(false),
     proxy_target: UrlString.optional(),
     mount_path: z.string().default("/dashboard"),
+    /**
+     * Required when `proxy_target` is not loopback. Strips sensitive headers
+     * (Authorization, Cookie, Idempotency-Key, X-Telegram-Bot-Api-Secret-Token,
+     * Host, Proxy-Authorization) and disables redirect-following regardless of
+     * this flag; this flag only gates whether the gateway will proxy to a
+     * non-loopback target at all, because a compromised or misconfigured
+     * upstream can still see every non-stripped header the dashboard UI
+     * sends. Loopback / UNIX-socket / `localhost` targets are always allowed.
+     */
+    allow_non_loopback_proxy_target: BoolPermissive.default(false),
   })
   .strict()
-  .default({ enabled: false, mount_path: "/dashboard" })
+  .default({
+    enabled: false,
+    mount_path: "/dashboard",
+    allow_non_loopback_proxy_target: false,
+  })
   .refine((d) => !d.enabled || !!d.proxy_target, {
     message:
       "dashboard.proxy_target is required when dashboard.enabled is true",
@@ -555,6 +586,27 @@ export const ConfigSchema = z
           code: z.ZodIssueCode.custom,
           path: ["dashboard", "mount_path"],
           message: `dashboard.mount_path first segment '${mp}' collides with bot id`,
+        });
+      }
+
+      // Dashboard proxy target must be loopback unless the operator has
+      // opted in. The proxy strips Authorization/Cookie/etc. at runtime,
+      // but a non-loopback upstream still sees whatever the dashboard UI
+      // sends — and the proxy itself (no auth by design, reachable to
+      // whoever can hit the gateway port) would otherwise serve as a
+      // generic outbound GET-SSRF gadget to anything the gateway host can
+      // reach. Keep it loopback-only unless the operator has a specific
+      // reason.
+      if (
+        cfg.dashboard.proxy_target &&
+        !cfg.dashboard.allow_non_loopback_proxy_target &&
+        !isLoopbackUrl(cfg.dashboard.proxy_target)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["dashboard", "proxy_target"],
+          message:
+            "dashboard.proxy_target must be loopback (127.0.0.1, ::1, localhost, or unix:…) unless `dashboard.allow_non_loopback_proxy_target: true` is set. The dashboard has no auth of its own; a non-loopback proxy target lets anyone reaching the gateway port drive GETs against that upstream.",
         });
       }
     }
