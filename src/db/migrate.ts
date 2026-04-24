@@ -20,6 +20,7 @@ import {
   writeSync,
   unlinkSync,
   statSync,
+  chmodSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -268,6 +269,21 @@ export function applyMigrations(
       });
     } finally {
       db.close();
+    }
+    // Lock down the DB and its WAL sidecars to 0600. Best-effort — fails
+    // silently on filesystems without POSIX perms (Windows NTFS, some
+    // FUSE mounts). GatewayDB also chmods on every open, so a migration
+    // that ran on a posix-less mount still gets tightened whenever the
+    // gateway next opens the DB on a posix mount.
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try {
+        if (existsSync(dbPath + suffix)) chmodSync(dbPath + suffix, 0o600);
+      } catch (err) {
+        log.warn("could not chmod db file to 0600", {
+          path: dbPath + suffix,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   } finally {
     lock.release();

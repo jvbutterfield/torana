@@ -1,8 +1,38 @@
 import { Database, type Statement } from "bun:sqlite";
+import { chmodSync, existsSync } from "node:fs";
 import { logger } from "../log.js";
 import type { BotId } from "../config/schema.js";
 
 const log = logger("db");
+
+/**
+ * Lock down the DB file + its WAL / SHM siblings to 0600 (owner rw, nobody
+ * else). The DB contains every bot token (stored verbatim so we can call
+ * the Telegram API), every inbound Telegram payload (message text, user
+ * metadata, PII), every agent-API turn row (marker-wrapped prompts
+ * including text callers assumed stayed internal), and idempotency keys.
+ * Most of that is either a live credential or caller-controlled content we
+ * treated as sensitive at ingest time; leaving it world-readable on a
+ * multi-user host is the wrong default.
+ *
+ * Best-effort: chmod can fail on filesystems that don't support POSIX
+ * permissions (Windows NTFS, some FUSE mounts, network shares). Log and
+ * carry on; the operator can re-run `torana doctor` which also warns on
+ * overly-permissive DB files.
+ */
+function chmodDbFiles(dbPath: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const p = dbPath + suffix;
+    try {
+      if (existsSync(p)) chmodSync(p, 0o600);
+    } catch (err) {
+      log.warn("could not chmod db file to 0600", {
+        path: p,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
 
 /** Wrapper around the SQLite state. Keyed on bot_id throughout (v1 schema). */
 export class GatewayDB {
@@ -75,6 +105,10 @@ export class GatewayDB {
     this._db.exec("PRAGMA busy_timeout=5000");
     this._db.exec("PRAGMA synchronous=NORMAL");
     this._db.exec("PRAGMA foreign_keys=ON");
+    // Run AFTER the WAL pragma has forced the -wal/-shm sidecars into
+    // existence so we lock them all down in one pass. Owner rw / group-
+    // world no-access (0600).
+    chmodDbFiles(dbPath);
     this.prepareStatements();
     log.info("database ready");
   }

@@ -413,6 +413,55 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     });
   }
 
+  // C015 — DB file permissions. The DB contains every bot token,
+  // inbound Telegram message payloads (text + PII), and agent-API
+  // turn rows. If the file is world/group-readable, any other user on
+  // the host can read credentials and message contents directly.
+  // GatewayDB + applyMigrations chmod the file to 0600 on open, but
+  // pre-existing DBs created before this release may still be wide
+  // open, and some filesystems (Windows NTFS, certain FUSE mounts)
+  // don't honour chmod — flag those here so operators notice.
+  const dbPath =
+    config.gateway.db_path ?? resolve(config.gateway.data_dir, "gateway.db");
+  if (process.platform === "win32") {
+    checks.push({
+      id: "C015",
+      status: "skip",
+      detail: "db permission check not applicable on Windows",
+    });
+  } else if (!existsSync(dbPath)) {
+    checks.push({
+      id: "C015",
+      status: "skip",
+      detail: `db does not exist yet (${dbPath})`,
+    });
+  } else {
+    try {
+      const stat = statSync(dbPath);
+      const mode = stat.mode & 0o777;
+      const worldOrGroupReadable = (mode & 0o044) !== 0;
+      if (worldOrGroupReadable) {
+        checks.push({
+          id: "C015",
+          status: "fail",
+          detail: `db file mode 0${mode.toString(8)} is group/world-readable; contains bot tokens + message history (recommend 0600)`,
+        });
+      } else {
+        checks.push({
+          id: "C015",
+          status: "ok",
+          detail: `db file mode 0${mode.toString(8)}`,
+        });
+      }
+    } catch (err) {
+      checks.push({
+        id: "C015",
+        status: "skip",
+        detail: `db permission check skipped: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   return { checks };
 }
 
