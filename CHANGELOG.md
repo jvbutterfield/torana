@@ -8,8 +8,81 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
-Five security fixes landed together ahead of the 1.0.0 cut. Three of them
-are breaking config changes — see **Upgrade notes** below before deploying.
+Fifteen security fixes landed together ahead of the 1.0.0 cut, covering
+two P0 and thirteen P1/other-level issues surfaced by a follow-up deep
+review. Three items are breaking config changes — see **Upgrade notes**
+below before deploying.
+
+#### P0 fixes
+
+- **Dashboard proxy hardening.** The dashboard was forwarding every
+  request header verbatim to `proxy_target` (Authorization, cookies,
+  Idempotency-Key, X-Telegram-Bot-Api-Secret-Token), had no auth on the
+  mount, and followed backend redirects. A caller reaching the gateway
+  port could use it as an open credential-exfil + SSRF gadget. Now:
+  sensitive headers are stripped before forwarding; `redirect: "manual"`
+  disables redirect-following; the new `dashboard.allow_non_loopback_proxy_target`
+  flag refuses non-loopback `proxy_target` by default.
+
+- **Webhook body size cap.** The Telegram webhook handler called
+  `req.json()` after the secret check with no size limit. Anyone who
+  obtained the shared webhook secret could force the gateway to buffer
+  arbitrarily-large chunked bodies into memory. Capped at 1 MiB via a
+  Content-Length precheck + streaming reader with abort-on-overflow; 413
+  on both paths.
+
+#### P1 fixes
+
+- **Marker-injection rejected in send text.** `wrapSystemMessage` produces
+  `[system-message from "<source>"]\n\n<text>` as the framing the runner
+  uses to distinguish operator-initiated turns from user-initiated ones.
+  Caller-supplied `text` that contained a second line-starting
+  `[system-message from "forged"]\n\n…` could spoof a second envelope
+  attributing subsequent content to any source label the caller chose.
+  `SendBodySchema` now rejects any text matching the marker-injection
+  regex (anchored on line boundaries so inline prose mentioning the
+  syntax is still allowed); `wrapSystemMessage` re-asserts.
+
+- **Multipart magic-byte MIME validation.** Agent-API multipart and
+  Telegram document uploads trusted the caller's declared Content-Type.
+  A caller could upload arbitrary bytes with a declared allowlisted MIME
+  and the gateway would write them as `<uuid>.png` (or .pdf, etc.) and
+  hand the on-disk path to a runner. Now every attachment's actual bytes
+  are sniffed (PNG/JPEG/WEBP/GIF/PDF magic) and must match the declared
+  MIME; mismatches return `attachment_mime_not_allowed`.
+
+- **Migration serialization.** Two concurrently-started torana processes
+  that both saw `user_version < TARGET` could race each other's migration
+  apply. Added an OS file lock (`<dbPath>.migrate.lock`) with PID +
+  timestamp; stale locks older than 10 minutes are stolen, fresh locks
+  cause the second process to fail with a clear error.
+
+- **Crash recovery skips Telegram notify for agent-API turns.**
+  `runCrashRecovery` was sending a "⚠️ Gateway restarted …" message into
+  the user's DM for any interrupted running turn. For Agent-API
+  `ask`/`send` turns that no end user had initiated, this leaked the
+  existence of a backend job into the user's chat. Now Agent-API turns
+  are interrupted silently; external callers see the outcome via
+  `GET /v1/turns/:id` as before.
+
+- **DB file permissions locked to 0600.** `gateway.db` + its WAL / SHM
+  sidecars contain every bot token, every inbound Telegram payload
+  (text + PII), and every agent-API turn row. They inherited the process
+  umask (typically 0644). Now chmod'd to 0600 on every open (best-effort
+  — logs and carries on under non-POSIX filesystems). New doctor check
+  **C015** warns on pre-existing group/world-readable DB files so
+  operators on upgrade notice any deployment that was created before this
+  release.
+
+- **Runner stdout/stderr redacted in per-bot log files.** The structured
+  logger applied secret redaction; the per-bot log file (written via
+  `logStream.write(chunk)`) bypassed it. A runner that leaked an API key
+  on stderr — or a user that asked a runner to echo a secret back on
+  stdout — ended up with the raw value in plaintext on disk. All 12
+  subprocess-output write sites across the three runners now go through
+  `redactString()`.
+
+#### rc.7 initial fixes (the five that landed earlier in this branch)
 
 - **(P1) claude-code runner now requires `acknowledge_dangerous: true`.**
   The runner has always passed `--dangerously-skip-permissions` to the
@@ -105,6 +178,41 @@ apply:
    instead. `404 unknown_bot` still fires, but only when the caller's
    token lists the unknown id in its `bot_ids` — i.e., the misconfigured
    deployment case.
+
+6. **`dashboard.proxy_target` is now loopback-only by default.** If you
+   proxy the dashboard to an upstream on a non-loopback IP, add
+   `dashboard.allow_non_loopback_proxy_target: true` alongside
+   `proxy_target`. The gateway will otherwise refuse to start. The
+   proxy also now strips Authorization / Cookie / Idempotency-Key /
+   X-Telegram-Bot-Api-Secret-Token / Host / Proxy-Authorization before
+   forwarding, and sets `redirect: "manual"` — no config change needed
+   for those.
+
+7. **DB file permissions tighten to 0600 on open.** Pre-existing
+   deployments with a group/world-readable `gateway.db` (default umask
+   on many Linux hosts creates these as 0644) will have their DB
+   chmod'd to 0600 the next time torana opens it. Run `torana doctor`
+   to confirm — the new C015 check reports the on-disk mode and fails
+   if it's still loose (e.g. on filesystems that don't support POSIX
+   perms).
+
+8. **Send callers: text containing a line-leading `[system-message from
+"…"]` will now be rejected with `400 invalid_body`.** Incidental
+   prose mentioning the marker syntax inline is still accepted. Only
+   line-anchored matches are refused. If you have legitimate tooling
+   that forwards other bots' log output verbatim, strip leading
+   whitespace + the marker prefix before sending.
+
+9. **Webhook body size is capped at 1 MiB.** Telegram updates are
+   typically < 64 KiB so this is a wide margin; no action needed
+   unless your integration routes unusually-large payloads through the
+   webhook endpoint.
+
+10. **Multipart attachments must match magic bytes for their declared
+    MIME.** A caller uploading a JPEG with `Content-Type: image/png` now
+    gets `attachment_mime_not_allowed`. Fix by sending the correct MIME.
+    The same check applies to Telegram documents (photos are always
+    JPEG by Telegram's API convention, so this only affects documents).
 
 ## [1.0.0-rc.6] - 2026-04-21
 
