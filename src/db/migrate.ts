@@ -11,7 +11,16 @@
 // transaction; next run re-applies from scratch.
 
 import { Database } from "bun:sqlite";
-import { readFileSync, existsSync, copyFileSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  copyFileSync,
+  openSync,
+  closeSync,
+  writeSync,
+  unlinkSync,
+  statSync,
+} from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "../log.js";
@@ -229,22 +238,107 @@ export function applyMigrations(
     }
   }
 
-  const db = new Database(dbPath, { create: true });
+  // Cross-process lock. Two concurrently-started `torana` processes that
+  // both see user_version < TARGET must not both try to apply the same
+  // migration: individual step SQL is idempotent in some cases (IF NOT
+  // EXISTS) but not in all (ADD COLUMN fails if the column exists), and
+  // silent half-applied state is the worst case. SQLite's own locking
+  // narrows the race window but does not close it because planMigration
+  // and applyMigrations use separate connections.
+  //
+  // Use a simple O_CREAT|O_EXCL lock file with the PID inside. On stale
+  // lock (older than 10 minutes — migrations here are measured in seconds,
+  // even on large DBs), we log a warning and steal. On fresh lock, we
+  // refuse to start and surface a clear message.
+  const lock = acquireMigrationLock(dbPath);
   try {
-    for (const step of plan.steps) {
-      log.info("applying migration", {
-        id: step.id,
-        description: step.description,
+    const db = new Database(dbPath, { create: true });
+    try {
+      for (const step of plan.steps) {
+        log.info("applying migration", {
+          id: step.id,
+          description: step.description,
+        });
+        db.exec(step.sql);
+      }
+      log.info("migrations complete", {
+        from: plan.currentVersion,
+        to: plan.targetVersion,
+        steps: plan.steps.length,
       });
-      db.exec(step.sql);
+    } finally {
+      db.close();
     }
-    log.info("migrations complete", {
-      from: plan.currentVersion,
-      to: plan.targetVersion,
-      steps: plan.steps.length,
-    });
   } finally {
-    db.close();
+    lock.release();
   }
   return plan;
+}
+
+/** Lifetime of a migration — if a lock file is older than this, treat as stale. */
+const STALE_LOCK_AGE_MS = 10 * 60 * 1000;
+
+function acquireMigrationLock(dbPath: string): { release: () => void } {
+  const lockPath = `${dbPath}.migrate.lock`;
+  const tryOpen = (): number | null => {
+    try {
+      return openSync(lockPath, "wx"); // O_CREAT | O_EXCL
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") return null;
+      throw err;
+    }
+  };
+
+  let fd = tryOpen();
+  if (fd === null) {
+    // Lock file exists. Check age; steal if stale.
+    let stale = false;
+    try {
+      const s = statSync(lockPath);
+      const ageMs = Date.now() - s.mtimeMs;
+      if (ageMs > STALE_LOCK_AGE_MS) {
+        stale = true;
+        log.warn("stealing stale migration lock", {
+          path: lockPath,
+          age_ms: Math.round(ageMs),
+        });
+        unlinkSync(lockPath);
+      }
+    } catch {
+      /* race: other process may have released; try again below */
+    }
+    if (stale) {
+      fd = tryOpen();
+    }
+    if (fd === null) {
+      throw new Error(
+        `migration lock held by another process at ${lockPath}. ` +
+          `If you are certain no other torana process is running, delete the lock file and retry.`,
+      );
+    }
+  }
+
+  // Write PID + timestamp so a stuck operator can identify the holder.
+  writeSync(
+    fd,
+    Buffer.from(`pid=${process.pid} ts=${new Date().toISOString()}\n`),
+  );
+
+  let released = false;
+  return {
+    release: (): void => {
+      if (released) return;
+      released = true;
+      try {
+        closeSync(fd!);
+      } catch {
+        /* already closed */
+      }
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* already gone */
+      }
+    },
+  };
 }
