@@ -18,6 +18,21 @@ import type {
 
 const log = logger("transport.webhook");
 
+/**
+ * Hard cap on the size of an inbound Telegram webhook body. Telegram Update
+ * payloads are small (a few KB for text, tens of KB for a Message with
+ * entities); the Bot API documents no explicit maximum but 1 MiB is already
+ * enormous for a single update. Without a cap, any caller who has obtained
+ * the shared webhook secret (or guesses it against our 32-char minimum,
+ * which is hard but not impossible in a long-lived deployment) can force the
+ * gateway to buffer arbitrarily-large chunked bodies into memory.
+ *
+ * Keep this wider than the per-update wire budget so legitimate large
+ * `message.text` with Markdown entities still fits; tighten if we ever see
+ * real traffic exceeding a small fraction of it. 1 MiB is a middle ground.
+ */
+const WEBHOOK_MAX_BODY_BYTES = 1 * 1024 * 1024;
+
 function safeCompare(a: string, b: string): boolean {
   const ba = Buffer.from(a);
   const bb = Buffer.from(b);
@@ -133,10 +148,35 @@ export class WebhookTransport implements Transport {
       return new Response("OK", { status: 200 });
     }
 
+    // Content-Length precheck before any allocation. Telegram normally
+    // sends Content-Length; rejecting oversized declared bodies here
+    // avoids touching req.body at all.
+    const declared = Number(req.headers.get("content-length") ?? 0);
+    if (
+      Number.isFinite(declared) &&
+      declared > 0 &&
+      declared > WEBHOOK_MAX_BODY_BYTES
+    ) {
+      log.warn("webhook body too large (content-length)", {
+        bot_id: botId,
+        declared,
+        max: WEBHOOK_MAX_BODY_BYTES,
+      });
+      return new Response("Payload Too Large", { status: 413 });
+    }
+
     let body: unknown;
     try {
-      body = await req.json();
-    } catch {
+      body = await readCappedJson(req, WEBHOOK_MAX_BODY_BYTES);
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        log.warn("webhook body too large (streamed)", {
+          bot_id: botId,
+          bytes: err.bytes,
+          max: WEBHOOK_MAX_BODY_BYTES,
+        });
+        return new Response("Payload Too Large", { status: 413 });
+      }
       return new Response("Bad Request", { status: 400 });
     }
 
@@ -154,4 +194,60 @@ export class WebhookTransport implements Transport {
 
     return new Response("OK", { status: 200 });
   }
+}
+
+class BodyTooLargeError extends Error {
+  constructor(public readonly bytes: number) {
+    super(`body exceeded ${bytes} bytes`);
+    this.name = "BodyTooLargeError";
+  }
+}
+
+/**
+ * Read req.body chunk-by-chunk, aborting as soon as accumulated bytes exceed
+ * `maxBytes`, then JSON-parse. Throws `BodyTooLargeError` on overflow; throws
+ * any other error (decode / parse) as a plain Error so the caller can map
+ * it to 400 Bad Request.
+ *
+ * Webhook-specific; the Agent-API has its own version in src/agent-api/body.ts
+ * with different error-result shape. Duplicating the ~20 lines keeps the
+ * transport module standalone (no cross-module dep on agent-api internals).
+ */
+async function readCappedJson(req: Request, maxBytes: number): Promise<unknown> {
+  const body = req.body;
+  if (!body) return await req.json();
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        try {
+          await reader.cancel("body_too_large");
+        } catch {
+          /* ignore — we're already aborting */
+        }
+        throw new BodyTooLargeError(total);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* reader may already be released */
+    }
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(merged);
+  return JSON.parse(text);
 }
