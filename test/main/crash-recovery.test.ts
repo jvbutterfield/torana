@@ -171,6 +171,70 @@ describe("runCrashRecovery", () => {
     expect(sends[0].text?.toLowerCase()).toContain("restarted");
   });
 
+  test("orphaned agent-API send turn is interrupted SILENTLY (no Telegram apology)", () => {
+    // Agent-API-originated turns are polled by the external caller via
+    // /v1/turns/:id; sending a "Gateway restarted …" message to the end
+    // user's Telegram chat exposes the existence of a backend job the user
+    // never initiated. The recovery path must skip the sendMessage on
+    // these turns.
+    const { client, calls } = makeRecordingClient();
+    // Build a synthetic agent-API send turn: need source = 'agent_api_send'.
+    const turnId = db.insertSendTurn({
+      botId: "alpha",
+      tokenName: "caller",
+      chatId: 111,
+      markerWrappedText: '[system-message from "legit"]\n\nhi',
+      idempotencyKey: "idem-key-crash-recovery-agentapi-001",
+      sourceLabel: "legit",
+      attachmentPaths: [],
+    }).turnId;
+    // Transition queued → running → mid-stream so we hit the "interrupted"
+    // branch, not the "re-queue" branch.
+    db.startTurn(turnId, 1);
+    db.setTurnFirstOutput(turnId);
+    db.initWorkerState("alpha");
+
+    runCrashRecovery(db, new Map([["alpha", client]]));
+
+    const row = db
+      .query("SELECT status, source FROM turns WHERE id=?")
+      .get(turnId) as { status: string; source: string };
+    expect(row.status).toBe("interrupted");
+    expect(row.source).toBe("agent_api_send");
+
+    // Crucially, NO sendMessage to the user's chat.
+    const sends = calls.filter((c) => c.method === "sendMessage");
+    expect(sends).toHaveLength(0);
+  });
+
+  test("orphaned agent-API ask turn is interrupted SILENTLY (no Telegram notify)", () => {
+    // Same policy as send — ask callers poll /v1/turns/:id; no end user
+    // is involved.
+    const { client, calls } = makeRecordingClient();
+    const turnId = db.insertAskTurn({
+      botId: "alpha",
+      tokenName: "caller",
+      sessionId: "eph-ask-crash",
+      textPreview: "hi",
+      attachmentPaths: [],
+    });
+    // insertAskTurn creates the row as 'running' already; mark first_output
+    // to hit the interrupted branch.
+    db.setTurnFirstOutput(turnId);
+    db.initWorkerState("alpha");
+
+    runCrashRecovery(db, new Map([["alpha", client]]));
+
+    const row = db
+      .query("SELECT status, source FROM turns WHERE id=?")
+      .get(turnId) as { status: string; source: string };
+    expect(row.status).toBe("interrupted");
+    expect(row.source).toBe("agent_api_ask");
+
+    const sends = calls.filter((c) => c.method === "sendMessage");
+    expect(sends).toHaveLength(0);
+  });
+
   test("turn with first_output but empty buffer edits '(restarted)' placeholder", () => {
     const { client, calls } = makeRecordingClient();
     const turnId = seedRunningTurn("alpha", 111, true);

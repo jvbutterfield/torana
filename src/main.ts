@@ -534,14 +534,27 @@ export function runCrashRecovery(
       log.info("marking orphaned turn interrupted", {
         turn_id: turn.id,
         bot_id: turn.bot_id,
+        source: turn.source ?? null,
       });
       db.interruptTurn(turn.id, "Gateway restarted during active turn");
-      const client = clients.get(turn.bot_id);
-      if (client) {
-        void client.sendMessage(
-          turn.chat_id,
-          "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
-        );
+
+      // For Agent-API-originated turns (ask / send), the end user in the
+      // Telegram chat never initiated anything — the external agent did,
+      // and it polls /v1/turns/:id for the outcome. Sending a "Gateway
+      // restarted …" message into the user's DM leaks the existence of
+      // a backend job the user has no context for. Skip the notify on
+      // agent_api_* turns; the polling caller sees the `failed` /
+      // `interrupted_by_gateway_restart` status.
+      const isAgentApi =
+        turn.source === "agent_api_send" || turn.source === "agent_api_ask";
+      if (!isAgentApi) {
+        const client = clients.get(turn.bot_id);
+        if (client) {
+          void client.sendMessage(
+            turn.chat_id,
+            "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
+          );
+        }
       }
     }
   }

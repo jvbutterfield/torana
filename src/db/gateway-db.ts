@@ -122,7 +122,7 @@ export class GatewayDB {
         "UPDATE turns SET last_output_at = datetime('now') WHERE id = ?",
       ),
       getRunningTurns: d.prepare(
-        "SELECT id, bot_id, chat_id, source_update_id, first_output_at FROM turns WHERE status = 'running'",
+        "SELECT id, bot_id, chat_id, source_update_id, first_output_at, source FROM turns WHERE status = 'running'",
       ),
       getQueuedTurns: d.prepare(
         "SELECT id, chat_id, source_update_id FROM turns WHERE bot_id = ? AND status = 'queued' ORDER BY id ASC",
@@ -430,6 +430,7 @@ export class GatewayDB {
     chat_id: number;
     source_update_id: number;
     first_output_at: string | null;
+    source: string | null;
   }> {
     return this.stmts.getRunningTurns.all() as Array<{
       id: number;
@@ -437,6 +438,7 @@ export class GatewayDB {
       chat_id: number;
       source_update_id: number;
       first_output_at: string | null;
+      source: string | null;
     }>;
   }
 
