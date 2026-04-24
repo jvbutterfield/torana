@@ -49,7 +49,13 @@ export function autoFormat(): LogFormat {
 
 const URL_BOT_TOKEN_RE = /\/bot([A-Za-z0-9_:-]{5,})\//g;
 
-function redactString(s: string): string {
+/**
+ * Redact known secrets + Telegram bot-token URL segments from an arbitrary
+ * string. Exported so non-logger callers (e.g. subprocess stdout/stderr
+ * forwarded to per-bot log files, which go through the fs stream directly
+ * rather than through emit()) can apply the same masking.
+ */
+export function redactString(s: string): string {
   let out = s.replace(URL_BOT_TOKEN_RE, "/bot<redacted>/");
   for (const secret of secrets) {
     if (out.includes(secret)) {

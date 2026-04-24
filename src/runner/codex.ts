@@ -26,7 +26,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { BotId, CodexRunnerConfig } from "../config/schema.js";
-import { logger, type Logger } from "../log.js";
+import { logger, redactString, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
   InvalidSideSessionId,
@@ -431,7 +431,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        entry.logStream?.write(chunk);
+        entry.logStream?.write(redactString(chunk));
         parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
       }
       parser.flush((ev) => this.dispatchSide(entry, ev));
@@ -456,7 +456,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        entry.logStream?.write(`[stderr] ${text}`);
+        entry.logStream?.write(`[stderr] ${redactString(text)}`);
         for (const line of text.split("\n")) {
           if (line.trim()) {
             entry.stderrBuffer.push(line.trim());
@@ -819,7 +819,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        this.logStream?.write(chunk);
+        this.logStream?.write(redactString(chunk));
         parser.feed(chunk, onEvent);
       }
       parser.flush(onEvent);
@@ -840,7 +840,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        this.logStream?.write(`[stderr] ${text}`);
+        this.logStream?.write(`[stderr] ${redactString(text)}`);
         for (const line of text.split("\n")) {
           if (line.trim()) {
             this.stderrBuffer.push(line.trim());

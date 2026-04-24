@@ -18,7 +18,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { BotId, CommandRunnerConfig } from "../config/schema.js";
-import { logger, type Logger } from "../log.js";
+import { logger, redactString, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
   InvalidSideSessionId,
@@ -372,7 +372,7 @@ export class CommandRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        entry.logStream?.write(chunk);
+        entry.logStream?.write(redactString(chunk));
         parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
       }
       parser.flush((ev) => this.dispatchSide(entry, ev));
@@ -396,7 +396,7 @@ export class CommandRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        entry.logStream?.write(`[stderr] ${text}`);
+        entry.logStream?.write(`[stderr] ${redactString(text)}`);
       }
     } catch {
       /* expected on exit */
@@ -645,7 +645,7 @@ export class CommandRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        this.logStream?.write(chunk);
+        this.logStream?.write(redactString(chunk));
         parser.feed(chunk, (ev) => this.dispatchEvent(ev));
       }
       parser.flush((ev) => this.dispatchEvent(ev));
@@ -666,7 +666,7 @@ export class CommandRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        this.logStream?.write(`[stderr] ${text}`);
+        this.logStream?.write(`[stderr] ${redactString(text)}`);
       }
     } catch {
       /* expected on exit */
