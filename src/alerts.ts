@@ -2,7 +2,7 @@
 // subject bot (§3.9). If the `alerts` block is absent, alerts are logged at
 // warn level only.
 
-import { logger } from "./log.js";
+import { logger, redactString } from "./log.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { TelegramClient } from "./telegram/client.js";
 
@@ -48,15 +48,41 @@ export class AlertManager {
     const key = `${kind}:${botId ?? "_"}`;
     if (!this.shouldAlert(key)) return;
 
+    // Redact secrets out of caller-supplied alert text. Most alert callers
+    // interpolate runner reasons or Telegram error descriptions (e.g.
+    // setWebhook failures echo URL fragments containing the bot token).
+    // Mirrors the rc.7 fix `c8dd3a9` for runner stdout/stderr — alerts
+    // were the gap that fix didn't cover.
+    const redacted = redactString(text);
+
     if (!this.deliveryClient || !this.chatId) {
-      log.warn(`alert: ${text}`, { alert_kind: kind, bot_id: botId });
+      log.warn(`alert: ${redacted}`, { alert_kind: kind, bot_id: botId });
       return;
     }
     try {
-      await this.deliveryClient.sendMessage(this.chatId, text);
-      log.info("alert sent", { alert_kind: kind, bot_id: botId });
+      const result = await this.deliveryClient.sendMessage(
+        this.chatId,
+        redacted,
+      );
+      // sendMessage swallows Telegram errors and returns {ok:false,...}.
+      // The catch block below would never fire on Telegram-side failures;
+      // check the result explicitly so a failed alert isn't silently
+      // logged as "alert sent".
+      if (result.ok) {
+        log.info("alert sent", { alert_kind: kind, bot_id: botId });
+      } else {
+        log.warn("alert send failed", {
+          alert_kind: kind,
+          bot_id: botId,
+          retriable: result.retriable,
+          description: result.description,
+        });
+      }
     } catch (err) {
-      log.error("alert send failed", {
+      // Reachable only if sendMessage itself throws — current impl
+      // catches internally, but keep this defensively in case that
+      // contract changes.
+      log.error("alert send threw", {
         alert_kind: kind,
         error: err instanceof Error ? err.message : String(err),
       });
