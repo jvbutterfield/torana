@@ -1,6 +1,6 @@
 # rc.7 security hardening — handoff
 
-**Branch:** `rc.7/security-hardening` (30 commits ahead of `main` once this tracker update lands — see "What's on the branch")
+**Branch:** `rc.7/security-hardening` (31 commits ahead of `main` once this CHANGELOG-count fix lands — see "What's on the branch")
 **Status:** All P0 + P1 + P2 fixes landed, the 4-finding review-pass follow-ups from the previous round, and the 8-finding Telegram rate-limit + polling reliability stack from a second review pass. Tests 1243 pass / 0 fail / 13 skip across 120 files. Typecheck + prettier clean.
 **Not yet:** version bump, CHANGELOG section move, push, tag, release.
 

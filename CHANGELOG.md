@@ -8,9 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
-Thirty-seven security and reliability fixes landed together ahead of
-the 1.0.0 cut, covering two P0, thirteen P1/other-level, nine P2 from
-a follow-up deep review, and thirteen more from a targeted post-review
+Thirty-five security and reliability fixes landed together ahead of
+the 1.0.0 cut, in three batches: thirteen items from the original
+rc.7 review (two P0, six P1, and the five P1/P2/P3 hardening items
+already in flight when the deep review kicked off), nine P2 from the
+follow-up deep review, and thirteen more from a targeted post-review
 pass (sanitization gaps in two more handlers, outbox crash-window
 narrowing, alerts redaction, and the Telegram rate-limit / polling
 reliability stack). Three items are hard-breaking config changes and
