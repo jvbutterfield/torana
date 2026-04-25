@@ -6,6 +6,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+- **Hardened attachment write path against overwrite + symlink races.**
+  `src/core/attachments.ts` now opens the destination file with
+  `O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW` instead of the convenience
+  `writeFile()`. Two concrete improvements:
+  - **No overwrite of pre-existing files.** If a file already exists at
+    the derived `<update_id>-<index><ext>` path (rare collisions across
+    restarts/replays, or anything staged by a less-trusted process), the
+    open fails with EEXIST and we retry under a fresh
+    `<update_id>-<index>-<uuid><ext>` name (up to 3 retries). The
+    pre-existing file is left intact.
+  - **Refuses to follow symlinks at the target.** A symlink staged in
+    the attachments directory pointing outside it is rejected with a
+    distinct `ATTACHMENT_SYMLINK_REJECTED` error, logged at `error`
+    level with `bot_id` / `update_id` so ops can investigate. The
+    decoy target is never written through.
+
+  Before: `writeFile(target, bytes)` happily overwrote existing files
+  and silently followed symlinks. After: O_EXCL + O_NOFOLLOW (with an
+  lstat fallback because POSIX gives O_EXCL priority over O_NOFOLLOW
+  when both are set on Linux/macOS).
+
 ## [1.0.0-rc.6] - 2026-04-21
 
 ### Changed
@@ -88,11 +111,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `TORANA_TOKEN` env, and named profiles (see below). Stable exit codes
   (0/1/2/3/4/5/6/7) for scripting. See [docs/cli.md](docs/cli.md).
 - **CLI profile store.** `torana config init | add-profile | list-profiles |
-  remove-profile | show` manages a TOML file at
+remove-profile | show` manages a TOML file at
   `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600). Every agent-api
   subcommand resolves credentials with the precedence
   `flag > env > --profile NAME > default profile`. `torana doctor
-  --profile NAME` runs the R001..R003 remote probes against the resolved
+--profile NAME` runs the R001..R003 remote probes against the resolved
   server.
 - **`--file @-` on `torana ask` / `torana inject`.** Reads attachment bytes
   from stdin with magic-byte MIME detection (PNG, JPEG, GIF, WebP, PDF;
@@ -100,7 +123,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a second `@-` on the same call is a usage error.
 - **Skills + Codex plugin.** `skills/torana-ask/SKILL.md` and
   `skills/torana-inject/SKILL.md` ship with the package. `torana skills
-  install --host=claude|codex` copies them into
+install --host=claude|codex` copies them into
   `$CLAUDE_CONFIG_DIR/skills` / `$XDG_DATA_HOME/agents/skills` (default
   refuses on divergence; `--force` overwrites). `codex-plugin/` contains
   a manifest + marketplace.json entry for one-line Codex install; a
