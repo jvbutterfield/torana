@@ -188,6 +188,7 @@ One process. One SQLite database. Per-bot isolated runners. Crashes in one bot d
 - Default-deny ACL. An empty `allowed_user_ids` list rejects all traffic and logs a loud warning so you notice.
 - Secret redaction. Bot tokens and webhook secrets are redacted from logs automatically, including from `/bot<TOKEN>/` URL paths.
 - Attachment hardening. Mime-derived filename allowlist, disk cap, retention sweep. Files never escape the data directory.
+- **Runner subprocesses run unsandboxed in their `cwd` — torana does not jail them.** Run `claude-code` and `approval_mode: yolo` codex bots inside a container, VM, or dedicated UID; see [docs/security.md#runner-isolation](docs/security.md#runner-isolation) for concrete patterns.
 
 **Observability.**
 

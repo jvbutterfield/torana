@@ -235,7 +235,11 @@ The runner always passes these protocol-required flags to the CLI, in this order
 > bot the same way you would a Codex bot in `approval_mode: yolo`: only run
 > it inside a container, VM, or otherwise hardened environment where the
 > blast radius is bounded. Setting `acknowledge_dangerous: true` is the
-> operator's confirmation that this has been accounted for.
+> operator's confirmation that this has been accounted for. **It does not
+> change any runtime behavior** — the flag is a documentation gate at config
+> load, not enforcement at run time. See
+> [docs/security.md#runner-isolation](security.md#runner-isolation) for the
+> isolation patterns the operator is expected to provide.
 
 #### codex
 

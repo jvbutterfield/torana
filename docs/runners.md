@@ -51,7 +51,42 @@ that the bot is running inside a container, VM, or otherwise hardened
 environment where the blast radius is acceptable. The config loader
 refuses to start a claude-code bot without this flag.
 
+**`acknowledge_dangerous: true` does not enable any sandboxing or runtime
+check.** It is purely an operator attestation — the loader's only job is to
+refuse to start before you have read this section. The isolation boundary
+is yours to provide; the flag does not change any runtime behavior.
+
 Matches the Codex `approval_mode: yolo` acknowledgement pattern.
+
+### Concrete isolation patterns
+
+Pick one based on your threat model and ops complexity tolerance. None of
+these is provided by torana — they're what you wrap torana in:
+
+- **Docker / Podman container** — most common path. Run torana with
+  `--cap-drop=ALL`, `--read-only` root, a tmpfs over `/tmp`, and a bind
+  mount of the runner's working tree marked `:ro` where you can. Use
+  `--network=bridge` (not `host`) and an egress allowlist via your
+  container runtime or service mesh.
+- **Dedicated unprivileged UID + chroot** — classic UNIX. Create a
+  `torana` user with no shell login, chown the gateway's `data_dir` to
+  it, run torana via systemd `User=torana`, chroot into a directory
+  containing only the binaries the runner needs.
+- **firejail** (Linux) — lightweight syscall + filesystem sandbox. Ship
+  a `.profile` restricting `cwd`, `/tmp`, and network. Lower overhead
+  than a container; layer with `iptables` if you need network policy.
+- **gVisor / Kata Containers** — syscall-level isolation. Higher
+  overhead; appropriate when you don't fully trust the runner with
+  the host kernel (multi-tenant or hostile-runner deployments).
+- **macOS `sandbox-exec`** — bundled with macOS. Write a `.sb` profile
+  scoping filesystem and network. Good for development hosts; not
+  the right choice for production.
+
+In every case the isolation is **between the runner and the rest of the
+host**, not between the runner and torana — a compromised runner inside
+any of these sandboxes can still send arbitrary text into Telegram chats
+torana owns. See [docs/security.md#runner-isolation](security.md#runner-isolation)
+for the full posture summary.
 
 ### What `pass_continue_flag` does
 

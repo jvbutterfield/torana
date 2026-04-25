@@ -607,7 +607,7 @@ export const ConfigSchema = z
           code: z.ZodIssueCode.custom,
           path: ["bots", idx, "runner", "acknowledge_dangerous"],
           message:
-            "approval_mode='yolo' requires acknowledge_dangerous=true (skips all sandboxing — use only inside an externally hardened environment)",
+            "approval_mode='yolo' requires acknowledge_dangerous=true (skips all sandboxing — use only inside an externally hardened environment; see docs/runners.md#concrete-isolation-patterns)",
         });
       }
     }
@@ -625,7 +625,7 @@ export const ConfigSchema = z
           code: z.ZodIssueCode.custom,
           path: ["bots", idx, "runner", "acknowledge_dangerous"],
           message:
-            "claude-code runner always passes --dangerously-skip-permissions; set acknowledge_dangerous=true after confirming this bot runs inside an externally hardened environment (container/VM with limited fs + network access)",
+            "claude-code runner always passes --dangerously-skip-permissions; set acknowledge_dangerous=true after confirming this bot runs inside an externally hardened environment (container/VM with limited fs + network access; see docs/runners.md#concrete-isolation-patterns)",
         });
       }
     }
