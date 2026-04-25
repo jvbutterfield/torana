@@ -17,6 +17,10 @@
 // attachments.ts, which applies its own Content-Length precheck and
 // aggregate accounting.
 
+import { logger } from "../log.js";
+
+const log = logger("agent-api-body");
+
 export type ReadJsonBodyResult =
   | { kind: "ok"; value: unknown }
   | { kind: "err"; code: "body_too_large" | "invalid_body"; detail?: string };
@@ -77,10 +81,17 @@ export async function readJsonBody(
       chunks.push(value);
     }
   } catch (err) {
+    // Stream-reader failure (peer abort, TLS error, internal Bun stream
+    // state, etc.). Log raw cause server-side; respond with a canonical
+    // detail. Bun stream errors can carry internal state / file paths
+    // that must not surface to the client.
+    log.warn("body stream read failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "malformed body",
     };
   } finally {
     try {

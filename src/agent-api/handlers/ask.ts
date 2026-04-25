@@ -238,14 +238,14 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
       });
       return errorResponse("runner_fatal", result.message, { turn_id: turnId });
     } catch (err) {
+      // Log raw cause + stack server-side; never echo exception text into
+      // the response body. Matches the send.ts policy from commit 4c6ae18.
       deps.log.error("ask handler threw", {
         bot_id: botId,
         error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
       });
-      return errorResponse(
-        "internal_error",
-        err instanceof Error ? err.message : String(err),
-      );
+      return errorResponse("internal_error");
     } finally {
       releaseSync();
     }
