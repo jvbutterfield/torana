@@ -792,7 +792,12 @@ export class CodexRunner implements AgentRunner {
 
   private buildEnv(): Record<string, string> {
     // runner.env is the complete env except PATH, which inherits by default.
-    const env: Record<string, string> = { ...this.config.env };
+    // runner.secrets merges on top — same shape, registered with the log
+    // redactor at load time. Schema rejects key collisions between the two.
+    const env: Record<string, string> = {
+      ...this.config.env,
+      ...(this.config.secrets ?? {}),
+    };
     if (!("PATH" in env)) {
       env.PATH = process.env.PATH ?? "";
     } else if (env.PATH === "") {

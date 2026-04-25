@@ -4,6 +4,13 @@ import {
   interpolate,
   ConfigLoadError,
 } from "../../src/config/load.js";
+import {
+  logger,
+  resetLoggerState,
+  setLogFormat,
+  setLogLevel,
+  setSecrets,
+} from "../../src/log.js";
 
 const MINIMAL = `
 version: 1
@@ -290,6 +297,87 @@ bots:
   test("agent_api.send.max_body_bytes defaults to 100 MiB", () => {
     const { config } = loadConfigFromString(MINIMAL);
     expect(config.agent_api.send.max_body_bytes).toBe(100 * 1024 * 1024);
+  });
+
+  test("runner.secrets values are collected for the redactor", () => {
+    const raw = MINIMAL.replace(
+      "    runner:\n      type: claude-code\n      cli_path: claude",
+      [
+        "    runner:",
+        "      type: claude-code",
+        "      cli_path: claude",
+        "      env:",
+        "        FOO: bar",
+        "      secrets:",
+        "        ANTHROPIC_API_KEY: sk-ant-this-is-a-fake-secret-value",
+        "        DB_PASSWORD: hunter2-also-a-secret",
+      ].join("\n"),
+    );
+    const loaded = loadConfigFromString(raw);
+    expect(loaded.secrets).toContain("sk-ant-this-is-a-fake-secret-value");
+    expect(loaded.secrets).toContain("hunter2-also-a-secret");
+    // env values should NOT be in the redaction set.
+    expect(loaded.secrets).not.toContain("bar");
+    const r = loaded.config.bots[0].runner;
+    expect(r.type).toBe("claude-code");
+    if (r.type === "claude-code") {
+      expect(r.env).toEqual({ FOO: "bar" });
+      expect(r.secrets).toEqual({
+        ANTHROPIC_API_KEY: "sk-ant-this-is-a-fake-secret-value",
+        DB_PASSWORD: "hunter2-also-a-secret",
+      });
+    }
+  });
+
+  test("runner.secrets values are masked by the log redactor end-to-end", () => {
+    // Simulate the cli.ts path: load → setSecrets → log → expect redaction.
+    const raw = MINIMAL.replace(
+      "    runner:\n      type: claude-code\n      cli_path: claude",
+      [
+        "    runner:",
+        "      type: claude-code",
+        "      cli_path: claude",
+        "      secrets:",
+        "        ANTHROPIC_API_KEY: sk-ant-this-is-a-fake-secret-value",
+      ].join("\n"),
+    );
+    const loaded = loadConfigFromString(raw);
+
+    const captured: string[] = [];
+    const orig = console.log;
+    console.log = (m: unknown) => captured.push(String(m));
+    try {
+      setLogFormat("json");
+      setLogLevel("info");
+      setSecrets(loaded.secrets);
+      // Mimic something like a runner startup banner that echoes the resolved
+      // env back into the log stream.
+      logger("test").info("runner env resolved", {
+        env: { ANTHROPIC_API_KEY: "sk-ant-this-is-a-fake-secret-value" },
+      });
+    } finally {
+      console.log = orig;
+      resetLoggerState();
+    }
+    expect(captured).toHaveLength(1);
+    const parsed = JSON.parse(captured[0]!);
+    expect(parsed.env.ANTHROPIC_API_KEY).toBe("<redacted>");
+  });
+
+  test("rejects key collision between runner.env and runner.secrets", () => {
+    const raw = MINIMAL.replace(
+      "    runner:\n      type: claude-code\n      cli_path: claude",
+      [
+        "    runner:",
+        "      type: claude-code",
+        "      cli_path: claude",
+        "      env:",
+        "        SHARED_KEY: from-env",
+        "      secrets:",
+        "        SHARED_KEY: from-secrets",
+      ].join("\n"),
+    );
+    expect(() => loadConfigFromString(raw)).toThrow(/runner\.env and runner\.secrets/);
   });
 
   test("command runner accepts new codex-jsonl protocol", () => {

@@ -369,6 +369,12 @@ function collectSecrets(
     secrets.add(config.transport.webhook.secret);
   for (const bot of config.bots) {
     if (bot.token) secrets.add(bot.token);
+    // runner.secrets values are register-as-secret by definition. The
+    // min-length filter below still applies — sub-6-char values aren't useful
+    // redaction targets (pathological substring matches in unrelated text).
+    for (const value of Object.values(bot.runner.secrets ?? {})) {
+      if (value) secrets.add(value);
+    }
   }
   for (const tok of agentApiTokens) {
     if (tok.secret) secrets.add(tok.secret);
