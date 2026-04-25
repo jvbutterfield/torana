@@ -8,10 +8,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
-Twenty-four security fixes landed together ahead of the 1.0.0 cut,
-covering two P0, thirteen P1/other-level, and nine P2 issues from a
-follow-up deep review. Three items are hard-breaking config changes
-and ten more are softer behavior shifts — see **Upgrade notes** below
+Thirty-seven security and reliability fixes landed together ahead of
+the 1.0.0 cut, covering two P0, thirteen P1/other-level, nine P2 from
+a follow-up deep review, and thirteen more from a targeted post-review
+pass (sanitization gaps in two more handlers, outbox crash-window
+narrowing, alerts redaction, and the Telegram rate-limit / polling
+reliability stack). Three items are hard-breaking config changes and
+eleven more are softer behavior shifts — see **Upgrade notes** below
 before deploying.
 
 #### P0 fixes
@@ -221,6 +224,107 @@ config changes beyond the optional new fields below.
   token at its cap returns 429 with the new `token_concurrency_limit`
   code (distinct from `side_session_capacity`).
 
+#### Followup hardening from rc.7 review pass
+
+Found by a focused review after the initial nine-item P2 fold-in
+landed. Each is small individually; together they remove the self-DoS
+lever an attacker could induce by causing per-chat throttling, narrow
+the outbox crash-window dup risk, close two more agent-API
+sanitization gaps, and surface alerts hardening + polling reliability
+issues that the original deep review skipped.
+
+- **Two more agent-API error-detail leaks closed.** `body.ts:83`
+  (stream-reader exception text echoed in `invalid_body` detail) and
+  `ask.ts:247` (catch-all `internal_error` echoed exception text).
+  Both now log the raw cause server-side and return canonical detail
+  strings — same pattern as `send.ts` from the rc.7 P2 cherry-pick.
+- **Outbox `in_flight` marker narrows the crash-window dup risk.** A
+  crash between Telegram POST success and `markOutboxSent` previously
+  left the row in `pending`/`retrying` and re-sent on restart —
+  duplicate Telegram message with no operator visibility. The row is
+  now marked `in_flight` with a 60s grace window before the POST; on
+  restart the new `OutboxProcessor.recoverInFlight()` logs a warn per
+  affected row with explicit dup-risk caveat, and the grace window
+  auto-recovers via `getPendingOutbox`. Telegram has no message-history
+  readback so true zero-dup isn't reachable, but the window narrows
+  from "any crash" to "crash + restart inside 60s".
+- **Alert text now goes through the log redactor.** `webhookSetFailed`
+  forwards `err.message` from `setWebhook`, which can echo URL
+  fragments (and `getWebhookInfo` URLs include the bot token). The
+  `emit()` helper in `src/alerts.ts` now applies `redactString()`
+  before `sendMessage`, mirroring `c8dd3a9`'s rule for runner stdout/
+  stderr. Same fix also wires the dead catch path: `sendMessage`
+  swallows Telegram errors and returns `{ok:false,...}`, so a failed
+  alert was being logged as `"alert sent"` — now `result.ok` is
+  checked explicitly with a warn on false.
+- **`TelegramError` parses `Retry-After` (rc.7 review F2).** The HTTP
+  `Retry-After` header (RFC 9110, seconds) and the Telegram error
+  envelope's `parameters.retry_after` are now both parsed into
+  `TelegramError.retryAfterMs`. Header takes precedence — some
+  intermediaries override the envelope at the CDN edge.
+  `retry_after: 0` is treated as missing so we don't skip natural
+  backoff on flaky 5xx. `SendResult` and `EditResult` surface
+  `retryAfterMs` to callers.
+- **Telegram requests have a 30s default timeout (rc.7 review F4).**
+  `api()` now passes `AbortSignal.timeout(30_000)` to every fetch.
+  `getUpdates` uses a long-poll-aware timeout (`timeout_secs * 1000 +
+5s buffer`) composed via `AbortSignal.any()` with the caller's
+  shutdown signal. Closes the wedge where a stuck TCP connection
+  could pin the entire dispatcher.
+- **Polling honors Retry-After (rc.7 review F6).** `BotPoller.loop`
+  now sleeps `max(backoff, retryAfterMs)` when a TelegramError
+  carries a server-asked cooldown. Hammering before the cooldown
+  expires extends the throttle.
+- **Webhook setup classifies transient vs permanent (rc.7 review F7).**
+  `setWebhook` failures at startup were previously persistent —
+  any failure marked the bot disabled until manual re-enable. Now
+  429 / 5xx / network errors are logged as transient and the bot
+  stays enabled (the next gateway start retries). 401 / 403 / other
+  4xx still disable the bot for operator attention.
+- **Polling offset advances only on success (rc.7 review C-1).**
+  Previously the offset bumped to `max(update_id)` even when handlers
+  threw — silently losing updates because the dedup ledger never
+  wrote a row. Now the loop stops processing on the first throw and
+  holds the offset; Telegram redelivers from the failing id on the
+  next poll, so a transient cause (sqlite-locked, disk-full, etc.)
+  gets a real retry. **See upgrade note 14** — this is a behavior
+  change for any deployment that was relying on the lossy semantics.
+- **Polling failureCount is capped (rc.7 review C-2).** Previously
+  the counter ticked up forever on cyclic failures (every Nth poll
+  throws). Cap at 16 — well past the saturation point of
+  `nextBackoffMs` — so it stays informative in logs and metrics.
+- **Outbox shards per-bot (rc.7 review F1).** The previous global
+  mutex serialized all rows across all bots; a 429 on chat A blocked
+  every later row regardless of bot. Now `processPending` groups
+  rows by `bot_id` and runs the per-bot loops via `Promise.all`,
+  while keeping each bot's queue serial (intra-chat ordering
+  preserved).
+- **Outbox respects Retry-After without burning the retry budget
+  (rc.7 review F5).** New `markOutboxRateLimited` schedules a retry
+  at the server-asked time without bumping `attempt_count`. A
+  cooperative attacker who keeps a chat throttled longer than
+  (max_attempts × backoff_cap) used to dead-letter legitimate
+  replies and trigger the `outboxFailures` operator alert; now the
+  retry budget is reserved for genuine deliverability failures.
+  Capped at 5 minutes against a malicious upstream.
+- **Streaming pauses edits during a 429 (rc.7 review F3 + F9).**
+  `fireAndForgetEdit` now returns the `EditResult`. `StreamManager`
+  observes 429 + `Retry-After` and sets a per-bot
+  `rateLimitedUntil` timestamp; subsequent flushes during the
+  cooldown skip the `editMessageText` call (the buffer accumulates,
+  next non-rate-limited flush picks up the latest text). Typing
+  pings (`sendChatAction`) are also gated on the cooldown — they
+  count against per-bot 429 limits and produce no user-visible
+  benefit while edits are paused.
+- **Runner sandbox boundary documented explicitly.** `docs/security.md`
+  gains a `## Runner isolation` section stating plainly that torana
+  does not sandbox runners; `acknowledge_dangerous: true` is a
+  documentation gate, not enforcement; the operator owns the
+  isolation boundary. `docs/runners.md` gains a "Concrete isolation
+  patterns" subsection (Docker / firejail / unprivileged-UID + chroot
+  / gVisor / `sandbox-exec`). Loader error messages now link to the
+  patterns subsection.
+
 ### Upgrade notes
 
 This release contains **three breaking config changes**. A pre-existing
@@ -320,6 +424,22 @@ apply:
     canonical strings like `"malformed multipart body"` and
     `"internal error"`. Match on the `error` code field instead — the
     set of codes is stable.
+
+14. **Polling: a thrown update handler now holds the offset.** A
+    handler that throws on update N causes the polling loop to stop
+    processing that batch (updates N+1..M in the same batch are NOT
+    processed) AND skip the offset bump — Telegram will redeliver
+    from N on the next poll. Pre-fix: the loop continued to process
+    later updates and bumped the offset to `max(update_id)`,
+    silently losing the failing update because `inbound_updates`
+    never recorded its row. The new semantic is a strict improvement
+    for transient failures (sqlite-locked, disk-full) but means a
+    persistently-failing update will now block subsequent updates
+    until the underlying cause is fixed. If a handler is throwing
+    for non-transient reasons (a malformed payload your code can't
+    parse, an unrecoverable schema error, etc.), `torana doctor` and
+    the per-bot log file will surface it immediately — investigate
+    the throw rather than relying on the old lossy fast-forward.
 
 ## [1.0.0-rc.6] - 2026-04-21
 
