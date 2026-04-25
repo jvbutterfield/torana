@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.7] - 2026-04-25
+
 ### Security
 
 Thirty-five security and reliability fixes landed together ahead of
