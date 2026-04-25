@@ -227,8 +227,10 @@ List bots the token is authorized for.
 torana bots list [options]
 ```
 
-Prints a table (or JSON with `--json`) of `bot_id`, `runner_type`,
-`supports_side_sessions`.
+Prints a table (or JSON with `--json`) of `bot_id` and
+`supports_side_sessions`. The `RUNNER` column is shown only when the
+gateway has `agent_api.expose_runner_type: true` (off by default — see
+the Agent API security model).
 
 ### `torana config`
 

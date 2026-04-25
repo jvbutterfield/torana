@@ -437,6 +437,11 @@ export const AgentApiSchema = z
     side_sessions: AgentApiSideSessionsSchema,
     send: AgentApiSendSchema,
     ask: AgentApiAskSchema,
+    // When true, GET /v1/bots includes each bot's `runner_type`
+    // (claude-code/codex/command). Off by default so a bearer token
+    // doesn't reveal deployment shape — flip on if a caller actually
+    // needs to branch on runner type.
+    expose_runner_type: BoolPermissive.default(false),
   })
   .strict()
   .default({
@@ -458,6 +463,7 @@ export const AgentApiSchema = z
       max_body_bytes: 100 * 1024 * 1024,
       max_files_per_request: 10,
     },
+    expose_runner_type: false,
   });
 
 // ---------- root ----------

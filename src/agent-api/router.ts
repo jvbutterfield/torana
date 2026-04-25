@@ -79,16 +79,22 @@ export function registerAgentApiRoutes(
       const a = authenticate(deps.tokens, req.headers.get("Authorization"));
       if ("kind" in a) return mapAuthFailure(a);
       const permitted = new Set(a.token.bot_ids);
+      const exposeRunner = deps.config.agent_api?.expose_runner_type === true;
       const bots = deps.registry.botIds
         .filter((id) => permitted.has(id))
         .sort()
         .map((id) => {
           const bot = deps.registry.bot(id)!;
-          return {
+          const item: {
+            bot_id: string;
+            supports_side_sessions: boolean;
+            runner_type?: string;
+          } = {
             bot_id: id,
-            runner_type: bot.botConfig.runner.type,
             supports_side_sessions: bot.runner.supportsSideSessions(),
           };
+          if (exposeRunner) item.runner_type = bot.botConfig.runner.type;
+          return item;
         });
       return jsonResponse(200, { bots });
     }),

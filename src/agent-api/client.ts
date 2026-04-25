@@ -50,8 +50,10 @@ export class AgentApiError extends Error {
 
 export interface BotsListItem {
   bot_id: string;
-  runner_type: string;
   supports_side_sessions: boolean;
+  // Present iff the gateway has `agent_api.expose_runner_type: true`.
+  // Off by default — see docs/agent-api.md "Security model".
+  runner_type?: string;
 }
 
 export interface BotsListResponse {
