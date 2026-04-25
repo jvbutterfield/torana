@@ -159,6 +159,25 @@ If your wrapper subprocess emits Codex-style state-change events (`thread.starte
 
 Long-lived `codex-jsonl` wrappers can emit a synthetic `{"type":"ready"}` line on startup so torana promotes the runner to ready before the first turn.
 
+## Inlined secrets: `runner.secrets`
+
+`runner.env` values are **not** auto-redacted — they land in `torana validate` output and any log line that echoes resolved config in cleartext. Two ways to keep secrets out of those:
+
+1. **Preferred:** keep secrets out of YAML entirely with `${VAR}` indirection. The literal value lives only in your secret store / process env.
+
+2. **Fallback:** when env-var indirection isn't feasible (committed config, CI), use the sibling `runner.secrets` map. Same shape as `runner.env` (string→string, merged into the spawn env on top of `env`), but every value is registered with the log redactor at config load and printed as `<redacted:N chars>` in `torana validate`.
+
+```yaml
+runner:
+  type: claude-code
+  env:
+    CLAUDE_CONFIG_DIR: /data/state/claude-config/cato   # not sensitive
+  secrets:
+    ANTHROPIC_API_KEY: sk-ant-XXXXXXXXXXXXXXXXXXXXX     # masked in logs + validate
+```
+
+Setting the same key in both `env` and `secrets` is rejected at load time — pick one. Values shorter than 6 characters are not added to the redactor (they would cause pathological substring matches in unrelated log text); use `${VAR}` indirection in `env` for short tokens that absolutely must be redacted.
+
 ## Hybrid configurations
 
 Different bots in the same gateway can use different runners. The dispatcher routes each Telegram update to its bot's runner independently. Example: one Claude Code bot for code review and one Codex bot for prose drafting:

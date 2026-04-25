@@ -213,6 +213,14 @@ export const ClaudeCodeRunnerSchema = z
     args: z.array(z.string()).default([]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
+    /**
+     * Sibling of `env` whose values are registered with the log redactor at
+     * config load and rendered as `<redacted>` in `torana validate` output.
+     * Merged into the spawn env on top of `env` (collisions rejected at load).
+     * Prefer `${VAR}` indirection in `env` when feasible — `secrets:` is the
+     * fallback for inlined values. Optional: omit the key for non-secret runners.
+     */
+    secrets: z.record(z.string(), z.string()).optional(),
     pass_continue_flag: BoolPermissive.default(true),
   })
   .strict();
@@ -235,6 +243,8 @@ export const CodexRunnerSchema = z
     args: z.array(z.string()).default([]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
+    /** See `ClaudeCodeRunnerSchema.secrets`. */
+    secrets: z.record(z.string(), z.string()).optional(),
     /** Capture the first turn's thread_id and resume on subsequent turns. */
     pass_resume_flag: BoolPermissive.default(true),
     /**
@@ -263,6 +273,8 @@ export const CommandRunnerSchema = z
     protocol: z.enum(["jsonl-text", "claude-ndjson", "codex-jsonl"]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
+    /** See `ClaudeCodeRunnerSchema.secrets`. */
+    secrets: z.record(z.string(), z.string()).optional(),
     on_reset: z.enum(["signal", "restart"]).default("signal"),
   })
   .strict();
@@ -449,6 +461,22 @@ export const ConfigSchema = z
       }
     }
 
+    // runner.env vs runner.secrets: same key in both is ambiguous and almost
+    // always a config bug. Reject explicitly so the operator picks one.
+    for (const [idx, bot] of cfg.bots.entries()) {
+      const envKeys = Object.keys(bot.runner.env);
+      const secretKeys = new Set(Object.keys(bot.runner.secrets ?? {}));
+      for (const k of envKeys) {
+        if (secretKeys.has(k)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["bots", idx, "runner", "secrets", k],
+            message: `key '${k}' is set in both runner.env and runner.secrets — pick one`,
+          });
+        }
+      }
+    }
+
     // codex approval_mode='yolo' requires explicit acknowledge_dangerous=true.
     for (const [idx, bot] of cfg.bots.entries()) {
       if (
@@ -542,6 +570,7 @@ export type CommandRunnerConfig = z.infer<typeof CommandRunnerSchema>;
 export const SECRET_PATHS = [
   "transport.webhook.secret",
   "bots[].token",
+  "bots[].runner.secrets[*]",
   "agent_api.tokens[].secret_ref",
 ] as const;
 

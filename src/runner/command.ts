@@ -607,7 +607,12 @@ export class CommandRunner implements AgentRunner {
   }
 
   private buildEnv(): Record<string, string> {
-    const env: Record<string, string> = { ...this.config.env };
+    // runner.secrets merges on top of runner.env — same shape, but registered
+    // with the log redactor at load time. Schema rejects key collisions.
+    const env: Record<string, string> = {
+      ...this.config.env,
+      ...(this.config.secrets ?? {}),
+    };
     if (!("PATH" in env)) {
       env.PATH = process.env.PATH ?? "";
     } else if (env.PATH === "") {

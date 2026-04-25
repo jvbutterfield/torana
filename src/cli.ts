@@ -493,15 +493,22 @@ function stubClient(): AgentApiClient {
   });
 }
 
-function redactForPrint(config: unknown): unknown {
-  if (config === null || typeof config !== "object") return config;
-  if (Array.isArray(config)) return config.map(redactForPrint);
+function redactForPrint(config: unknown, parentKey?: string): unknown {
+  if (config === null || config === undefined) return config;
+  if (typeof config !== "object") return config;
+  if (Array.isArray(config)) return config.map((v) => redactForPrint(v, parentKey));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(config as Record<string, unknown>)) {
+    // bots[].runner.secrets is a flat Record<string,string> whose every value
+    // is — by definition — sensitive. Redact each leaf, not the map.
+    if (parentKey === "secrets") {
+      out[k] = typeof v === "string" && v.length > 0 ? `<redacted:${v.length} chars>` : v;
+      continue;
+    }
     if (k === "token" || k === "secret") {
       out[k] = typeof v === "string" && v.length > 0 ? `<redacted:${v.length} chars>` : v;
     } else {
-      out[k] = redactForPrint(v);
+      out[k] = redactForPrint(v, k);
     }
   }
   return out;

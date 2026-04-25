@@ -24,6 +24,8 @@ A missing `${VAR}` (no default) is a fatal load error. Numeric fields use `z.coe
 
 To inherit a specific var, reference it via `${VAR}`. To disable PATH inheritance, set `PATH: ""` explicitly. Rationale: explicit > implicit, and avoids the classic "works locally, breaks in prod because PATH differs" footgun.
 
+`runner.secrets` is a sibling of `runner.env` for **inlined sensitive values**. Same shape (string→string), merged on top of `runner.env` into the spawn env, but every value is registered with the log redactor at load time and printed as `<redacted:N chars>` in `torana validate`. Setting the same key in both `env` and `secrets` is rejected at load time. Prefer `${VAR}` indirection in `env`; use `secrets` only when env-var indirection isn't feasible. See [Inlined secrets](runners.md#inlined-secrets-runnersecrets) in the runners doc.
+
 ## Config resolution order
 
 1. `--config <path>` CLI flag

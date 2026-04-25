@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- **`runner.secrets`** — opt-in sibling of `runner.env` for inlined sensitive
+  values. Same shape (string→string), merged on top of `runner.env` into the
+  spawn environment, but every value is registered with the log redactor at
+  config load and rendered as `<redacted:N chars>` in `torana validate`
+  output. Continue to prefer `${VAR}` indirection in `env`; reach for
+  `secrets` only when env-var indirection isn't feasible (committed config,
+  CI). Setting the same key in both `env` and `secrets` is rejected at load
+  time. Closes the rc.7 P2 deferred item where `runner.env` values
+  (`ANTHROPIC_API_KEY`, DB credentials) leaked through `torana validate` and
+  any log line that echoed resolved config.
+
 ## [1.0.0-rc.6] - 2026-04-21
 
 ### Changed

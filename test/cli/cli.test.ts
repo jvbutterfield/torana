@@ -179,6 +179,31 @@ describe("CLI validate", () => {
     expect(exitCode).not.toBe(0);
     expect(stderr).toMatch(/config/);
   }, 15_000);
+
+  test("redacts runner.secrets values in validate output", async () => {
+    // Inline secrets in runner.secrets must NEVER appear in the validate
+    // output — neither the JSON config dump nor any log line. Closes the
+    // rc.7 P2 finding where ANTHROPIC_API_KEY etc. leaked from runner.env.
+    const FAKE_API_KEY = "sk-ant-fake-but-distinctive-redaction-target";
+    const FAKE_DB_PW = "hunter2-also-distinctive";
+    const cfgBody = `${MINIMAL_CONFIG(tmpDir)}
+      secrets:
+        ANTHROPIC_API_KEY: ${FAKE_API_KEY}
+        DB_PASSWORD: ${FAKE_DB_PW}
+`;
+    const cfg = writeConfig("torana.yaml", cfgBody);
+    const { stdout, stderr, exitCode } = await runCli(["validate", "--config", cfg]);
+    expect(exitCode).toBe(0);
+    expect(stdout).not.toContain(FAKE_API_KEY);
+    expect(stdout).not.toContain(FAKE_DB_PW);
+    expect(stderr).not.toContain(FAKE_API_KEY);
+    expect(stderr).not.toContain(FAKE_DB_PW);
+    // Map structure preserved with the redacted-N-chars marker so operators
+    // can still verify the keys they configured.
+    expect(stdout).toContain("ANTHROPIC_API_KEY");
+    expect(stdout).toContain(`<redacted:${FAKE_API_KEY.length} chars>`);
+    expect(stdout).toContain(`<redacted:${FAKE_DB_PW.length} chars>`);
+  }, 15_000);
 });
 
 describe("CLI migrate --dry-run", () => {
