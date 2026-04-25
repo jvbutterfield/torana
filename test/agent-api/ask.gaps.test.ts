@@ -52,13 +52,17 @@ function hash(s: string): Uint8Array {
 function tokenFor(
   secret: string,
   scopes: ("ask" | "send")[],
+  opts: { name?: string; maxConcurrent?: number } = {},
 ): ResolvedAgentApiToken {
   return {
-    name: "caller",
+    name: opts.name ?? "caller",
     secret,
     hash: hash(secret),
     bot_ids: ["bot1"],
     scopes,
+    ...(opts.maxConcurrent !== undefined
+      ? { maxConcurrentSideSessions: opts.maxConcurrent }
+      : {}),
   };
 }
 
@@ -398,6 +402,64 @@ describe("POST /v1/bots/:id/ask — 429 side_session_capacity (US-008)", () => {
     expect((await second.json()).error).toBe("side_session_capacity");
 
     // Drain the slow ask so afterEach can shut down cleanly.
+    await slow;
+  }, 20_000);
+});
+
+describe("POST /v1/bots/:id/ask — 429 token_concurrency_limit (rc.8)", () => {
+  // Per-token cap closes the gap that per-bot + global caps leave open: a
+  // token whose `bot_ids` covers many bots can otherwise hold up to
+  // max_per_bot * len(bot_ids) concurrent side-sessions and starve every
+  // other token sharing those bots. Here we set the per-token cap to 1 on
+  // a single bot — well under the per-bot cap — and confirm the second
+  // concurrent ask from the same token is rejected with the new code.
+  test("token at its concurrent cap → 429 token_concurrency_limit", async () => {
+    const secret = "tok-per-token-cap-r8x";
+    const { base, pool: poolRef } = await setup({
+      tokens: [
+        tokenFor(secret, ["ask"], {
+          name: "alpha",
+          maxConcurrent: 1,
+        }),
+      ],
+      // very-slow keeps the first turn busy for ~2s so the second request
+      // is guaranteed to land while the first is still inflight.
+      mockMode: "very-slow",
+      // Bot/global caps generous — only the per-token cap should bind.
+      maxPerBot: 4,
+      maxGlobal: 4,
+    });
+
+    const slow = fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: "first", session_id: "s-1" }),
+    });
+    // Poll for inflight=1 (not just "entry exists"): an entry can exist with
+    // inflight=0 right after release, which would let the second slip past.
+    let inflight = false;
+    for (let i = 0; i < 100 && !inflight; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+      inflight = poolRef.listForBot("bot1").some((s) => s.inflight > 0);
+    }
+    expect(inflight).toBe(true);
+
+    const second = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ text: "second", session_id: "s-2" }),
+    });
+    expect(second.status).toBe(429);
+    const body = (await second.json()) as { error: string; limit?: number };
+    expect(body.error).toBe("token_concurrency_limit");
+    expect(body.limit).toBe(1);
+
     await slow;
   }, 20_000);
 });

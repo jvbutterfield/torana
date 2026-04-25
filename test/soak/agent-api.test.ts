@@ -222,6 +222,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
         hard_ttl_ms: 86_400_000,
         max_per_bot: cfg.maxPerBot,
         max_global: cfg.maxGlobal,
+        max_per_token_default: cfg.maxPerBot,
       },
       send: {
         max_body_bytes: 10 * 1024 * 1024,

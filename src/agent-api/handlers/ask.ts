@@ -122,13 +122,27 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
       askCfg.max_timeout_ms,
     );
 
-    // 3. Acquire side session.
-    const acquire = await deps.pool.acquire(botId, body.session_id ?? null);
+    // 3. Acquire side session. Per-token cap: explicit token override falls
+    //    back to the config-wide default (schema default 8). Both are always
+    //    set in production; the `??` keeps stub tokens in tests valid.
+    const tokenLimit =
+      token.maxConcurrentSideSessions ??
+      deps.config.agent_api.side_sessions.max_per_token_default;
+    const acquire = await deps.pool.acquire(botId, body.session_id ?? null, {
+      name: token.name,
+      limit: tokenLimit,
+    });
     if (acquire.kind !== "ok") {
       await cleanupFiles(attachments.map((a) => a.path));
       switch (acquire.kind) {
         case "capacity":
           return errorResponse("side_session_capacity");
+        case "token_capacity":
+          return errorResponse(
+            "token_concurrency_limit",
+            `token '${acquire.tokenName}' is at its concurrent side-session limit (${acquire.limit})`,
+            { limit: acquire.limit },
+          );
         case "busy":
           return errorResponse("side_session_busy");
         case "runner_does_not_support_side_sessions":

@@ -54,6 +54,7 @@ function configForCaps(maxPerBot: number, maxGlobal: number): Config {
     hard_ttl_ms: 600_000,
     max_per_bot: maxPerBot,
     max_global: maxGlobal,
+    max_per_token_default: 8,
   };
   return cfg;
 }
@@ -168,6 +169,7 @@ describe("SideSessionPool: global LRU eviction across bots", () => {
       hard_ttl_ms: 600_000,
       max_per_bot: 2,
       max_global: 2,
+      max_per_token_default: 8,
     };
     let now = 1_000_000;
     const pool = new SideSessionPool({
@@ -217,6 +219,7 @@ describe("SideSessionPool: global LRU eviction across bots", () => {
       hard_ttl_ms: 600_000,
       max_per_bot: 2,
       max_global: 2,
+      max_per_token_default: 8,
     };
     const pool = new SideSessionPool({
       config: cfg,
@@ -375,6 +378,129 @@ describe("SideSessionPool: release + ephemeral auto-stop", () => {
       registry: fakeRegistry(new Map([["bot1", runner]])) as never,
     });
     expect(() => pool.release("bot1", "never-existed")).not.toThrow();
+  });
+});
+
+describe("SideSessionPool: per-token concurrency cap", () => {
+  // The per-token cap is the third dimension on top of per-bot + global caps.
+  // It exists to stop a single token whose `bot_ids` covers many bots from
+  // monopolising shared bot capacity. Tests below construct scenarios where
+  // both the per-bot and global caps have headroom but the per-token cap is
+  // the binding constraint.
+
+  function multiBotPool(
+    bots: string[],
+    opts: { maxPerBot?: number; maxGlobal?: number } = {},
+  ) {
+    const runners = new Map<string, FakeRunner>();
+    const botCfgs = bots.map((id) => {
+      const r = new FakeRunner(id);
+      runners.set(id, r);
+      return makeTestBotConfig(id);
+    });
+    const cfg = makeTestConfig(botCfgs);
+    cfg.agent_api.enabled = true;
+    cfg.agent_api.side_sessions = {
+      idle_ttl_ms: 60_000,
+      hard_ttl_ms: 600_000,
+      max_per_bot: opts.maxPerBot ?? 8,
+      max_global: opts.maxGlobal ?? 64,
+      max_per_token_default: 8,
+    };
+    const pool = new SideSessionPool({
+      config: cfg,
+      db,
+      registry: fakeRegistry(runners) as never,
+    });
+    return { pool, runners };
+  }
+
+  test("(K+1)th acquire by same token across multiple bots → token_capacity", async () => {
+    const { pool } = multiBotPool(["bot1", "bot2", "bot3"]);
+    const tokenA = { name: "alpha", limit: 3 };
+
+    // Spread 3 acquisitions across 3 different bots — well under per-bot (8)
+    // and global (64) caps, but exactly at the per-token cap (3).
+    const r1 = await pool.acquire("bot1", "a-1", tokenA);
+    expect(r1.kind).toBe("ok");
+    const r2 = await pool.acquire("bot2", "a-2", tokenA);
+    expect(r2.kind).toBe("ok");
+    const r3 = await pool.acquire("bot3", "a-3", tokenA);
+    expect(r3.kind).toBe("ok");
+    expect(pool.inflightForToken("alpha")).toBe(3);
+
+    // The 4th acquisition (any bot, any session id) must reject.
+    const r4 = await pool.acquire("bot1", "a-4", tokenA);
+    expect(r4.kind).toBe("token_capacity");
+    if (r4.kind === "token_capacity") {
+      expect(r4.tokenName).toBe("alpha");
+      expect(r4.limit).toBe(3);
+    }
+
+    // Ephemeral acquires count too.
+    const eph = await pool.acquire("bot2", null, tokenA);
+    expect(eph.kind).toBe("token_capacity");
+  });
+
+  test("a different token with its own cap is unaffected", async () => {
+    const { pool } = multiBotPool(["bot1", "bot2"]);
+    const tokenA = { name: "alpha", limit: 2 };
+    const tokenB = { name: "beta", limit: 2 };
+
+    // Saturate alpha across both shared bots.
+    expect((await pool.acquire("bot1", "a-1", tokenA)).kind).toBe("ok");
+    expect((await pool.acquire("bot2", "a-2", tokenA)).kind).toBe("ok");
+    expect((await pool.acquire("bot1", "a-3", tokenA)).kind).toBe(
+      "token_capacity",
+    );
+
+    // beta still gets its own quota even though it shares both bots.
+    expect((await pool.acquire("bot1", "b-1", tokenB)).kind).toBe("ok");
+    expect((await pool.acquire("bot2", "b-2", tokenB)).kind).toBe("ok");
+    expect(pool.inflightForToken("alpha")).toBe(2);
+    expect(pool.inflightForToken("beta")).toBe(2);
+
+    // beta's own (K+1)th still rejects.
+    expect((await pool.acquire("bot1", "b-3", tokenB)).kind).toBe(
+      "token_capacity",
+    );
+  });
+
+  test("release decrements per-token counter; freed slot allows next acquire", async () => {
+    const { pool } = multiBotPool(["bot1", "bot2"]);
+    const tokenA = { name: "alpha", limit: 1 };
+
+    const r1 = await pool.acquire("bot1", "a-1", tokenA);
+    expect(r1.kind).toBe("ok");
+    expect((await pool.acquire("bot2", "a-2", tokenA)).kind).toBe(
+      "token_capacity",
+    );
+    pool.release("bot1", "a-1");
+    expect(pool.inflightForToken("alpha")).toBe(0);
+    // After release, a fresh acquire on a different bot succeeds.
+    expect((await pool.acquire("bot2", "a-2", tokenA)).kind).toBe("ok");
+  });
+
+  test("reuse path still increments and decrements the counter", async () => {
+    const { pool } = multiBotPool(["bot1"]);
+    const tokenA = { name: "alpha", limit: 1 };
+    expect((await pool.acquire("bot1", "a-1", tokenA)).kind).toBe("ok");
+    pool.release("bot1", "a-1");
+    expect(pool.inflightForToken("alpha")).toBe(0);
+    // Reuse — entry exists with inflight=0, second acquire takes it.
+    expect((await pool.acquire("bot1", "a-1", tokenA)).kind).toBe("ok");
+    expect(pool.inflightForToken("alpha")).toBe(1);
+    // While inflight, another distinct session would cap.
+    expect((await pool.acquire("bot1", "a-2", tokenA)).kind).toBe(
+      "token_capacity",
+    );
+  });
+
+  test("acquire without tokenInfo skips per-token tracking (test backcompat)", async () => {
+    const { pool } = multiBotPool(["bot1"]);
+    expect((await pool.acquire("bot1", "x-1")).kind).toBe("ok");
+    expect((await pool.acquire("bot1", "x-2")).kind).toBe("ok");
+    expect(pool.inflightForToken("alpha")).toBe(0);
   });
 });
 

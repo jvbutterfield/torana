@@ -211,6 +211,7 @@ export async function startE2E(opts: StartE2EOptions): Promise<E2EHarness> {
         hard_ttl_ms: 86_400_000,
         max_per_bot: 4,
         max_global: 8,
+        max_per_token_default: 8,
       },
       send: {
         max_body_bytes: 100 * 1024 * 1024,

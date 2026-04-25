@@ -392,6 +392,15 @@ export const AgentApiTokenSchema = z
     secret_ref: SecretString,
     bot_ids: z.array(BotIdSchema).min(1),
     scopes: z.array(AgentApiScopeSchema).min(1),
+    /**
+     * Cap on concurrent inflight side-session acquisitions for this token,
+     * summed across every bot in `bot_ids`. When unset, falls back to
+     * `agent_api.side_sessions.max_per_token_default`. Defends against a
+     * single token whose `bot_ids` covers many bots holding up to
+     * `max_per_bot * len(bot_ids)` concurrent side-sessions and starving
+     * other tokens that share any of those bots.
+     */
+    max_concurrent_side_sessions: IntCoerce.min(1).max(512).optional(),
   })
   .strict();
 
@@ -401,6 +410,13 @@ export const AgentApiSideSessionsSchema = z
     hard_ttl_ms: IntCoerce.min(60_000).default(86_400_000),
     max_per_bot: IntCoerce.min(1).max(64).default(8),
     max_global: IntCoerce.min(1).max(512).default(64),
+    /**
+     * Default per-token concurrent side-session cap, applied to any token
+     * that does not set `max_concurrent_side_sessions` explicitly. Third
+     * dimension on top of `max_per_bot` and `max_global` — without this,
+     * a token spanning many bots could exhaust shared bot capacity.
+     */
+    max_per_token_default: IntCoerce.min(1).max(512).default(8),
   })
   .strict()
   .default({
@@ -408,6 +424,7 @@ export const AgentApiSideSessionsSchema = z
     hard_ttl_ms: 86_400_000,
     max_per_bot: 8,
     max_global: 64,
+    max_per_token_default: 8,
   });
 
 export const AgentApiSendSchema = z
@@ -464,6 +481,7 @@ export const AgentApiSchema = z
       hard_ttl_ms: 86_400_000,
       max_per_bot: 8,
       max_global: 64,
+      max_per_token_default: 8,
     },
     send: {
       max_body_bytes: 100 * 1024 * 1024,
@@ -685,6 +703,25 @@ export const ConfigSchema = z
           path: ["agent_api", "side_sessions", "max_per_bot"],
           message: "max_per_bot must be <= max_global",
         });
+      }
+      if (ss.max_per_token_default > ss.max_global) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["agent_api", "side_sessions", "max_per_token_default"],
+          message: "max_per_token_default must be <= max_global",
+        });
+      }
+      for (const [tIdx, tok] of cfg.agent_api.tokens.entries()) {
+        if (
+          tok.max_concurrent_side_sessions !== undefined &&
+          tok.max_concurrent_side_sessions > ss.max_global
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["agent_api", "tokens", tIdx, "max_concurrent_side_sessions"],
+            message: `max_concurrent_side_sessions (${tok.max_concurrent_side_sessions}) must be <= agent_api.side_sessions.max_global (${ss.max_global})`,
+          });
+        }
       }
 
       const ask = cfg.agent_api.ask;

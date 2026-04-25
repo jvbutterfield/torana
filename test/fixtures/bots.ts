@@ -98,6 +98,7 @@ export function makeTestConfig(
         hard_ttl_ms: 86_400_000,
         max_per_bot: 8,
         max_global: 64,
+        max_per_token_default: 8,
       },
       send: {
         max_body_bytes: 100 * 1024 * 1024,

@@ -20,6 +20,7 @@ export type AgentApiErrorCode =
   | "runner_does_not_support_side_sessions"
   | "side_session_capacity"
   | "side_session_busy"
+  | "token_concurrency_limit"
   | "runner_error"
   | "runner_fatal"
   | "attachment_too_large"
@@ -51,6 +52,7 @@ const STATUS_MAP: Record<AgentApiErrorCode, number> = {
   runner_does_not_support_side_sessions: 501,
   side_session_capacity: 429,
   side_session_busy: 429,
+  token_concurrency_limit: 429,
   runner_error: 500,
   runner_fatal: 503,
   attachment_too_large: 413,
@@ -146,6 +148,8 @@ function defaultMessage(code: AgentApiErrorCode): string {
       return "side-session pool is at capacity";
     case "side_session_busy":
       return "another turn is in flight on this session id";
+    case "token_concurrency_limit":
+      return "this token has reached its concurrent side-session limit";
     case "runner_error":
       return "runner reported an error";
     case "runner_fatal":

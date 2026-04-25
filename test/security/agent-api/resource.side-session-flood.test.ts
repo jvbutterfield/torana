@@ -55,6 +55,7 @@ function configForCaps(maxPerBot: number, maxGlobal: number): Config {
     hard_ttl_ms: 600_000,
     max_per_bot: maxPerBot,
     max_global: maxGlobal,
+    max_per_token_default: 8,
   };
   return cfg;
 }

@@ -44,10 +44,22 @@ export interface SideSessionPoolOptions {
 export type AcquireResult =
   | { kind: "ok"; sessionId: string; ephemeral: boolean }
   | { kind: "capacity" }
+  | { kind: "token_capacity"; tokenName: string; limit: number }
   | { kind: "busy" }
   | { kind: "runner_error"; message: string }
   | { kind: "gateway_shutting_down" }
   | { kind: "runner_does_not_support_side_sessions" };
+
+/**
+ * Per-token concurrency context passed to `acquire`. The pool enforces
+ * `inflight < limit` before incrementing, and tracks the owning token name
+ * on each entry so `release` decrements the correct counter.
+ */
+export interface AcquireTokenInfo {
+  name: string;
+  /** Resolved per-token cap; pool rejects when current inflight >= limit. */
+  limit: number;
+}
 
 export interface PoolEntrySnapshot {
   sessionId: string;
@@ -69,6 +81,13 @@ interface PoolEntry {
   inflight: number;
   state: "starting" | "ready" | "busy" | "stopping";
   stopPromise: Promise<void> | null;
+  /**
+   * Token name currently holding inflight (set on every successful acquire,
+   * cleared on release). Used to decrement the right per-token counter
+   * without the caller passing the token info into release(). Stays null on
+   * tests that don't pass tokenInfo to acquire().
+   */
+  tokenName: string | null;
 }
 
 function entryKey(botId: string, sessionId: string): string {
@@ -83,6 +102,13 @@ export class SideSessionPool {
   private clock: () => number;
   private log: Logger = logger("agent-api.pool");
   private entries = new Map<string, PoolEntry>();
+  /**
+   * Inflight side-session count per token name. Incremented on every
+   * successful acquire, decremented on release. Entries are pruned when the
+   * count hits 0 to keep the map size bounded by active tokens, not lifetime
+   * tokens.
+   */
+  private tokenInflight = new Map<string, number>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private sweepIntervalMs: number;
   private shuttingDown = false;
@@ -136,11 +162,14 @@ export class SideSessionPool {
 
   /**
    * Acquire a side-session entry. Caller MUST eventually call release(),
-   * typically in a finally block.
+   * typically in a finally block. `tokenInfo` enforces the per-token
+   * concurrency cap; production callers (ask handler) always pass it.
+   * Tests may omit it to opt out of per-token tracking.
    */
   async acquire(
     botId: string,
     sessionId: string | null,
+    tokenInfo?: AcquireTokenInfo,
   ): Promise<AcquireResult> {
     const startMs = this.clock();
     const recordOutcome = (
@@ -158,43 +187,109 @@ export class SideSessionPool {
       return { kind: "runner_does_not_support_side_sessions" };
     }
 
-    // Ephemeral path — mint a UUID and take the fresh-spawn branch.
-    if (sessionId === null) {
-      const minted = `eph-${randomUUID()}`;
-      const res = await this.spawnAndRegister(botId, minted, true);
-      if (res.kind === "ok") recordOutcome("spawn");
-      return res;
+    // Per-token cap: check + reserve the slot atomically, BEFORE any await.
+    // Without the optimistic reservation, two concurrent acquires both read
+    // inflight=0 against limit=1, both pass the check, both await spawn, and
+    // both end up incrementing past the cap. We reserve here and roll back
+    // in the failure tail below.
+    if (tokenInfo) {
+      const inflight = this.tokenInflight.get(tokenInfo.name) ?? 0;
+      if (inflight >= tokenInfo.limit) {
+        recordOutcome("capacity");
+        return {
+          kind: "token_capacity",
+          tokenName: tokenInfo.name,
+          limit: tokenInfo.limit,
+        };
+      }
+      this.tokenInflight.set(tokenInfo.name, inflight + 1);
     }
 
-    const key = entryKey(botId, sessionId);
-    const existing = this.entries.get(key);
-    if (existing) {
-      if (existing.state === "stopping") {
-        // Treat as miss — the entry is on its way out.
-        this.entries.delete(key);
-      } else {
-        if (existing.inflight > 0) {
-          recordOutcome("busy");
-          return { kind: "busy" };
+    let succeeded = false;
+    try {
+      // Ephemeral path — mint a UUID and take the fresh-spawn branch.
+      if (sessionId === null) {
+        const minted = `eph-${randomUUID()}`;
+        const res = await this.spawnAndRegister(botId, minted, true);
+        if (res.kind === "ok") {
+          succeeded = true;
+          this.markEntryToken(botId, minted, tokenInfo);
+          recordOutcome("spawn");
         }
-        existing.inflight = 1;
-        existing.lastUsedAtMs = this.clock();
-        existing.state = "busy";
-        this.db.markSideSessionState(botId, sessionId, "busy");
-        recordOutcome("reuse");
-        return { kind: "ok", sessionId, ephemeral: existing.ephemeral };
+        return res;
+      }
+
+      const key = entryKey(botId, sessionId);
+      const existing = this.entries.get(key);
+      if (existing) {
+        if (existing.state === "stopping") {
+          // Treat as miss — the entry is on its way out.
+          this.entries.delete(key);
+        } else {
+          if (existing.inflight > 0) {
+            recordOutcome("busy");
+            return { kind: "busy" };
+          }
+          existing.inflight = 1;
+          existing.lastUsedAtMs = this.clock();
+          existing.state = "busy";
+          this.db.markSideSessionState(botId, sessionId, "busy");
+          succeeded = true;
+          this.markEntryToken(botId, sessionId, tokenInfo);
+          recordOutcome("reuse");
+          return { kind: "ok", sessionId, ephemeral: existing.ephemeral };
+        }
+      }
+
+      // Miss — check caps, evict if needed, then spawn.
+      const capResult = this.ensureCapacity(botId);
+      if (capResult.kind === "err") {
+        recordOutcome("capacity");
+        return { kind: "capacity" };
+      }
+      const res = await this.spawnAndRegister(botId, sessionId, false);
+      if (res.kind === "ok") {
+        succeeded = true;
+        this.markEntryToken(botId, sessionId, tokenInfo);
+        recordOutcome("spawn");
+      }
+      return res;
+    } finally {
+      // Roll back the optimistic per-token reservation on every non-success
+      // path. release()/teardown handles the success path's eventual
+      // decrement when the caller releases.
+      if (tokenInfo && !succeeded) {
+        this.releaseTokenSlot(tokenInfo.name);
       }
     }
+  }
 
-    // Miss — check caps, evict if needed, then spawn.
-    const capResult = this.ensureCapacity(botId);
-    if (capResult.kind === "err") {
-      recordOutcome("capacity");
-      return { kind: "capacity" };
-    }
-    const res = await this.spawnAndRegister(botId, sessionId, false);
-    if (res.kind === "ok") recordOutcome("spawn");
-    return res;
+  /**
+   * Stamp `entry.tokenName` so release() knows which token to decrement.
+   * The per-token counter has already been incremented in acquire(); this
+   * call only ties the entry to the token. No-op if tokenInfo is undefined.
+   */
+  private markEntryToken(
+    botId: string,
+    sessionId: string,
+    tokenInfo: AcquireTokenInfo | undefined,
+  ): void {
+    if (!tokenInfo) return;
+    const entry = this.entries.get(entryKey(botId, sessionId));
+    if (!entry) return;
+    entry.tokenName = tokenInfo.name;
+  }
+
+  /** Decrement-or-prune helper for the per-token inflight counter. */
+  private releaseTokenSlot(tokenName: string): void {
+    const cur = this.tokenInflight.get(tokenName) ?? 0;
+    if (cur <= 1) this.tokenInflight.delete(tokenName);
+    else this.tokenInflight.set(tokenName, cur - 1);
+  }
+
+  /** Visible for tests: snapshot of per-token inflight counters. */
+  inflightForToken(tokenName: string): number {
+    return this.tokenInflight.get(tokenName) ?? 0;
   }
 
   /**
@@ -207,6 +302,10 @@ export class SideSessionPool {
     if (!entry) return; // No-op on missing — release must be crash-safe.
     entry.inflight = Math.max(0, entry.inflight - 1);
     entry.lastUsedAtMs = this.clock();
+    if (entry.tokenName !== null) {
+      this.releaseTokenSlot(entry.tokenName);
+      entry.tokenName = null;
+    }
     if (entry.state === "busy") entry.state = "ready";
     if (entry.state === "ready" && entry.inflight === 0) {
       this.db.markSideSessionState(botId, sessionId, "ready");
@@ -290,6 +389,7 @@ export class SideSessionPool {
       inflight: 1,
       state: "starting",
       stopPromise: null,
+      tokenName: null,
     };
     this.entries.set(key, entry);
     this.db.upsertSideSession({
@@ -399,6 +499,14 @@ export class SideSessionPool {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+      }
+      // If the entry was force-stopped while a token still held inflight
+      // (admin DELETE racing an ask handler), decrement here so the per-
+      // token counter can't leak past entry deletion. The handler's later
+      // release() finds no entry and is a no-op, which is correct.
+      if (entry.tokenName !== null) {
+        this.releaseTokenSlot(entry.tokenName);
+        entry.tokenName = null;
       }
       this.entries.delete(key);
       this.db.deleteSideSession(entry.botId, entry.sessionId);

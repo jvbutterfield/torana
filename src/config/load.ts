@@ -177,6 +177,14 @@ export interface ResolvedAgentApiToken {
   hash: Uint8Array;
   bot_ids: readonly string[];
   scopes: readonly ("ask" | "send")[];
+  /**
+   * Resolved per-token cap on concurrent inflight side-sessions: explicit
+   * `max_concurrent_side_sessions` from the token block when set, otherwise
+   * `agent_api.side_sessions.max_per_token_default`. Optional only because
+   * test fixtures may construct stub tokens by hand; in production this is
+   * always populated by the loader.
+   */
+  maxConcurrentSideSessions?: number;
 }
 
 export interface LoadedConfig {
@@ -314,6 +322,7 @@ function resolveAgentApiTokens(
 
   if (!config.agent_api.tokens.length) return out;
 
+  const perTokenDefault = config.agent_api.side_sessions.max_per_token_default;
   for (const tok of config.agent_api.tokens) {
     const hash = createHash("sha256").update(tok.secret_ref, "utf8").digest();
     out.push({
@@ -322,6 +331,8 @@ function resolveAgentApiTokens(
       hash: new Uint8Array(hash),
       bot_ids: [...tok.bot_ids],
       scopes: [...tok.scopes],
+      maxConcurrentSideSessions:
+        tok.max_concurrent_side_sessions ?? perTokenDefault,
     });
     // Literal-token nudge: look for a `secret_ref: <not-${...}>` pattern
     // for this token's name in the raw source. The YAML is already
