@@ -1,0 +1,12 @@
+# torana examples are templates with ${VAR} interpolation that the
+# config loader resolves before yaml.load runs. prettier-yaml parses
+# the raw text and chokes on `[${VAR}]` inside flow sequences (it's
+# not valid YAML pre-interpolation). Skip these files — they're not
+# meant to be parseable as standalone YAML, only as input to
+# torana's interpolation-first loader.
+examples/**/torana.yaml
+
+# Build output + lockfiles + generated artifacts.
+dist/
+node_modules/
+bun.lock
