@@ -552,7 +552,7 @@ describe("sweepExpiredAttachments", () => {
     );
     const turnId = db.createTurn("alpha", 1, inboundId!, attachmentPaths);
     // Mark completed with a backdated timestamp.
-    db.query(
+    db._unsafeQuery(
       `UPDATE turns SET status='completed',
                        completed_at=datetime('now', '-' || ? || ' seconds')
        WHERE id = ?`,
@@ -585,11 +585,11 @@ describe("sweepExpiredAttachments", () => {
 
     // attachment_paths_json is cleared only for the old turn.
     const oldRow = db
-      .query("SELECT attachment_paths_json FROM turns WHERE id=?")
+      ._unsafeQuery("SELECT attachment_paths_json FROM turns WHERE id=?")
       .get(oldTurn) as { attachment_paths_json: string | null } | null;
     expect(oldRow?.attachment_paths_json).toBeNull();
     const recentRow = db
-      .query("SELECT attachment_paths_json FROM turns WHERE id=?")
+      ._unsafeQuery("SELECT attachment_paths_json FROM turns WHERE id=?")
       .get(recentTurn) as { attachment_paths_json: string | null } | null;
     expect(recentRow?.attachment_paths_json).not.toBeNull();
   });
@@ -616,7 +616,7 @@ describe("sweepExpiredAttachments", () => {
 
     const inboundId = db.insertUpdate("alpha", 1, 1, 1, "42", "{}", "enqueued");
     const turnId = db.createTurn("alpha", 1, inboundId!, [p]);
-    db.query("UPDATE turns SET status='running' WHERE id=?").run(turnId);
+    db._unsafeQuery("UPDATE turns SET status='running' WHERE id=?").run(turnId);
     // No completed_at — must not be swept.
 
     const result = await sweepExpiredAttachments(db, tmpDir, 100);
@@ -627,7 +627,7 @@ describe("sweepExpiredAttachments", () => {
   test("tolerates malformed attachment_paths_json without throwing (and still clears it)", async () => {
     const inboundId = db.insertUpdate("alpha", 1, 1, 1, "42", "{}", "enqueued");
     const turnId = db.createTurn("alpha", 1, inboundId!, []);
-    db.query(
+    db._unsafeQuery(
       `UPDATE turns SET status='completed',
                        completed_at=datetime('now', '-200 seconds'),
                        attachment_paths_json='{not json'
@@ -638,7 +638,7 @@ describe("sweepExpiredAttachments", () => {
     expect(result.turns).toBe(1);
     expect(result.files).toBe(0);
     const row = db
-      .query("SELECT attachment_paths_json FROM turns WHERE id=?")
+      ._unsafeQuery("SELECT attachment_paths_json FROM turns WHERE id=?")
       .get(turnId) as { attachment_paths_json: string | null } | null;
     expect(row?.attachment_paths_json).toBeNull();
   });
@@ -658,7 +658,7 @@ describe("sweepExpiredAttachments", () => {
           "enqueued",
         );
         const turnId = db.createTurn("alpha", 1, inboundId!, ["dummy"]);
-        db.query(
+        db._unsafeQuery(
           `UPDATE turns SET status='completed',
                            completed_at=datetime('now', '-500 seconds')
            WHERE id=?`,

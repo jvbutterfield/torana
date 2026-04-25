@@ -252,7 +252,7 @@ describe("gateway-db: getTurnText telegram-parity", () => {
     );
     const inboundId = (
       db
-        .query("SELECT id FROM inbound_updates WHERE telegram_update_id = 42")
+        ._unsafeQuery("SELECT id FROM inbound_updates WHERE telegram_update_id = 42")
         .get() as { id: number }
     ).id;
     const turnId = db.createTurn("bot1", 100, inboundId, []);

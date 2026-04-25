@@ -242,7 +242,7 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const row = harness.db.getOutboxRow(outboxId);
     expect(row?.status).toBe("retrying");
     const raw = harness.db
-      .query(
+      ._unsafeQuery(
         "SELECT attempt_count, next_attempt_at, last_error FROM outbox WHERE id = ?",
       )
       .get(outboxId) as {
@@ -480,7 +480,7 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const id = outbox.queueSend(turnId, "alpha", 111, "hi");
     // Manually set next_attempt_at to a future time and status=retrying.
     harness.db
-      .query(
+      ._unsafeQuery(
         "UPDATE outbox SET status='retrying', next_attempt_at=datetime('now','+1 hour') WHERE id=?",
       )
       .run(id);
@@ -531,20 +531,20 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     // Capture next_attempt_at after attempt 1 (rolls to retrying w/ +10s).
     await outbox.drain(100);
     const r1 = harness.db
-      .query("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r1.attempt_count).toBe(1);
     const t1 = new Date(r1.next_attempt_at + "Z").getTime();
 
     // Force the row eligible again by rewinding next_attempt_at, then drain.
     harness.db
-      .query(
+      ._unsafeQuery(
         "UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?",
       )
       .run(id);
     await outbox.drain(100);
     const r2 = harness.db
-      .query("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r2.attempt_count).toBe(2);
     // Attempt 2: backoff = 10s * 2^1 = 20s. Should be ~10s further than attempt 1.
@@ -553,13 +553,13 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
 
     // Attempt 3: backoff = 10s * 2^2 = 40s.
     harness.db
-      .query(
+      ._unsafeQuery(
         "UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?",
       )
       .run(id);
     await outbox.drain(100);
     const r3 = harness.db
-      .query("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r3.attempt_count).toBe(3);
     const t3 = new Date(r3.next_attempt_at + "Z").getTime();

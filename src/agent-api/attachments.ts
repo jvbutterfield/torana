@@ -419,11 +419,7 @@ export async function sweepUnreferencedAgentApiFiles(
 }
 
 function loadReferencedAttachmentPaths(db: GatewayDB): Set<string> {
-  const rows = db
-    .query(
-      "SELECT attachment_paths_json FROM turns WHERE attachment_paths_json IS NOT NULL",
-    )
-    .all() as Array<{ attachment_paths_json: string }>;
+  const rows = db.listTurnAttachmentRows();
   const set = new Set<string>();
   for (const row of rows) {
     try {

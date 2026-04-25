@@ -381,7 +381,7 @@ describe("GET /v1/turns/:id — additional status branches (US-010)", () => {
     });
     // Force status=interrupted with error_text=NULL via raw SQL — exercises
     // the `?? "interrupted_by_gateway_restart"` fallback in handlers/turns.ts.
-    db.query(
+    db._unsafeQuery(
       "UPDATE turns SET status = 'interrupted', completed_at = datetime('now'), error_text = NULL WHERE id = ?",
     ).run(turnId);
 

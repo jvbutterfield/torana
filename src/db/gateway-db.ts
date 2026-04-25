@@ -83,7 +83,9 @@ export class GatewayDB {
     allocateSyntheticInbound: Statement;
     upsertUserChat: Statement;
     getLastChatForUser: Statement;
+    getUserIdForChat: Statement;
     listUserChatsByBot: Statement;
+    listTurnAttachmentRows: Statement;
     getIdempotencyTurn: Statement;
     insertIdempotency: Statement;
     sweepIdempotency: Statement;
@@ -118,8 +120,15 @@ export class GatewayDB {
     this._db.exec(sql);
   }
 
-  /** Prepare a raw statement — used by tests to assert DB state. */
-  query(sql: string): Statement {
+  /**
+   * Raw `prepare()` escape hatch. Tests use it to assert DB state and to
+   * backdate timestamps that no production helper would expose. Never call
+   * this from production code — add a typed helper above instead. The
+   * leading underscore + "unsafe" prefix is the warning at every call site:
+   * the SQL is unparameterized at the API boundary, so any caller that
+   * interpolates user-controlled data here introduces SQL injection.
+   */
+  _unsafeQuery(sql: string): Statement {
     return this._db.prepare(sql);
   }
 
@@ -287,8 +296,14 @@ export class GatewayDB {
       getLastChatForUser: d.prepare(
         "SELECT chat_id FROM user_chats WHERE bot_id = ? AND telegram_user_id = ?",
       ),
+      getUserIdForChat: d.prepare(
+        "SELECT telegram_user_id FROM user_chats WHERE bot_id = ? AND chat_id = ? LIMIT 1",
+      ),
       listUserChatsByBot: d.prepare(
         "SELECT chat_id FROM user_chats WHERE bot_id = ?",
+      ),
+      listTurnAttachmentRows: d.prepare(
+        "SELECT attachment_paths_json FROM turns WHERE attachment_paths_json IS NOT NULL",
       ),
 
       getIdempotencyTurn: d.prepare(
@@ -841,9 +856,34 @@ export class GatewayDB {
     } | null;
   }
 
+  /**
+   * Inverse of {@link getLastChatForUser}: given a (bot_id, chat_id),
+   * return the most-recently-seen telegram_user_id for that chat. Used by
+   * the agent-API `send` ACL re-check when the caller passed chat_id only.
+   */
+  getUserIdForChat(botId: BotId, chatId: number): string | null {
+    const row = this.stmts.getUserIdForChat.get(botId, chatId) as
+      | { telegram_user_id: string }
+      | null;
+    return row?.telegram_user_id ?? null;
+  }
+
   listUserChatsByBot(botId: BotId): Array<{ chat_id: number }> {
     return this.stmts.listUserChatsByBot.all(botId) as Array<{
       chat_id: number;
+    }>;
+  }
+
+  /**
+   * Every turn that still has a non-null attachment_paths_json blob.
+   * Used by the agent-API attachment GC to compute the live-set of
+   * referenced files before sweeping orphans. Returns the raw JSON; the
+   * caller does the parse + flatten so a malformed row doesn't poison
+   * the whole sweep.
+   */
+  listTurnAttachmentRows(): Array<{ attachment_paths_json: string }> {
+    return this.stmts.listTurnAttachmentRows.all() as Array<{
+      attachment_paths_json: string;
     }>;
   }
 

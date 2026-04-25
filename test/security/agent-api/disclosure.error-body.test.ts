@@ -146,7 +146,7 @@ describe("§12.5.6 disclosure.error-body", () => {
     // insertSendTurnRow will then raise `SQLiteError: no such table: turns`
     // — exactly the kind of schema-leaking exception text we want to make
     // sure the handler does NOT echo into the response.
-    h.db.query("DROP TABLE turns").run();
+    h.db._unsafeQuery("DROP TABLE turns").run();
 
     const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
       method: "POST",

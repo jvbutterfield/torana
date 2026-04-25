@@ -260,12 +260,8 @@ function findUserForChat(
   botId: string,
   chatId: number,
 ): number | null {
-  const row = db
-    .query(
-      "SELECT telegram_user_id FROM user_chats WHERE bot_id = ? AND chat_id = ? LIMIT 1",
-    )
-    .get(botId, chatId) as { telegram_user_id: string } | null;
-  if (!row) return null;
-  const n = Number(row.telegram_user_id);
+  const userId = db.getUserIdForChat(botId, chatId);
+  if (userId === null) return null;
+  const n = Number(userId);
   return Number.isFinite(n) ? n : null;
 }

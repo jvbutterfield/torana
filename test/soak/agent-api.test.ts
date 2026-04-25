@@ -299,18 +299,18 @@ async function takeSample(h: Harness, startMs: number): Promise<Sample> {
   const mem = process.memoryUsage();
   const fdCount = await countFds(process.pid);
   const idempotencyRows = (
-    h.db.query("SELECT COUNT(*) AS n FROM agent_api_idempotency").get() as {
-      n: number;
-    }
+    h.db
+      ._unsafeQuery("SELECT COUNT(*) AS n FROM agent_api_idempotency")
+      .get() as { n: number }
   ).n;
   const sideSessionRowsAll = (
-    h.db.query("SELECT COUNT(*) AS n FROM side_sessions").get() as {
+    h.db._unsafeQuery("SELECT COUNT(*) AS n FROM side_sessions").get() as {
       n: number;
     }
   ).n;
   const sideSessionRowsLive = (
     h.db
-      .query(
+      ._unsafeQuery(
         "SELECT COUNT(*) AS n FROM side_sessions WHERE state != 'stopping'",
       )
       .get() as { n: number }
@@ -705,7 +705,9 @@ async function runSoak(): Promise<Report> {
   // Shutdown sequence with orphan-row snapshot in between.
   await h.gateway.shutdown("soak-teardown");
   const orphanRows = (
-    h.db.query("SELECT COUNT(*) AS n FROM side_sessions").get() as { n: number }
+    h.db
+      ._unsafeQuery("SELECT COUNT(*) AS n FROM side_sessions")
+      .get() as { n: number }
   ).n;
   h.db.close();
   await h.fake.stop();
