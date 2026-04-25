@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+- **Agent API: `GET /v1/turns/:turn_id` 404 paths take a uniform DB
+  round-trip.** Previously a malformed (non-integer) turn id was
+  rejected before the DB lookup, while a valid-integer-but-not-yours id
+  paid for the lookup + permission check. The two branches were
+  distinguishable via response timing, leaking whether a guessed id was
+  syntactically plausible against the caller's token. The handler now
+  always issues the DB query (non-integer / out-of-range ids coerce to
+  a sentinel that misses cleanly), so the timing profile is uniform
+  across malformed, out-of-range, and valid-but-not-yours.
+
 ## [1.0.0-rc.6] - 2026-04-21
 
 ### Changed
@@ -88,11 +100,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `TORANA_TOKEN` env, and named profiles (see below). Stable exit codes
   (0/1/2/3/4/5/6/7) for scripting. See [docs/cli.md](docs/cli.md).
 - **CLI profile store.** `torana config init | add-profile | list-profiles |
-  remove-profile | show` manages a TOML file at
+remove-profile | show` manages a TOML file at
   `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600). Every agent-api
   subcommand resolves credentials with the precedence
   `flag > env > --profile NAME > default profile`. `torana doctor
-  --profile NAME` runs the R001..R003 remote probes against the resolved
+--profile NAME` runs the R001..R003 remote probes against the resolved
   server.
 - **`--file @-` on `torana ask` / `torana inject`.** Reads attachment bytes
   from stdin with magic-byte MIME detection (PNG, JPEG, GIF, WebP, PDF;
@@ -100,7 +112,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a second `@-` on the same call is a usage error.
 - **Skills + Codex plugin.** `skills/torana-ask/SKILL.md` and
   `skills/torana-inject/SKILL.md` ship with the package. `torana skills
-  install --host=claude|codex` copies them into
+install --host=claude|codex` copies them into
   `$CLAUDE_CONFIG_DIR/skills` / `$XDG_DATA_HOME/agents/skills` (default
   refuses on divergence; `--force` overwrites). `codex-plugin/` contains
   a manifest + marketplace.json entry for one-line Codex install; a
