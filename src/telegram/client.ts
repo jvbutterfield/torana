@@ -8,6 +8,12 @@ export interface TelegramApiError {
   ok: false;
   error_code: number;
   description: string;
+  /**
+   * Telegram returns this on 429 alongside the HTTP `Retry-After` header,
+   * giving the cooldown in seconds. We surface whichever is present (header
+   * preferred when both are set) on `TelegramError.retryAfterMs`.
+   */
+  parameters?: { retry_after?: number; migrate_to_chat_id?: number };
 }
 
 export interface TelegramApiOk<T> {
@@ -18,14 +24,28 @@ export interface TelegramApiOk<T> {
 export type TelegramApiResult<T> = TelegramApiOk<T> | TelegramApiError;
 
 export class TelegramError extends Error {
+  /**
+   * Cooldown the server asked us to honor before retrying, in milliseconds.
+   * Populated from HTTP `Retry-After` (seconds) or, as a fallback, from the
+   * Telegram error envelope's `parameters.retry_after`. Set only on 429
+   * (and on 5xx if Telegram included a `Retry-After`); otherwise undefined.
+   *
+   * Callers (outbox, polling) should sleep at least this long before
+   * retrying. Hammering Telegram during its declared cooldown extends the
+   * throttle and amplifies the self-DoS surface.
+   */
+  public readonly retryAfterMs: number | undefined;
+
   constructor(
     public readonly method: string,
     public readonly httpStatus: number,
     public readonly errorCode: number | undefined,
     public readonly description: string,
+    retryAfterMs?: number,
   ) {
     super(`${method} failed (${httpStatus}): ${description}`);
     this.name = "TelegramError";
+    this.retryAfterMs = retryAfterMs;
   }
 
   /** True for HTTP errors we consider worth retrying (5xx, 429, network). */
@@ -41,6 +61,51 @@ export class TelegramError extends Error {
   }
 }
 
+/**
+ * Hard cap on a single Telegram API request. Telegram normally responds in
+ * sub-second time; 30s comfortably covers tail latency without letting a
+ * stuck TCP connection wedge the dispatcher (which is the failure mode F4
+ * from the rc.7 review). `getUpdates` overrides via its own long-poll
+ * window — see GET_UPDATES_TIMEOUT_BUFFER_MS.
+ */
+const DEFAULT_API_TIMEOUT_MS = 30_000;
+
+/**
+ * Padding on top of the long-poll `timeout` parameter for getUpdates. Bun's
+ * fetch() needs to see the body finish; we give Telegram an extra 5s
+ * beyond its declared long-poll deadline before aborting.
+ */
+const GET_UPDATES_TIMEOUT_BUFFER_MS = 5_000;
+
+/**
+ * Parse a Telegram cooldown signal into milliseconds. Looks first at the
+ * HTTP `Retry-After` header (seconds, per RFC 9110), then falls back to
+ * the JSON envelope's `parameters.retry_after`. Returns undefined when
+ * neither is present or both are non-numeric.
+ *
+ * Negative or zero values are treated as missing — Telegram occasionally
+ * returns `retry_after: 0` on flaky 5xx, which would otherwise have us
+ * skip the natural backoff entirely.
+ */
+function parseRetryAfter(
+  resp: Response | null,
+  envelope: { parameters?: { retry_after?: number } } | null,
+): number | undefined {
+  const headerSecs = Number(resp?.headers.get("retry-after"));
+  if (Number.isFinite(headerSecs) && headerSecs > 0) {
+    return Math.round(headerSecs * 1000);
+  }
+  const envelopeSecs = envelope?.parameters?.retry_after;
+  if (
+    typeof envelopeSecs === "number" &&
+    Number.isFinite(envelopeSecs) &&
+    envelopeSecs > 0
+  ) {
+    return Math.round(envelopeSecs * 1000);
+  }
+  return undefined;
+}
+
 export interface TelegramClientOptions {
   botId: BotId;
   token: string;
@@ -50,7 +115,13 @@ export interface TelegramClientOptions {
 
 export type SendResult =
   | { ok: true; messageId: number }
-  | { ok: false; retriable: boolean; description: string };
+  | {
+      ok: false;
+      retriable: boolean;
+      description: string;
+      /** Server-asked cooldown in ms, surfaced from 429 responses. */
+      retryAfterMs?: number;
+    };
 
 export type EditResult =
   | { ok: true }
@@ -59,6 +130,8 @@ export type EditResult =
       retriable: boolean;
       notModified: boolean;
       description: string;
+      /** Server-asked cooldown in ms, surfaced from 429 responses. */
+      retryAfterMs?: number;
     };
 
 /**
@@ -92,6 +165,10 @@ export class TelegramClient {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: body ? JSON.stringify(body) : undefined,
+        // Bound a single request so a stuck TCP connection cannot wedge
+        // the dispatcher. Network errors (including timeouts) surface as
+        // httpStatus=0 + isRetriable=true.
+        signal: AbortSignal.timeout(DEFAULT_API_TIMEOUT_MS),
       });
     } catch (err) {
       throw new TelegramError(method, 0, undefined, String(err));
@@ -100,11 +177,14 @@ export class TelegramClient {
     try {
       data = (await resp.json()) as TelegramApiResult<T>;
     } catch (err) {
+      // Non-JSON path: still surface a Retry-After if Telegram set one
+      // (e.g. on a CDN-side 429 page).
       throw new TelegramError(
         method,
         resp.status,
         undefined,
         `non-JSON response: ${String(err)}`,
+        parseRetryAfter(resp, null),
       );
     }
     if (!data.ok) {
@@ -113,6 +193,7 @@ export class TelegramClient {
         resp.status,
         data.error_code,
         data.description,
+        parseRetryAfter(resp, data),
       );
     }
     return data.result;
@@ -183,13 +264,16 @@ export class TelegramClient {
       return { ok: true, messageId: result.message_id };
     } catch (err) {
       const retriable = err instanceof TelegramError ? err.isRetriable : true;
+      const retryAfterMs =
+        err instanceof TelegramError ? err.retryAfterMs : undefined;
       const description = err instanceof Error ? err.message : String(err);
       log.warn("sendMessage failed", {
         bot_id: this.botId,
         chat_id: chatId,
         error: description,
+        retry_after_ms: retryAfterMs,
       });
-      return { ok: false, retriable, description };
+      return { ok: false, retriable, description, retryAfterMs };
     }
   }
 
@@ -217,12 +301,15 @@ export class TelegramClient {
       const notModified = /message is not modified/i.test(description);
       const retriable =
         !notModified && (err instanceof TelegramError ? err.isRetriable : true);
+      const retryAfterMs =
+        err instanceof TelegramError ? err.retryAfterMs : undefined;
       log.debug("editMessageText failed", {
         bot_id: this.botId,
         not_modified: notModified,
         error: description,
+        retry_after_ms: retryAfterMs,
       });
-      return { ok: false, retriable, notModified, description };
+      return { ok: false, retriable, notModified, description, retryAfterMs };
     }
   }
 
@@ -269,13 +356,23 @@ export class TelegramClient {
     if (opts.offset !== undefined) body.offset = opts.offset;
     if (opts.allowedUpdates) body.allowed_updates = opts.allowedUpdates;
 
+    // Combine the caller's shutdown signal with a watchdog that fires
+    // after the long-poll deadline + a small buffer. AbortSignal.any
+    // honors whichever fires first.
+    const watchdog = AbortSignal.timeout(
+      opts.timeoutSecs * 1000 + GET_UPDATES_TIMEOUT_BUFFER_MS,
+    );
+    const signal = opts.signal
+      ? AbortSignal.any([opts.signal, watchdog])
+      : watchdog;
+
     let resp: Response;
     try {
       resp = await this.fetchImpl(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: opts.signal,
+        signal,
       });
     } catch (err) {
       throw new TelegramError("getUpdates", 0, undefined, String(err));
@@ -287,6 +384,7 @@ export class TelegramClient {
         resp.status,
         data.error_code,
         data.description,
+        parseRetryAfter(resp, data),
       );
     }
     return data.result;

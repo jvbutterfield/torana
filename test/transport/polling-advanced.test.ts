@@ -364,7 +364,15 @@ describe("PollingTransport — update delivery", () => {
     expect(db.getBotState("alpha")?.last_update_id).toBe(7);
   });
 
-  test("update handler throwing doesn't abort the loop; next updates still processed", async () => {
+  test("update handler throwing stops batch processing and holds the offset so Telegram redelivers", async () => {
+    // The previous behavior continued the for-loop and advanced the
+    // offset to max(update_id) even when an update handler threw,
+    // silently losing the failing update (the dedup ledger never wrote
+    // its row, so Telegram wouldn't redeliver). The fix: on first
+    // failure, stop processing the rest of the batch AND skip the
+    // offset bump — Telegram will redeliver from the failing id on the
+    // next poll, and a transient cause (sqlite-locked, disk-full, etc.)
+    // gets a real retry.
     const fetchImpl = scriptedFetch([
       okUpdates([
         {
@@ -398,9 +406,11 @@ describe("PollingTransport — update delivery", () => {
     await new Promise((r) => setTimeout(r, 200));
     await transport.stop();
 
-    expect(seen).toContain(1);
-    expect(seen).toContain(2);
-    // Offset still advanced because loop continued.
-    expect(db.getBotState("alpha")?.last_update_id).toBe(2);
+    // The failing update is still observed once (the handler ran and
+    // threw); update 2 is NOT processed in this batch — Telegram will
+    // redeliver from id 1 on the next poll.
+    expect(seen).toEqual([1]);
+    // Offset is held back so the failing id is redelivered.
+    expect(db.getBotState("alpha")?.last_update_id ?? 0).toBe(0);
   });
 });

@@ -7,6 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import { logger } from "../log.js";
 import type { BotId, Config } from "../config/schema.js";
 import type { TelegramClient } from "../telegram/client.js";
+import { TelegramError } from "../telegram/client.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { AlertManager } from "../alerts.js";
 import type {
@@ -89,6 +90,25 @@ export class WebhookTransport implements Transport {
     );
 
     const allowedUpdates = this.config.transport.allowed_updates;
+
+    /**
+     * Classify a setWebhook failure as transient (retry on next start) or
+     * permanent (disable the bot until ops intervene). Pre-fix behavior
+     * was to disable on every failure, which on a startup race against a
+     * Telegram-side 429 / 5xx left bots requiring manual re-enable. The
+     * fix mirrors the polling loop's auth-vs-transient classification:
+     * 401/403 (auth, permanent), 4xx other than 429 (caller error,
+     * permanent), 429/5xx/network (transient — log and let the next
+     * start retry).
+     */
+    const isTransient = (err: unknown): boolean => {
+      if (!(err instanceof TelegramError)) return true; // network / unknown
+      if (err.httpStatus === 0) return true; // network
+      if (err.httpStatus === 429) return true;
+      if (err.httpStatus >= 500) return true;
+      return false;
+    };
+
     const registerOne = async (
       botId: BotId,
       client: TelegramClient,
@@ -106,8 +126,27 @@ export class WebhookTransport implements Transport {
         await client.setWebhook(target, this.secret, allowedUpdates);
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
-        log.error("setWebhook failed", { bot_id: botId, error: reason });
-        this.db.setBotDisabled(botId, `setWebhook failed: ${reason}`);
+        const retryAfterMs =
+          err instanceof TelegramError ? err.retryAfterMs : undefined;
+        if (isTransient(err)) {
+          // Transient — leave the bot enabled so the next gateway start
+          // retries setWebhook. No webhook is registered until that
+          // succeeds, but inbound updates aren't lost: Telegram queues
+          // them for delivery once the webhook is set, subject to its
+          // own retention.
+          log.warn("setWebhook failed transiently — will retry next start", {
+            bot_id: botId,
+            error: reason,
+            retry_after_ms: retryAfterMs,
+          });
+        } else {
+          // Permanent — disable the bot so the operator notices.
+          log.error("setWebhook failed permanently — disabling bot", {
+            bot_id: botId,
+            error: reason,
+          });
+          this.db.setBotDisabled(botId, `setWebhook failed: ${reason}`);
+        }
         if (this.alerts) void this.alerts.webhookSetFailed(botId, reason);
       }
     };
