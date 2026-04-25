@@ -2,7 +2,7 @@ import { logger } from "./log.js";
 import { nextBackoffMs } from "./backoff.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { GatewayDB } from "./db/gateway-db.js";
-import type { TelegramClient } from "./telegram/client.js";
+import type { TelegramClient, EditResult } from "./telegram/client.js";
 import type { Metrics } from "./metrics.js";
 import type { AlertManager } from "./alerts.js";
 import { markdownToTelegramHtml } from "./format.js";
@@ -31,7 +31,13 @@ export class OutboxProcessor {
   private alerts: AlertManager | null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private sendCallbacks = new Map<number, SendCallback>();
-  private processing = false;
+  /**
+   * Per-bot reentrancy guard. Replaces the previous global `processing`
+   * mutex so a 429 / slow Telegram response on bot A's queue cannot
+   * head-of-line block bot B's queue. Within a single bot the queue is
+   * still serial (preserves message ordering inside a chat).
+   */
+  private processingBots = new Set<BotId>();
   private inFlightGraceSecs: number;
 
   constructor(
@@ -153,30 +159,70 @@ export class OutboxProcessor {
     );
   }
 
+  /**
+   * Best-effort streaming edit. Returns the EditResult so callers can
+   * observe 429 / Retry-After signals (the streaming path uses this to
+   * pause its flush cadence — see StreamManager.flush). On exceptions or
+   * missing client, returns a synthesised retriable failure rather than
+   * throwing, preserving the historical "fire and forget" contract for
+   * non-rate-limit-aware callers.
+   */
   async fireAndForgetEdit(
     botId: BotId,
     chatId: number,
     messageId: number,
     text: string,
-  ): Promise<void> {
+  ): Promise<EditResult> {
     const client = this.clients.get(botId);
-    if (!client) return;
-    await client
-      .editMessageText(chatId, messageId, text)
-      .catch(() => undefined);
+    if (!client) {
+      return {
+        ok: false,
+        retriable: false,
+        notModified: false,
+        description: "no telegram client",
+      };
+    }
+    try {
+      return await client.editMessageText(chatId, messageId, text);
+    } catch (err) {
+      return {
+        ok: false,
+        retriable: true,
+        notModified: false,
+        description: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   private async processPending(): Promise<void> {
-    if (this.processing) return;
-    this.processing = true;
-    try {
-      const rows = this.db.getPendingOutbox();
-      for (const row of rows) {
-        await this.processOne(row);
-      }
-    } finally {
-      this.processing = false;
+    const rows = this.db.getPendingOutbox();
+    if (rows.length === 0) return;
+
+    // Group by bot_id. Each bot's queue is processed serially (preserves
+    // intra-chat ordering) but bots run concurrently, so a 429 on bot A
+    // doesn't head-of-line block bot B. Per-bot reentrancy is guarded
+    // via processingBots so a slow bot can't be picked up twice if the
+    // 500ms timer fires while it's still draining.
+    const byBot = new Map<BotId, typeof rows>();
+    for (const row of rows) {
+      const list = byBot.get(row.bot_id);
+      if (list) list.push(row);
+      else byBot.set(row.bot_id, [row]);
     }
+
+    await Promise.all(
+      [...byBot.entries()].map(async ([botId, botRows]) => {
+        if (this.processingBots.has(botId)) return;
+        this.processingBots.add(botId);
+        try {
+          for (const row of botRows) {
+            await this.processOne(row);
+          }
+        } finally {
+          this.processingBots.delete(botId);
+        }
+      }),
+    );
   }
 
   private async processOne(row: {
@@ -224,7 +270,7 @@ export class OutboxProcessor {
         } else if (!result.retriable) {
           this.db.markOutboxFailed(row.id, result.description);
         } else {
-          this.handleFailure(row, result.description);
+          this.handleFailure(row, result.description, result.retryAfterMs);
         }
       } else if (row.kind === "edit") {
         if (!row.telegram_message_id) {
@@ -253,7 +299,7 @@ export class OutboxProcessor {
         } else if (!result.retriable) {
           this.db.markOutboxFailed(row.id, result.description);
         } else {
-          this.handleFailure(row, result.description);
+          this.handleFailure(row, result.description, result.retryAfterMs);
         }
       }
     } catch (err) {
@@ -264,7 +310,40 @@ export class OutboxProcessor {
   private handleFailure(
     row: { id: number; attempt_count: number; kind?: string; bot_id?: BotId },
     error: string,
+    retryAfterMs?: number,
   ): void {
+    if (row.bot_id) {
+      const counter =
+        row.kind === "edit"
+          ? ("telegram_edit_failures" as const)
+          : ("telegram_send_failures" as const);
+      this.metrics.inc(row.bot_id, counter);
+    }
+
+    // Retry-After waits don't count against attempt_count. Otherwise a
+    // cooperative attacker who keeps a chat throttled for longer than
+    // (max_attempts × backoff_cap) would dead-letter legitimate replies
+    // and trigger an operator alert that wasn't actually torana's fault.
+    // Cap the cooldown at 5 minutes — Telegram's documented per-chat
+    // limits don't exceed this, but we belt-and-braces to bound a
+    // potentially-malicious server response.
+    if (retryAfterMs !== undefined && retryAfterMs > 0) {
+      const cappedMs = Math.min(retryAfterMs, 5 * 60_000);
+      const nextAttempt = new Date(Date.now() + cappedMs)
+        .toISOString()
+        .slice(0, 19)
+        .replace("T", " ");
+      log.warn("outbox delivery throttled by Telegram; honoring Retry-After", {
+        id: row.id,
+        attempt: row.attempt_count,
+        retry_after_ms: retryAfterMs,
+        next_attempt_at: nextAttempt,
+        error,
+      });
+      this.db.markOutboxRateLimited(row.id, error, nextAttempt);
+      return;
+    }
+
     const backoff = nextBackoffMs(
       row.attempt_count,
       this.config.outbox.retry_base_ms,
@@ -278,14 +357,6 @@ export class OutboxProcessor {
       .toISOString()
       .slice(0, 19)
       .replace("T", " ");
-
-    if (row.bot_id) {
-      const counter =
-        row.kind === "edit"
-          ? ("telegram_edit_failures" as const)
-          : ("telegram_send_failures" as const);
-      this.metrics.inc(row.bot_id, counter);
-    }
 
     const nextAttemptCount = row.attempt_count + 1;
     const willDeadLetter = nextAttemptCount >= this.config.outbox.max_attempts;

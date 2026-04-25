@@ -59,6 +59,7 @@ export class GatewayDB {
     markOutboxSent: Statement;
     markOutboxFailed: Statement;
     markOutboxRetryOrFail: Statement;
+    markOutboxRateLimited: Statement;
     getPendingOutbox: Statement;
     getInFlightOutbox: Statement;
     getOutboxRow: Statement;
@@ -208,6 +209,19 @@ export class GatewayDB {
           status = CASE WHEN attempt_count + 1 >= ? THEN 'dead' ELSE 'retrying' END,
           attempt_count = attempt_count + 1,
           next_attempt_at = CASE WHEN attempt_count + 1 >= ? THEN next_attempt_at ELSE ? END,
+          last_error = ?
+        WHERE id = ?
+      `),
+      // Used when Telegram returned 429 with Retry-After. Schedules the
+      // retry at the server-asked time but does NOT bump attempt_count —
+      // a cooperative attacker who keeps a chat throttled longer than
+      // (max_attempts × backoff_cap) would otherwise dead-letter
+      // legitimate replies, and the operator alert would fire on a
+      // permanent failure that wasn't actually torana's fault.
+      markOutboxRateLimited: d.prepare(`
+        UPDATE outbox SET
+          status = 'retrying',
+          next_attempt_at = ?,
           last_error = ?
         WHERE id = ?
       `),
@@ -630,6 +644,19 @@ export class GatewayDB {
 
   markOutboxFailed(id: number, error: string): void {
     this.stmts.markOutboxFailed.run(error, id);
+  }
+
+  /**
+   * Schedule a Retry-After-respecting retry. Does NOT bump attempt_count —
+   * a server-asked cooldown should not consume the retry budget that
+   * exists for genuine deliverability failures (network, 5xx, etc.).
+   */
+  markOutboxRateLimited(
+    id: number,
+    error: string,
+    nextAttemptAt: string,
+  ): void {
+    this.stmts.markOutboxRateLimited.run(nextAttemptAt, error, id);
   }
 
   markOutboxRetrying(
