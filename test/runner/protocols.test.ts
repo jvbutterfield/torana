@@ -214,6 +214,82 @@ describe("codex-jsonl parser", () => {
     expect(events).toHaveLength(0);
   });
 
+  test("thread.started accepts a real codex UUID v7 thread_id", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    collect(
+      parser,
+      JSON.stringify({
+        type: "thread.started",
+        thread_id: "019c26ef-d872-7393-9740-415004d30307",
+      }) + "\n",
+    );
+    expect(captured).toEqual(["019c26ef-d872-7393-9740-415004d30307"]);
+  });
+
+  // The thread_id is persisted to worker_state and replayed as an argv
+  // element on the next turn. A subprocess that emits a control-char-bearing
+  // id could land it in `ps`/log output even though Bun's argv separation
+  // blocks flag-boundary injection. Validation drops the event silently
+  // (the codex side-session is effectively abandoned — safe failure mode).
+  test.each([
+    ["newline", "tid\nbreak"],
+    ["NUL byte", "tid\u0000break"],
+    ["ANSI escape", "tid\u001b[31mred"],
+    ["carriage return", "tid\rbreak"],
+    ["space", "tid abc"],
+    ["tab", "tid\tabc"],
+    ["empty string", ""],
+    ["overlong (129 chars)", "a".repeat(129)],
+    ["shell metachar", "tid;rm -rf"],
+    ["path separator", "../../etc/passwd"],
+  ])(
+    "thread.started rejects pathological thread_id (%s) without invoking callback",
+    (_label, badId) => {
+      const captured: string[] = [];
+      const parser = createCodexJsonlParser({
+        currentTurnId: () => "T1",
+        onThreadStarted: (id) => captured.push(id),
+      });
+      const events = collect(
+        parser,
+        JSON.stringify({ type: "thread.started", thread_id: badId }) + "\n",
+      );
+      expect(captured).toEqual([]);
+      expect(events).toHaveLength(0);
+    },
+  );
+
+  test("thread.started accepts an id at the 128-char boundary", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    const id = "a".repeat(128);
+    collect(
+      parser,
+      JSON.stringify({ type: "thread.started", thread_id: id }) + "\n",
+    );
+    expect(captured).toEqual([id]);
+  });
+
+  test("thread.started with non-string thread_id is dropped silently", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    collect(
+      parser,
+      JSON.stringify({ type: "thread.started", thread_id: 12345 }) + "\n",
+    );
+    expect(captured).toEqual([]);
+  });
+
   test("synthetic ready promotes status (for command-runner wrappers)", () => {
     const parser = createCodexJsonlParser({ currentTurnId: () => null });
     const events = collect(parser, JSON.stringify({ type: "ready" }) + "\n");
