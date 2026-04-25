@@ -190,14 +190,16 @@ function handleSendInner(
       });
     } catch (err) {
       await cleanupFiles(attachmentPaths);
+      // Log raw error server-side; never echo the exception text into the
+      // response body. SQLite errors carry column names + constraint detail,
+      // and an authenticated low-privilege caller probing for schema/SQL
+      // info should not be able to learn it from a 500.
       deps.log.error("insertSendTurn failed", {
         bot_id: botId,
         error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
       });
-      return errorResponse(
-        "internal_error",
-        err instanceof Error ? err.message : String(err),
-      );
+      return errorResponse("internal_error");
     }
 
     if (insertResult.replay) {

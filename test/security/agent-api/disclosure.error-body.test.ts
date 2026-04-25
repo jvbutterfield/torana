@@ -106,4 +106,73 @@ describe("§12.5.6 disclosure.error-body", () => {
       message: "internal error",
     });
   });
+
+  test("malformed multipart body → 400 with canonical detail, no parser-internal text", async () => {
+    h = startHarness({ tokens: [token] });
+    h.db.upsertUserChat("bot1", "111222333", 555);
+
+    // Declare multipart but send a body that the multipart parser cannot
+    // decode. Bun's parser raises an Error whose message describes its
+    // internal state ("Failed to parse FormData", boundary detail, etc.) —
+    // none of that should reach the client.
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type":
+          "multipart/form-data; boundary=----not-a-real-boundary-xyz",
+        "Idempotency-Key": "idem-malformed-multipart01",
+      },
+      body: "this is not a multipart body at all",
+    });
+    expect(r.status).toBe(400);
+    const body = (await r.json()) as { error: string; message: string };
+    expect(body.error).toBe("invalid_body");
+    // Canonical detail — fixed string, NOT echoed parser exception text.
+    expect(body.message).toBe("malformed multipart body");
+    // Belt-and-braces: nothing parser-internal slipped through.
+    const s = JSON.stringify(body);
+    expect(s).not.toMatch(/FormData/i);
+    expect(s).not.toMatch(/boundary/i);
+    expect(s).not.toContain("Error:");
+    expect(s).not.toMatch(/\/Users\//);
+    expect(s).not.toMatch(/\.ts:\d+/);
+  });
+
+  test("insertSendTurn throw → 500 with canonical detail, no SQLite text", async () => {
+    h = startHarness({ tokens: [token] });
+    h.db.upsertUserChat("bot1", "111222333", 555);
+    // Drop the `turns` table out from under the cached prepared statement.
+    // insertSendTurnRow will then raise `SQLiteError: no such table: turns`
+    // — exactly the kind of schema-leaking exception text we want to make
+    // sure the handler does NOT echo into the response.
+    h.db.query("DROP TABLE turns").run();
+
+    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "idem-insert-throws-000001",
+      },
+      body: JSON.stringify({
+        text: "hi",
+        source: "x",
+        user_id: "111222333",
+      }),
+    });
+    expect(r.status).toBe(500);
+    const body = (await r.json()) as { error: string; message: string };
+    expect(body.error).toBe("internal_error");
+    expect(body.message).toBe("internal error");
+    // Belt-and-braces: nothing SQLite/internal slipped through.
+    const s = JSON.stringify(body);
+    expect(s).not.toMatch(/sqlite/i);
+    expect(s).not.toMatch(/database/i);
+    expect(s).not.toMatch(/UNIQUE constraint/i);
+    expect(s).not.toMatch(/no such table/i);
+    expect(s).not.toContain("Error:");
+    expect(s).not.toMatch(/\/Users\//);
+    expect(s).not.toMatch(/\.ts:\d+/);
+  });
 });

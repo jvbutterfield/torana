@@ -152,10 +152,18 @@ export async function parseMultipartRequest(
   try {
     form = await req.formData();
   } catch (err) {
+    // Log raw parser error server-side; respond with a canonical detail.
+    // Bun's multipart parser surfaces internal boundary/state info in
+    // its messages — not safe to echo into the client response body.
+    log.warn("multipart formData parse failed", {
+      bot_id: botId,
+      request_id: requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "malformed multipart body",
     };
   }
 
@@ -300,21 +308,28 @@ export async function parseMultipartRequest(
       };
     }
     if (code === "attachment_mime_not_allowed") {
+      // Magic-byte mismatch detail is actionable client-side info, not a
+      // server-internal leak — keep it.
       return {
         kind: "err",
         code: "attachment_mime_not_allowed",
         detail: err instanceof Error ? err.message : String(err),
       };
     }
+    // Unclassified failure (writeFile EACCES/ENOSPC/EFBIG, etc.). Log raw
+    // error server-side so ops can debug; respond with a canonical detail.
+    // Filesystem errors carry absolute paths and errno detail that must
+    // not surface to the client.
     log.error("multipart write failed", {
       bot_id: botId,
       request_id: requestId,
       error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
     });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "attachment write failed",
     };
   }
 
