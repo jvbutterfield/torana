@@ -639,19 +639,59 @@ export class GatewayDB {
     this.stmts.initWorkerState.run(botId);
   }
 
+  // Runtime allowlist of columns each dynamicUpdate-capable table accepts.
+  // SQLite identifiers are not bind targets, so column names below are
+  // interpolated into the UPDATE string. Static types are erased at runtime —
+  // without this allowlist, an attacker-controlled key reaching this path
+  // could become arbitrary SQL.
+  private static readonly UPDATABLE_COLUMNS: Record<
+    string,
+    ReadonlySet<string>
+  > = {
+    worker_state: new Set([
+      "pid",
+      "generation",
+      "status",
+      "started_at",
+      "last_event_at",
+      "last_ready_at",
+      "consecutive_failures",
+      "last_error",
+    ]),
+    stream_state: new Set([
+      "active_telegram_message_id",
+      "buffer_text",
+      "last_flushed_at",
+      "segment_index",
+    ]),
+  };
+
   private dynamicUpdate(
     table: string,
     whereCol: string,
     whereVal: string | number,
     updates: Record<string, string | number | null>,
   ): void {
+    const allowed = GatewayDB.UPDATABLE_COLUMNS[table];
+    if (!allowed) {
+      throw new Error(
+        `dynamicUpdate: no allowlist registered for table ${table}`,
+      );
+    }
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
     for (const [k, v] of Object.entries(updates)) {
+      if (!allowed.has(k)) {
+        throw new Error(
+          `dynamicUpdate: column ${JSON.stringify(k)} is not updatable on ${table}`,
+        );
+      }
       sets.push(`${k} = ?`);
       vals.push(v);
     }
-    if (sets.length === 0) return;
+    if (sets.length === 0) {
+      throw new Error(`dynamicUpdate: empty update for table ${table}`);
+    }
     vals.push(whereVal);
     this._db
       .prepare(`UPDATE ${table} SET ${sets.join(", ")} WHERE ${whereCol} = ?`)
