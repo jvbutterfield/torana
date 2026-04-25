@@ -240,8 +240,12 @@ describe("torana bots list — subprocess dispatch", () => {
       ["bots", "list", "--server", base, "--token", secret],
     );
     expect(exitCode).toBe(0);
+    expect(stdout).toContain("BOT_ID");
     expect(stdout).toContain("bot1");
-    expect(stdout).toContain("claude-code");
+    // `runner_type` is hidden by default (`agent_api.expose_runner_type:
+    // false`), so the RUNNER column shouldn't render.
+    expect(stdout).not.toContain("RUNNER");
+    expect(stdout).not.toContain("claude-code");
   }, 15_000);
 
   test("--json mode parseable", async () => {

@@ -110,6 +110,7 @@ function makeConfig(options: {
         max_body_bytes: 100 * 1024 * 1024,
         max_files_per_request: 10,
       },
+      expose_runner_type: false,
     },
     bots: options.bots.map((b) => ({
       id: b.id,

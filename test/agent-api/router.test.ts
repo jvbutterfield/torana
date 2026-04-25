@@ -47,7 +47,10 @@ function fakeRegistry(botIds: string[], config: Config): {
   return reg;
 }
 
-function setup(tokens: ResolvedAgentApiToken[]): string {
+function setup(
+  tokens: ResolvedAgentApiToken[],
+  opts: { exposeRunnerType?: boolean } = {},
+): string {
   tmpDir = mkdtempSync(join(tmpdir(), "torana-router-"));
   dbPath = join(tmpDir, "gateway.db");
   applyMigrations(dbPath);
@@ -56,6 +59,7 @@ function setup(tokens: ResolvedAgentApiToken[]): string {
   const bot = makeTestBotConfig("bot1");
   const config = makeTestConfig([bot]);
   config.agent_api.enabled = true;
+  config.agent_api.expose_runner_type = opts.exposeRunnerType === true;
 
   server = createServer({ port: 0, hostname: "127.0.0.1" });
   registerAgentApiHealthRoute(server.router, {
@@ -260,6 +264,53 @@ describe("/v1/bots listing is caller-scoped", () => {
     expect(r.status).toBe(200);
     const body = (await r.json()) as { bots: Array<{ bot_id: string }> };
     expect(body.bots.map((b) => b.bot_id)).toEqual(["bot1"]);
+  });
+});
+
+// `runner_type` leaks deployment shape — we hide it by default and
+// require an explicit `agent_api.expose_runner_type: true` opt-in.
+// See docs/agent-api.md "Security model".
+describe("/v1/bots runner_type exposure", () => {
+  const secret = "caller-runner-tok-9876";
+  const token: ResolvedAgentApiToken = {
+    name: "caller",
+    secret,
+    hash: hash(secret),
+    bot_ids: ["bot1"],
+    scopes: ["ask"],
+  };
+
+  test("default config: response omits runner_type entirely", async () => {
+    const base = setup([token]);
+    const r = await fetch(`${base}/v1/bots`, {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      bots: Array<{
+        bot_id: string;
+        supports_side_sessions: boolean;
+        runner_type?: string;
+      }>;
+    };
+    expect(body.bots).toHaveLength(1);
+    const item = body.bots[0]!;
+    expect(item.bot_id).toBe("bot1");
+    expect(item.supports_side_sessions).toBe(true);
+    expect("runner_type" in item).toBe(false);
+    expect(item.runner_type).toBeUndefined();
+  });
+
+  test("expose_runner_type=true: response includes runner_type", async () => {
+    const base = setup([token], { exposeRunnerType: true });
+    const r = await fetch(`${base}/v1/bots`, {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      bots: Array<{ bot_id: string; runner_type?: string }>;
+    };
+    expect(body.bots[0]!.runner_type).toBe("claude-code");
   });
 });
 

@@ -86,11 +86,18 @@ export async function runBots(
     );
   }
 
-  const rows = response.bots.map((b) => [
-    b.bot_id,
-    b.runner_type,
-    b.supports_side_sessions ? "yes" : "no",
-  ]);
-  const lines = formatTable(["BOT_ID", "RUNNER", "ASK?"], rows);
+  // Drop the RUNNER column entirely when no row carries `runner_type`
+  // (the gateway has `expose_runner_type: false`, the default). Keeps
+  // the table from showing a useless empty column.
+  const showRunner = response.bots.some((b) => b.runner_type !== undefined);
+  const rows = response.bots.map((b) =>
+    showRunner
+      ? [b.bot_id, b.runner_type ?? "—", b.supports_side_sessions ? "yes" : "no"]
+      : [b.bot_id, b.supports_side_sessions ? "yes" : "no"],
+  );
+  const headers = showRunner
+    ? ["BOT_ID", "RUNNER", "ASK?"]
+    : ["BOT_ID", "ASK?"];
+  const lines = formatTable(headers, rows);
   return renderText(lines, ExitCode.success);
 }

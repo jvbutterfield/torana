@@ -38,6 +38,7 @@ agent_api:
     max_timeout_ms: 300_000
     max_body_bytes: 104_857_600     # 100 MiB
     max_files_per_request: 10
+  expose_runner_type: false         # opt-in: include `runner_type` in /v1/bots
 ```
 
 All fields have defaults. Minimally you need `enabled: true` and at least one
@@ -239,14 +240,27 @@ Read the state of any turn the caller's token owns.
 ```json
 {
   "bots": [
-    {"bot_id": "reviewer", "runner_type": "claude-code", "supports_side_sessions": true},
-    {"bot_id": "drafter",  "runner_type": "codex",       "supports_side_sessions": true}
+    {"bot_id": "reviewer", "supports_side_sessions": true},
+    {"bot_id": "drafter",  "supports_side_sessions": true}
   ]
 }
 ```
 
 Filtered to bots the caller's token is scoped to. Useful for discovery: a
 CI script can run `torana bots list` to see what it's allowed to drive.
+
+`runner_type` is **omitted by default** so a bearer token doesn't leak
+deployment shape (see [Security model](#security-model)). Set
+`agent_api.expose_runner_type: true` in the gateway config to include it:
+
+```json
+{
+  "bots": [
+    {"bot_id": "reviewer", "runner_type": "claude-code", "supports_side_sessions": true},
+    {"bot_id": "drafter",  "runner_type": "codex",       "supports_side_sessions": true}
+  ]
+}
+```
 
 ### `GET /v1/bots/:bot_id/sessions` · `DELETE /v1/bots/:bot_id/sessions/:session_id`
 
@@ -344,6 +358,11 @@ Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 
   `parseMultipartRequest`.
 - **Idempotency is a safety feature**, not just a convenience: retrying an
   `send` won't double-send even if the caller's network flapped.
+- **`runner_type` is hidden by default.** `GET /v1/bots` omits each bot's
+  runner kind (`claude-code` / `codex` / `command`) unless the operator
+  sets `agent_api.expose_runner_type: true`. This keeps a leaked token
+  from revealing what side-channels (prompt injection, tool-use abuse,
+  command-shell access) are worth probing.
 
 ### Session-id sharing across tokens
 

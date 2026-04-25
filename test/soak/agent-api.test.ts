@@ -225,6 +225,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
         max_body_bytes: 10 * 1024 * 1024,
         max_files_per_request: 5,
       },
+      expose_runner_type: false,
     },
     bots: [bot],
   };

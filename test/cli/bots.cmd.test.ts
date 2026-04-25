@@ -38,6 +38,27 @@ describe("runBots list", () => {
     expect(r.stdout[3]).toMatch(/beta.*command.*no/);
   });
 
+  test("omits RUNNER column when no row carries runner_type", async () => {
+    // Default gateway config (`expose_runner_type: false`) → the field
+    // is missing from every list item, so the table drops the column
+    // rather than showing a useless empty string.
+    const client = clientStub({
+      listBots: async () => ({
+        bots: [
+          { bot_id: "alpha", supports_side_sessions: true },
+          { bot_id: "beta", supports_side_sessions: false },
+        ],
+      }),
+    });
+    const r = await runBots({ argv: [], action: "list" }, { client });
+    expect(r.exitCode).toBe(ExitCode.success);
+    expect(r.stdout[0]).toMatch(/^BOT_ID/);
+    expect(r.stdout[0]).not.toMatch(/RUNNER/);
+    expect(r.stdout[0]).toMatch(/ASK\?/);
+    expect(r.stdout[2]).toMatch(/^alpha\s+yes\s*$/);
+    expect(r.stdout[3]).toMatch(/^beta\s+no\s*$/);
+  });
+
   test("empty bot list prints helpful hint", async () => {
     const client = clientStub({
       listBots: async () => ({ bots: [] }),
