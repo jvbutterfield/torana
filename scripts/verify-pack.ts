@@ -42,7 +42,9 @@ const raw = await $`npm pack --dry-run --json`.quiet().text();
 const parsed = JSON.parse(raw) as PackResult[];
 const entry = parsed[0];
 if (!entry || !entry.files) {
-  console.error("verify-pack: `npm pack --dry-run --json` returned no files array");
+  console.error(
+    "verify-pack: `npm pack --dry-run --json` returned no files array",
+  );
   process.exit(1);
 }
 
@@ -51,8 +53,12 @@ const missing = REQUIRED.filter((r) => !paths.has(r));
 if (missing.length > 0) {
   console.error("verify-pack: required files missing from tarball:");
   for (const m of missing) console.error(`  - ${m}`);
-  console.error("verify-pack: check `package.json` \"files\" and scripts/build.ts");
+  console.error(
+    'verify-pack: check `package.json` "files" and scripts/build.ts',
+  );
   process.exit(1);
 }
 
-console.log(`verify-pack: tarball contains all ${REQUIRED.length} required SQL files`);
+console.log(
+  `verify-pack: tarball contains all ${REQUIRED.length} required SQL files`,
+);

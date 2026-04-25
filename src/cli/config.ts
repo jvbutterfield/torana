@@ -19,7 +19,12 @@ import {
   type FlagSpec,
 } from "./shared/args.js";
 import { ExitCode } from "./shared/exit.js";
-import { formatTable, renderJson, renderText, type Rendered } from "./shared/output.js";
+import {
+  formatTable,
+  renderJson,
+  renderText,
+  type Rendered,
+} from "./shared/output.js";
 import {
   defaultProfilesPath,
   getProfile,
@@ -148,15 +153,15 @@ export function runConfig(
       case "show":
         return runShow(rest, env);
       default:
-        return renderText(
-          [CONFIG_HELP],
-          ExitCode.badUsage,
-          [`config: unknown subcommand '${sub}'`],
-        );
+        return renderText([CONFIG_HELP], ExitCode.badUsage, [
+          `config: unknown subcommand '${sub}'`,
+        ]);
     }
   } catch (err) {
     if (err instanceof CliUsageError) {
-      return renderText([], ExitCode.badUsage, [`config ${sub}: ${err.message}`]);
+      return renderText([], ExitCode.badUsage, [
+        `config ${sub}: ${err.message}`,
+      ]);
     }
     if (err instanceof ProfileStoreError) {
       const code =
@@ -181,12 +186,17 @@ function resolvePath(env: NodeJS.ProcessEnv, override: unknown): string {
 // ---- init -----------------------------------------------------------------
 
 function runInit(argv: string[], env: NodeJS.ProcessEnv): Rendered {
-  if (requireHelp(argv)) return renderText(INIT_HELP.split("\n").slice(0, -1), ExitCode.success);
+  if (requireHelp(argv))
+    return renderText(INIT_HELP.split("\n").slice(0, -1), ExitCode.success);
   const { flags } = parseFlags(argv, CONFIG_FLAGS);
   const path = resolvePath(env, flags["config-path"]);
   const loaded = loadProfiles(path);
   if (loaded.exists) {
-    return renderText([`profile file already exists: ${path}`], ExitCode.success, loaded.warnings);
+    return renderText(
+      [`profile file already exists: ${path}`],
+      ExitCode.success,
+      loaded.warnings,
+    );
   }
   saveProfiles(path, { profiles: {} });
   return renderText([`created ${path} (mode 0600)`], ExitCode.success);
@@ -195,10 +205,16 @@ function runInit(argv: string[], env: NodeJS.ProcessEnv): Rendered {
 // ---- add-profile ----------------------------------------------------------
 
 function runAddProfile(argv: string[], env: NodeJS.ProcessEnv): Rendered {
-  if (requireHelp(argv)) return renderText(ADD_PROFILE_HELP.split("\n").slice(0, -1), ExitCode.success);
+  if (requireHelp(argv))
+    return renderText(
+      ADD_PROFILE_HELP.split("\n").slice(0, -1),
+      ExitCode.success,
+    );
   const { positional, flags } = parseFlags(argv, CONFIG_FLAGS);
   if (positional.length !== 1) {
-    throw new CliUsageError("add-profile expects exactly one positional: <name>");
+    throw new CliUsageError(
+      "add-profile expects exactly one positional: <name>",
+    );
   }
   const [name] = positional as [string];
   if (!/^[A-Za-z0-9_.-]{1,64}$/.test(name)) {
@@ -230,7 +246,11 @@ function runAddProfile(argv: string[], env: NodeJS.ProcessEnv): Rendered {
 // ---- list-profiles --------------------------------------------------------
 
 function runListProfiles(argv: string[], env: NodeJS.ProcessEnv): Rendered {
-  if (requireHelp(argv)) return renderText(LIST_PROFILES_HELP.split("\n").slice(0, -1), ExitCode.success);
+  if (requireHelp(argv))
+    return renderText(
+      LIST_PROFILES_HELP.split("\n").slice(0, -1),
+      ExitCode.success,
+    );
   const { flags } = parseFlags(argv, CONFIG_FLAGS);
   const path = resolvePath(env, flags["config-path"]);
   const { state, warnings, exists } = loadProfiles(path);
@@ -242,7 +262,10 @@ function runListProfiles(argv: string[], env: NodeJS.ProcessEnv): Rendered {
       profiles: Object.fromEntries(
         Object.entries(state.profiles)
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([n, p]) => [n, { server: p.server, token: redactToken(p.token) }]),
+          .map(([n, p]) => [
+            n,
+            { server: p.server, token: redactToken(p.token) },
+          ]),
       ),
     };
     return renderJson(body, ExitCode.success);
@@ -270,10 +293,16 @@ function runListProfiles(argv: string[], env: NodeJS.ProcessEnv): Rendered {
 // ---- remove-profile -------------------------------------------------------
 
 function runRemoveProfile(argv: string[], env: NodeJS.ProcessEnv): Rendered {
-  if (requireHelp(argv)) return renderText(REMOVE_PROFILE_HELP.split("\n").slice(0, -1), ExitCode.success);
+  if (requireHelp(argv))
+    return renderText(
+      REMOVE_PROFILE_HELP.split("\n").slice(0, -1),
+      ExitCode.success,
+    );
   const { positional, flags } = parseFlags(argv, CONFIG_FLAGS);
   if (positional.length !== 1) {
-    throw new CliUsageError("remove-profile expects exactly one positional: <name>");
+    throw new CliUsageError(
+      "remove-profile expects exactly one positional: <name>",
+    );
   }
   const [name] = positional as [string];
   const path = resolvePath(env, flags["config-path"]);
@@ -294,13 +323,18 @@ function runRemoveProfile(argv: string[], env: NodeJS.ProcessEnv): Rendered {
       : state.defaultProfile === name
         ? " (no default remaining)"
         : "";
-  return renderText([`removed profile '${name}'${suffix}`], ExitCode.success, warnings);
+  return renderText(
+    [`removed profile '${name}'${suffix}`],
+    ExitCode.success,
+    warnings,
+  );
 }
 
 // ---- show -----------------------------------------------------------------
 
 function runShow(argv: string[], env: NodeJS.ProcessEnv): Rendered {
-  if (requireHelp(argv)) return renderText(SHOW_HELP.split("\n").slice(0, -1), ExitCode.success);
+  if (requireHelp(argv))
+    return renderText(SHOW_HELP.split("\n").slice(0, -1), ExitCode.success);
   const { positional, flags } = parseFlags(argv, CONFIG_FLAGS);
   if (positional.length > 1) {
     throw new CliUsageError("show expects at most one positional: <name>");
@@ -308,15 +342,19 @@ function runShow(argv: string[], env: NodeJS.ProcessEnv): Rendered {
   const reveal = flags["reveal-token"] === true;
   const path = resolvePath(env, flags["config-path"]);
   const { state, warnings } = loadProfiles(path);
-  const names = positional.length === 1
-    ? [positional[0]!]
-    : Object.keys(state.profiles).sort();
+  const names =
+    positional.length === 1
+      ? [positional[0]!]
+      : Object.keys(state.profiles).sort();
   for (const name of names) {
     if (positional.length === 1 && !state.profiles[name]) {
       throw new CliUsageError(`profile '${name}' not found`);
     }
   }
-  const body: Record<string, { server: string; token: string; default: boolean }> = {};
+  const body: Record<
+    string,
+    { server: string; token: string; default: boolean }
+  > = {};
   for (const name of names) {
     const p = getProfile(state, name);
     if (!p) continue;
@@ -327,7 +365,10 @@ function runShow(argv: string[], env: NodeJS.ProcessEnv): Rendered {
     };
   }
   if (flags.json === true) {
-    return renderJson({ path, default: state.defaultProfile ?? null, profiles: body }, ExitCode.success);
+    return renderJson(
+      { path, default: state.defaultProfile ?? null, profiles: body },
+      ExitCode.success,
+    );
   }
   if (Object.keys(body).length === 0) {
     return renderText(

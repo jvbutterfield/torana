@@ -3,7 +3,11 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyMigrations, detectVersion, planMigration } from "../../src/db/migrate.js";
+import {
+  applyMigrations,
+  detectVersion,
+  planMigration,
+} from "../../src/db/migrate.js";
 
 let tmpDir: string;
 
@@ -115,11 +119,15 @@ describe("db/migrate", () => {
     expect(plan.targetVersion).toBe(3);
 
     const db = new Database(dbPath);
-    const user = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const user = (
+      db.query("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
     expect(user).toBe(3);
 
     // inbound_updates has bot_id, not persona
-    const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{ name: string }>;
+    const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{
+      name: string;
+    }>;
     expect(cols.map((c) => c.name)).toContain("bot_id");
     expect(cols.map((c) => c.name)).not.toContain("persona");
 
@@ -133,9 +141,9 @@ describe("db/migrate", () => {
     expect(names).toContain("side_sessions");
 
     // turns gains agent_api columns
-    const turnsCols = (db.query("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
+    const turnsCols = (
+      db.query("PRAGMA table_info(turns)").all() as Array<{ name: string }>
+    ).map((c) => c.name);
     expect(turnsCols).toContain("source");
     expect(turnsCols).toContain("agent_api_token_name");
     expect(turnsCols).toContain("final_text");
@@ -145,7 +153,9 @@ describe("db/migrate", () => {
 
     // worker_state gains codex_thread_id (from 0003).
     const workerCols = (
-      db.query("PRAGMA table_info(worker_state)").all() as Array<{ name: string }>
+      db.query("PRAGMA table_info(worker_state)").all() as Array<{
+        name: string;
+      }>
     ).map((c) => c.name);
     expect(workerCols).toContain("codex_thread_id");
     db.close();
@@ -165,7 +175,9 @@ describe("db/migrate", () => {
     ]);
 
     const db = new Database(dbPath);
-    const user = (db.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const user = (
+      db.query("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
     expect(user).toBe(3);
 
     // status remap (from 0001)
@@ -183,19 +195,25 @@ describe("db/migrate", () => {
 
     // bot_id preserved
     const one = db
-      .query("SELECT bot_id FROM inbound_updates WHERE telegram_update_id = 100")
+      .query(
+        "SELECT bot_id FROM inbound_updates WHERE telegram_update_id = 100",
+      )
       .get() as { bot_id: string };
     expect(one.bot_id).toBe("cato");
 
     // bot_state exists (from 0001)
     const tbl = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='bot_state'")
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='bot_state'",
+      )
       .get();
     expect(tbl).not.toBeNull();
 
     // agent_api tables exist (from 0002)
     const aa = db
-      .query("SELECT name FROM sqlite_master WHERE type='table' AND name='user_chats'")
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='user_chats'",
+      )
       .get();
     expect(aa).not.toBeNull();
 
@@ -220,7 +238,15 @@ describe("db/migrate", () => {
     seedV0Schema(dbPath);
     // Apply 0001 manually.
     const db = new Database(dbPath);
-    const sqlPath = join(__dirname, "..", "..", "src", "db", "migrations", "0001_persona_to_bot_id.sql");
+    const sqlPath = join(
+      __dirname,
+      "..",
+      "..",
+      "src",
+      "db",
+      "migrations",
+      "0001_persona_to_bot_id.sql",
+    );
     const sql = require("node:fs").readFileSync(sqlPath, "utf8");
     db.exec(sql);
     db.exec("PRAGMA user_version = 1");
@@ -237,7 +263,9 @@ describe("db/migrate", () => {
     applyMigrations(dbPath);
 
     const db2 = new Database(dbPath);
-    const user = (db2.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const user = (
+      db2.query("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
     expect(user).toBe(3);
     db2.close();
   });
@@ -250,13 +278,29 @@ describe("db/migrate", () => {
     const fs = require("node:fs");
     db.exec(
       fs.readFileSync(
-        join(__dirname, "..", "..", "src", "db", "migrations", "0001_persona_to_bot_id.sql"),
+        join(
+          __dirname,
+          "..",
+          "..",
+          "src",
+          "db",
+          "migrations",
+          "0001_persona_to_bot_id.sql",
+        ),
         "utf8",
       ),
     );
     db.exec(
       fs.readFileSync(
-        join(__dirname, "..", "..", "src", "db", "migrations", "0002_agent_api.sql"),
+        join(
+          __dirname,
+          "..",
+          "..",
+          "src",
+          "db",
+          "migrations",
+          "0002_agent_api.sql",
+        ),
         "utf8",
       ),
     );
@@ -270,11 +314,15 @@ describe("db/migrate", () => {
     applyMigrations(dbPath);
 
     const db2 = new Database(dbPath);
-    const user = (db2.query("PRAGMA user_version").get() as { user_version: number }).user_version;
+    const user = (
+      db2.query("PRAGMA user_version").get() as { user_version: number }
+    ).user_version;
     expect(user).toBe(3);
-    const cols = (db2.query("PRAGMA table_info(worker_state)").all() as Array<{ name: string }>).map(
-      (c) => c.name,
-    );
+    const cols = (
+      db2.query("PRAGMA table_info(worker_state)").all() as Array<{
+        name: string;
+      }>
+    ).map((c) => c.name);
     expect(cols).toContain("codex_thread_id");
     db2.close();
   });

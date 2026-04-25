@@ -27,6 +27,8 @@ function defaultRunner(): ClaudeCodeRunnerConfig {
     args: [],
     env: {},
     pass_continue_flag: true,
+    // Required by schema (the runner always runs unsandboxed in cwd).
+    acknowledge_dangerous: true,
   };
 }
 
@@ -38,6 +40,7 @@ export function makeTestConfig(
     version: 1,
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: "/tmp/torana-test",
       db_path: "/tmp/torana-test/gateway.db",
       log_level: "info",
@@ -70,8 +73,16 @@ export function makeTestConfig(
       message_length_safe_margin: 3800,
     },
     outbox: { max_attempts: 5, retry_base_ms: 2000 },
-    shutdown: { outbox_drain_secs: 10, runner_grace_secs: 5, hard_timeout_secs: 25 },
-    dashboard: { enabled: false, mount_path: "/dashboard" },
+    shutdown: {
+      outbox_drain_secs: 10,
+      runner_grace_secs: 5,
+      hard_timeout_secs: 25,
+    },
+    dashboard: {
+      enabled: false,
+      mount_path: "/dashboard",
+      allow_non_loopback_proxy_target: false,
+    },
     metrics: { enabled: false },
     attachments: {
       max_bytes: 20 * 1024 * 1024,
@@ -87,14 +98,19 @@ export function makeTestConfig(
         hard_ttl_ms: 86_400_000,
         max_per_bot: 8,
         max_global: 64,
+        max_per_token_default: 8,
       },
-      send: { idempotency_retention_ms: 86_400_000 },
+      send: {
+        max_body_bytes: 100 * 1024 * 1024,
+        idempotency_retention_ms: 86_400_000,
+      },
       ask: {
         default_timeout_ms: 60_000,
         max_timeout_ms: 300_000,
         max_body_bytes: 100 * 1024 * 1024,
         max_files_per_request: 10,
       },
+      expose_runner_type: false,
     },
     bots,
   };

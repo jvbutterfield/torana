@@ -127,9 +127,11 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function resolveConfigPath(explicit: string | null): string {
-  if (explicit) return isAbsolute(explicit) ? explicit : resolve(process.cwd(), explicit);
+  if (explicit)
+    return isAbsolute(explicit) ? explicit : resolve(process.cwd(), explicit);
   const envPath = process.env.TORANA_CONFIG;
-  if (envPath) return isAbsolute(envPath) ? envPath : resolve(process.cwd(), envPath);
+  if (envPath)
+    return isAbsolute(envPath) ? envPath : resolve(process.cwd(), envPath);
   for (const candidate of ["torana.yaml", "torana.config.yaml"]) {
     const p = resolve(process.cwd(), candidate);
     if (existsSync(p)) return p;
@@ -198,13 +200,18 @@ async function main(argv: string[]): Promise<void> {
       let remoteToken = args.token ?? process.env.TORANA_TOKEN ?? null;
       if (args.profile) {
         if (!profiles) {
-          console.error(`doctor: --profile requested but no profile store available`);
+          console.error(
+            `doctor: --profile requested but no profile store available`,
+          );
           process.exit(2);
         }
         const p = profiles.profiles[args.profile];
         if (!p) {
-          const known = Object.keys(profiles.profiles).sort().join(", ") || "(none)";
-          console.error(`doctor: profile '${args.profile}' not found (known: ${known})`);
+          const known =
+            Object.keys(profiles.profiles).sort().join(", ") || "(none)";
+          console.error(
+            `doctor: profile '${args.profile}' not found (known: ${known})`,
+          );
           process.exit(2);
         }
         // Flag/env still win per precedence, but fill any gap from profile.
@@ -215,7 +222,9 @@ async function main(argv: string[]): Promise<void> {
       let result: { checks: DoctorCheck[] };
       if (remote) {
         if (!remoteToken) {
-          console.error("doctor: --server supplied without --token (or TORANA_TOKEN)");
+          console.error(
+            "doctor: --server supplied without --token (or TORANA_TOKEN)",
+          );
           process.exit(2);
         }
         result = await runRemoteDoctor({ server: remote, token: remoteToken });
@@ -257,10 +266,13 @@ async function main(argv: string[]): Promise<void> {
     }
     case "start": {
       const path = resolveConfigPath(args.configPath);
-      const { config, secrets, agentApiTokens, warnings } = loadConfigFromFile(path);
+      const { config, secrets, agentApiTokens, warnings } =
+        loadConfigFromFile(path);
       setSecrets(secrets);
       setLogLevel(config.gateway.log_level);
-      setLogFormat(config.gateway.log_format ?? (process.stdout.isTTY ? "text" : "json"));
+      setLogFormat(
+        config.gateway.log_format ?? (process.stdout.isTTY ? "text" : "json"),
+      );
       for (const w of warnings) log.warn(w);
 
       const running = await startGateway({
@@ -355,7 +367,9 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
       case "turns": {
         const action = chain[1];
         if (!action) {
-          throw new CliUsageError("turns requires a subcommand (currently: get)");
+          throw new CliUsageError(
+            "turns requires a subcommand (currently: get)",
+          );
         }
         return await runWithClient(chain, rest, async (client) =>
           runTurns({ argv: rest, action }, { client }),
@@ -365,7 +379,9 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
       case "bots": {
         const action = chain[1];
         if (!action) {
-          throw new CliUsageError("bots requires a subcommand (currently: list)");
+          throw new CliUsageError(
+            "bots requires a subcommand (currently: list)",
+          );
         }
         return await runWithClient(chain, rest, async (client) =>
           runBots({ argv: rest, action }, { client }),
@@ -493,15 +509,29 @@ function stubClient(): AgentApiClient {
   });
 }
 
-function redactForPrint(config: unknown): unknown {
-  if (config === null || typeof config !== "object") return config;
-  if (Array.isArray(config)) return config.map(redactForPrint);
+function redactForPrint(config: unknown, parentKey?: string): unknown {
+  if (config === null || config === undefined) return config;
+  if (typeof config !== "object") return config;
+  if (Array.isArray(config))
+    return config.map((v) => redactForPrint(v, parentKey));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(config as Record<string, unknown>)) {
+    // bots[].runner.secrets is a flat Record<string,string> whose every value
+    // is — by definition — sensitive. Redact each leaf, not the map.
+    if (parentKey === "secrets") {
+      out[k] =
+        typeof v === "string" && v.length > 0
+          ? `<redacted:${v.length} chars>`
+          : v;
+      continue;
+    }
     if (k === "token" || k === "secret") {
-      out[k] = typeof v === "string" && v.length > 0 ? `<redacted:${v.length} chars>` : v;
+      out[k] =
+        typeof v === "string" && v.length > 0
+          ? `<redacted:${v.length} chars>`
+          : v;
     } else {
-      out[k] = redactForPrint(v);
+      out[k] = redactForPrint(v, k);
     }
   }
   return out;

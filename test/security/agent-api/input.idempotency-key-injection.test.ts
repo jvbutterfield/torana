@@ -34,11 +34,14 @@ describe("§12.5.3 input.idempotency-key-injection (unit-level — fetch drops c
   // Empty-string is handled as missing_idempotency_key (the falsiness
   // branch fires first) — see the next test.
 
-  test.each(badUnit)("validateIdempotencyKey(%p) rejects as invalid_idempotency_key", (key) => {
-    const r = validateIdempotencyKey(key);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.code).toBe("invalid_idempotency_key");
-  });
+  test.each(badUnit)(
+    "validateIdempotencyKey(%p) rejects as invalid_idempotency_key",
+    (key) => {
+      const r = validateIdempotencyKey(key);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe("invalid_idempotency_key");
+    },
+  );
 
   test("missing key → missing_idempotency_key (not invalid)", () => {
     const r = validateIdempotencyKey(null);
@@ -116,7 +119,8 @@ describe("§12.5.3 input.idempotency-key-injection (HTTP-level)", () => {
       method: "POST",
       headers: {
         Authorization: `Bearer ${secret}`,
-        "Idempotency-Key": "has.dots.and.punct.here.lots.of.filler.to.make.length.ok",
+        "Idempotency-Key":
+          "has.dots.and.punct.here.lots.of.filler.to.make.length.ok",
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ text: "hi", source: "test", user_id: "123" }),

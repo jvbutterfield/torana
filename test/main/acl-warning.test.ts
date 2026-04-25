@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { warnOnEmptyAcl } from "../../src/main.js";
 import type { Config } from "../../src/config/schema.js";
 
-type LogLine = { level: string; message: string; fields?: Record<string, unknown> };
+type LogLine = {
+  level: string;
+  message: string;
+  fields?: Record<string, unknown>;
+};
 
 function captureLogs(): { lines: LogLine[]; restore: () => void } {
   const lines: LogLine[] = [];
@@ -17,13 +21,19 @@ function captureLogs(): { lines: LogLine[]; restore: () => void } {
   const push = (raw: string): void => {
     try {
       const parsed = JSON.parse(raw);
-      lines.push({ level: parsed.level, message: parsed.msg, fields: { ...parsed } });
+      lines.push({
+        level: parsed.level,
+        message: parsed.msg,
+        fields: { ...parsed },
+      });
     } catch {
       lines.push({ level: "raw", message: raw });
     }
   };
-  console.log = (arg: unknown) => push(typeof arg === "string" ? arg : String(arg));
-  console.error = (arg: unknown) => push(typeof arg === "string" ? arg : String(arg));
+  console.log = (arg: unknown) =>
+    push(typeof arg === "string" ? arg : String(arg));
+  console.error = (arg: unknown) =>
+    push(typeof arg === "string" ? arg : String(arg));
   return {
     lines,
     restore: () => {
@@ -38,6 +48,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     version: 1,
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: "/tmp/torana-acl-test",
       db_path: "/tmp/torana-acl-test/gateway.db",
       log_level: "info",
@@ -68,7 +79,11 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
       message_length_safe_margin: 3800,
     },
     outbox: { max_attempts: 5, retry_base_ms: 2000 },
-    shutdown: { outbox_drain_secs: 10, runner_grace_secs: 5, hard_timeout_secs: 25 },
+    shutdown: {
+      outbox_drain_secs: 10,
+      runner_grace_secs: 5,
+      hard_timeout_secs: 25,
+    },
     dashboard: { enabled: false, mount_path: "/dashboard" },
     metrics: { enabled: false },
     attachments: {
@@ -83,7 +98,14 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
         token: "T",
         commands: [],
         reactions: { received_emoji: "👀" },
-        runner: { type: "claude-code", cli_path: "claude", args: [], env: {}, pass_continue_flag: true },
+        runner: {
+          type: "claude-code",
+          cli_path: "claude",
+          args: [],
+          env: {},
+          pass_continue_flag: true,
+          acknowledge_dangerous: true,
+        },
       },
     ],
     ...overrides,
@@ -106,9 +128,7 @@ describe("warnOnEmptyAcl", () => {
   });
 
   test("stays silent when the global list is populated", () => {
-    warnOnEmptyAcl(
-      baseConfig({ access_control: { allowed_user_ids: [42] } }),
-    );
+    warnOnEmptyAcl(baseConfig({ access_control: { allowed_user_ids: [42] } }));
     expect(captured.lines.find((l) => l.level === "warn")).toBeUndefined();
   });
 
@@ -127,7 +147,14 @@ describe("warnOnEmptyAcl", () => {
       access_control: { allowed_user_ids: [] },
       commands: [],
       reactions: { received_emoji: "👀" },
-      runner: { type: "claude-code", cli_path: "claude", args: [], env: {}, pass_continue_flag: true },
+      runner: {
+        type: "claude-code",
+        cli_path: "claude",
+        args: [],
+        env: {},
+        pass_continue_flag: true,
+        acknowledge_dangerous: true,
+      },
     } as Config["bots"][number]);
     warnOnEmptyAcl(cfg);
     const warn = captured.lines.find((l) => l.level === "warn");

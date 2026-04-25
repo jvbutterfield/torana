@@ -61,6 +61,7 @@ function claudeBot(id: string): BotConfig {
       // for the same rationale.
       env: inheritedEnv(),
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   };
 }
@@ -101,101 +102,114 @@ async function runCli(
   return { stdout, stderr, exitCode: exitCode ?? 0 };
 }
 
-describeOrSkip("§12.4 cli-remote — two gateways, two profiles, CLI routing", () => {
-  test("torana bots list --profile <name> routes to the profile's server", async () => {
-    const secretA = "e2e-cli-remote-A-secret-abcdef12";
-    const secretB = "e2e-cli-remote-B-secret-abcdef12";
+describeOrSkip(
+  "§12.4 cli-remote — two gateways, two profiles, CLI routing",
+  () => {
+    test("torana bots list --profile <name> routes to the profile's server", async () => {
+      const secretA = "e2e-cli-remote-A-secret-abcdef12";
+      const secretB = "e2e-cli-remote-B-secret-abcdef12";
 
-    hA = await startE2E({
-      botConfig: claudeBot("alpha-A"),
-      tokens: [mkToken("a", secretA, { bot_ids: ["alpha-A"], scopes: ["ask"] })],
-    });
-    hB = await startE2E({
-      botConfig: claudeBot("beta-B"),
-      tokens: [mkToken("b", secretB, { bot_ids: ["beta-B"], scopes: ["ask"] })],
-    });
+      hA = await startE2E({
+        botConfig: claudeBot("alpha-A"),
+        tokens: [
+          mkToken("a", secretA, { bot_ids: ["alpha-A"], scopes: ["ask"] }),
+        ],
+      });
+      hB = await startE2E({
+        botConfig: claudeBot("beta-B"),
+        tokens: [
+          mkToken("b", secretB, { bot_ids: ["beta-B"], scopes: ["ask"] }),
+        ],
+      });
 
-    const xdg = writeProfileToml(
-      {
-        prodA: { server: hA.base, token: secretA },
-        prodB: { server: hB.base, token: secretB },
-      },
-      "prodA",
-    );
+      const xdg = writeProfileToml(
+        {
+          prodA: { server: hA.base, token: secretA },
+          prodB: { server: hB.base, token: secretB },
+        },
+        "prodA",
+      );
 
-    // --profile prodA → hA's bot_ids
-    const resA = await runCli(
-      ["bots", "list", "--profile", "prodA", "--json"],
-      { XDG_CONFIG_HOME: xdg },
-    );
-    expect(resA.exitCode).toBe(0);
-    const bodyA = JSON.parse(resA.stdout);
-    expect(Array.isArray(bodyA.bots)).toBe(true);
-    expect(bodyA.bots.map((b: { bot_id: string }) => b.bot_id)).toEqual([
-      "alpha-A",
-    ]);
+      // --profile prodA → hA's bot_ids
+      const resA = await runCli(
+        ["bots", "list", "--profile", "prodA", "--json"],
+        { XDG_CONFIG_HOME: xdg },
+      );
+      expect(resA.exitCode).toBe(0);
+      const bodyA = JSON.parse(resA.stdout);
+      expect(Array.isArray(bodyA.bots)).toBe(true);
+      expect(bodyA.bots.map((b: { bot_id: string }) => b.bot_id)).toEqual([
+        "alpha-A",
+      ]);
 
-    // --profile prodB → hB's bot_ids
-    const resB = await runCli(
-      ["bots", "list", "--profile", "prodB", "--json"],
-      { XDG_CONFIG_HOME: xdg },
-    );
-    expect(resB.exitCode).toBe(0);
-    const bodyB = JSON.parse(resB.stdout);
-    expect(bodyB.bots.map((b: { bot_id: string }) => b.bot_id)).toEqual([
-      "beta-B",
-    ]);
-  }, 60_000);
+      // --profile prodB → hB's bot_ids
+      const resB = await runCli(
+        ["bots", "list", "--profile", "prodB", "--json"],
+        { XDG_CONFIG_HOME: xdg },
+      );
+      expect(resB.exitCode).toBe(0);
+      const bodyB = JSON.parse(resB.stdout);
+      expect(bodyB.bots.map((b: { bot_id: string }) => b.bot_id)).toEqual([
+        "beta-B",
+      ]);
+    }, 60_000);
 
-  test("default profile routes to the right server when no --profile is given", async () => {
-    const secretA = "e2e-cli-default-A-secret-abcdef";
-    const secretB = "e2e-cli-default-B-secret-abcdef";
+    test("default profile routes to the right server when no --profile is given", async () => {
+      const secretA = "e2e-cli-default-A-secret-abcdef";
+      const secretB = "e2e-cli-default-B-secret-abcdef";
 
-    hA = await startE2E({
-      botConfig: claudeBot("alpha-A"),
-      tokens: [mkToken("a", secretA, { bot_ids: ["alpha-A"], scopes: ["ask"] })],
-    });
-    hB = await startE2E({
-      botConfig: claudeBot("beta-B"),
-      tokens: [mkToken("b", secretB, { bot_ids: ["beta-B"], scopes: ["ask"] })],
-    });
+      hA = await startE2E({
+        botConfig: claudeBot("alpha-A"),
+        tokens: [
+          mkToken("a", secretA, { bot_ids: ["alpha-A"], scopes: ["ask"] }),
+        ],
+      });
+      hB = await startE2E({
+        botConfig: claudeBot("beta-B"),
+        tokens: [
+          mkToken("b", secretB, { bot_ids: ["beta-B"], scopes: ["ask"] }),
+        ],
+      });
 
-    const xdg = writeProfileToml(
-      {
-        prodA: { server: hA.base, token: secretA },
-        prodB: { server: hB.base, token: secretB },
-      },
-      "prodB", // B is default.
-    );
+      const xdg = writeProfileToml(
+        {
+          prodA: { server: hA.base, token: secretA },
+          prodB: { server: hB.base, token: secretB },
+        },
+        "prodB", // B is default.
+      );
 
-    const res = await runCli(["bots", "list", "--json"], {
-      XDG_CONFIG_HOME: xdg,
-    });
-    expect(res.exitCode).toBe(0);
-    const body = JSON.parse(res.stdout);
-    expect(body.bots.map((b: { bot_id: string }) => b.bot_id)).toEqual([
-      "beta-B",
-    ]);
-  }, 60_000);
+      const res = await runCli(["bots", "list", "--json"], {
+        XDG_CONFIG_HOME: xdg,
+      });
+      expect(res.exitCode).toBe(0);
+      const body = JSON.parse(res.stdout);
+      expect(body.bots.map((b: { bot_id: string }) => b.bot_id)).toEqual([
+        "beta-B",
+      ]);
+    }, 60_000);
 
-  test("--profile bogus exits 2 with a helpful message; does not hit either server", async () => {
-    const secretA = "e2e-cli-bogus-secret-abcdef1234";
-    hA = await startE2E({
-      botConfig: claudeBot("alpha-A"),
-      tokens: [mkToken("a", secretA, { bot_ids: ["alpha-A"], scopes: ["ask"] })],
-    });
-    const xdg = writeProfileToml(
-      {
-        prodA: { server: hA.base, token: secretA },
-      },
-      "prodA",
-    );
+    test("--profile bogus exits 2 with a helpful message; does not hit either server", async () => {
+      const secretA = "e2e-cli-bogus-secret-abcdef1234";
+      hA = await startE2E({
+        botConfig: claudeBot("alpha-A"),
+        tokens: [
+          mkToken("a", secretA, { bot_ids: ["alpha-A"], scopes: ["ask"] }),
+        ],
+      });
+      const xdg = writeProfileToml(
+        {
+          prodA: { server: hA.base, token: secretA },
+        },
+        "prodA",
+      );
 
-    const res = await runCli(
-      ["bots", "list", "--profile", "does-not-exist", "--json"],
-      { XDG_CONFIG_HOME: xdg },
-    );
-    expect(res.exitCode).toBe(2);
-    expect(res.stderr + res.stdout).toMatch(/does-not-exist|profile/i);
-  }, 60_000);
-});
+      const res = await runCli(
+        ["bots", "list", "--profile", "does-not-exist", "--json"],
+        { XDG_CONFIG_HOME: xdg },
+      );
+      expect(res.exitCode).toBe(2);
+      expect(res.stderr + res.stdout).toMatch(/does-not-exist|profile/i);
+    }, 60_000);
+  },
+);

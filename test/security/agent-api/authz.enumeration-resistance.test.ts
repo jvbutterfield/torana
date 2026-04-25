@@ -68,7 +68,16 @@ describe("§12.5.2 authz.enumeration-resistance", () => {
     // this via raw SQL since the public insert helpers are purpose-
     // specific.
     h = startHarness({ tokens: [attacker] });
-    const db = (h.db as unknown as { _db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown; run: (...a: unknown[]) => unknown } } })._db;
+    const db = (
+      h.db as unknown as {
+        _db: {
+          prepare: (s: string) => {
+            get: (...a: unknown[]) => unknown;
+            run: (...a: unknown[]) => unknown;
+          };
+        };
+      }
+    )._db;
     db.prepare(
       `INSERT INTO inbound_updates (id, bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json)
        VALUES (1, 'bot1', 1, 100, 1, '1', '{}')`,
@@ -135,5 +144,78 @@ describe("§12.5.2 authz.enumeration-resistance", () => {
     // equivalence, not the byte-equivalence.
     expect((await rValid.json()).error).toBe("turn_not_found");
     expect((await rMalformed.json()).error).toBe("turn_not_found");
+  });
+
+  test("malformed / out-of-range / valid-not-yours all hit the DB lookup", async () => {
+    // Timing-uniformity invariant: every 404 path must take the DB
+    // round-trip, otherwise the malformed branch is fast-pathed and an
+    // attacker can distinguish "id you don't own" from "id that can't
+    // exist" by latency. Hard to assert wall-clock timing reliably, so
+    // we instead spy on getTurnExtended and require it was called for
+    // every authenticated 404 case.
+    h = startHarness({ tokens: [attacker, victim] });
+
+    const lookupCalls: unknown[] = [];
+    const origLookup = h.db.getTurnExtended.bind(h.db);
+    h.db.getTurnExtended = (id: number) => {
+      lookupCalls.push(id);
+      return origLookup(id);
+    };
+
+    // (a) Valid integer id owned by another caller.
+    const victimTurnId = h.db.insertAskTurn({
+      botId: "bot1",
+      tokenName: "victim",
+      sessionId: "v-sess-spy",
+      textPreview: "secret",
+      attachmentPaths: [],
+    });
+    // Reset the spy after the insert (which doesn't go through getTurnExtended,
+    // but be defensive in case future helpers do).
+    lookupCalls.length = 0;
+
+    const rValidNotYours = await fetch(`${h.base}/v1/turns/${victimTurnId}`, {
+      headers: { Authorization: `Bearer ${attackerSecret}` },
+    });
+
+    // (b) Out-of-range valid integer (no row will match).
+    const rOutOfRange = await fetch(`${h.base}/v1/turns/9999999999`, {
+      headers: { Authorization: `Bearer ${attackerSecret}` },
+    });
+
+    // (c) Malformed (non-integer) id.
+    const rMalformed = await fetch(`${h.base}/v1/turns/not-a-number`, {
+      headers: { Authorization: `Bearer ${attackerSecret}` },
+    });
+
+    // (d) Negative integer id.
+    const rNegative = await fetch(`${h.base}/v1/turns/-1`, {
+      headers: { Authorization: `Bearer ${attackerSecret}` },
+    });
+
+    // All four should look identical to a caller.
+    expect(rValidNotYours.status).toBe(404);
+    expect(rOutOfRange.status).toBe(404);
+    expect(rMalformed.status).toBe(404);
+    expect(rNegative.status).toBe(404);
+
+    const bodies = await Promise.all([
+      rValidNotYours.text(),
+      rOutOfRange.text(),
+      rMalformed.text(),
+      rNegative.text(),
+    ]);
+    // Byte-identical bodies — no leak of which branch produced the 404.
+    expect(new Set(bodies).size).toBe(1);
+    expect(JSON.parse(bodies[0]!).error).toBe("turn_not_found");
+
+    // The DB was queried in all four cases. This is the timing-
+    // uniformity guarantee — every authenticated 404 path takes the
+    // round-trip, not just the ones with a syntactically valid id.
+    expect(lookupCalls.length).toBe(4);
+    // Malformed / negative coerce to 0 (or any sentinel that misses);
+    // the only requirement is the lookup was issued at all.
+    expect(lookupCalls).toContain(victimTurnId);
+    expect(lookupCalls).toContain(9999999999);
   });
 });

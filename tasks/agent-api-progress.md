@@ -20,7 +20,7 @@ The branch is gone — resume on `main`.
 
 1. `git checkout main && git pull` — tip commit `2144b33` (the squash
    merge; title `rc.5: Agent API v1 — /v1/* + side-session pool +
-   CLI + skills`). Tag `v1.0.0-rc.5` points here.
+CLI + skills`). Tag `v1.0.0-rc.5` points here.
 2. Sanity-check:
    - `bun test` — expect **1142 pass / 13 skip / 0 fail**. The 13
      skips are all env-gated (4 `CODEX_E2E=1` + 8 `AGENT_API_E2E=1` +
@@ -80,6 +80,7 @@ same CI:
   real and verified.
 
 ### Conventions in use on this branch
+
 - One commit per phase, with the exact `US-xxx` tag in the subject line.
 - Test files colocated under `test/agent-api/`, `test/runner/`,
   `test/cli/`, `test/docs/`, or `test/metrics/` — never under `src/`.
@@ -124,7 +125,7 @@ same CI:
   session semantics in its envelope and throws
   `RunnerDoesNotSupportSideSessions` from all side-session methods.
   Protocol capability descriptors live in
-  [src/runner/protocols/*.ts](../src/runner/protocols) so adding a new
+  [src/runner/protocols/\*.ts](../src/runner/protocols) so adding a new
   protocol means one edit, not three.
 - **Histogram bucket sequence** is exported as `DURATION_BUCKETS_MS`
   from [src/metrics.ts](../src/metrics.ts). The doc-shape test parses
@@ -146,6 +147,7 @@ same CI:
   Empty stdin is a usage error.
 
 ### Surprises / gotchas worth remembering
+
 - `AskBodySchema` enforces `timeout_ms >= 1000`. For 202-timeout tests
   you can't use `slow-echo` (500ms) — use the `very-slow` (2s)
   claude-mock mode added in the gap-fill pass. `error-turn` mode emits
@@ -155,7 +157,7 @@ same CI:
   `BEGIN IMMEDIATE` on a unique-constraint collision). Both set
   `outcome.replay = true` in the handler. The in-txn path is
   exercised by `test/agent-api/handlers.metrics.test.ts >
-  "in-txn replay"` — two concurrent POSTs with the same key.
+"in-txn replay"` — two concurrent POSTs with the same key.
 - `agentApiSnapshot()` lazy-inits per bot — snapshot returns `{}` if
   nothing ever recorded. Tests checking "no metrics were touched"
   should assert the bot key is absent, not that counters are 0.
@@ -173,28 +175,28 @@ same CI:
 
 ## Phase tracker
 
-| Phase | Status | User stories | Notes |
-|---|---|---|---|
-| 1 — Foundation | ✅ Complete (`c2b7cee`) | US-001 US-002 US-003 US-004 | Config + DB + /v1 routing + auth + runner iface stubs |
-| 2a — ClaudeCodeRunner side-sessions | ✅ Complete (`117a9bb`) | US-005 | |
-| 3 — Side-session pool | ✅ Complete (`24aec5b`) | US-008 | LRU + idle/hard TTL + orphan listeners |
-| 4a — Ask + turns handlers | ✅ Complete (`94445a1`) | US-009 US-010 | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints |
-| — End-to-end smoke | ✅ Complete (`94445a1`) | — | `test/agent-api/ask.test.ts` round-trips through mock claude binary |
-| 4b — Inject path | ✅ Complete (`b09f746`) | US-011 US-012 | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests |
-| 4b e2e — Inject delivery round-trip | ✅ Complete (`d2c99b0`) | US-011 US-012 | FakeTelegram round-trip: HTTP user_id/chat_id, idempotency replay (no double-send), ACL re-check, scope check, CLI subprocess (6 tests) |
-| 5 — Cross-cutting (full) | ✅ Complete (`35b355d`) | US-013 US-014 | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests |
-| 6 — CLI core | ✅ Complete (`f7aa077`) | US-018 (partial) | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests |
-| 2b — CodexRunner side-sessions | ✅ Complete (`7967c93`) | US-006 | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration) |
-| 2c — CommandRunner side-sessions | ✅ Complete (`b7ab18f`) | US-007 | Protocol capability descriptors (`claudeNdjsonCapabilities`/`codexJsonlCapabilities`/`jsonlTextCapabilities`); per-session subprocess spawn with `TORANA_SESSION_ID=<id>` env var; `runnerSupportsSideSessions` now protocol-aware; doctor C011 labels offender as `command/<protocol>`; `examples/side-session-runner/` (~60 lines Bun) demonstrates the pattern; **31 new tests** across `command.side-session.test.ts` (26), `example-side-session-runner.test.ts` (1), `side-session-stub.test.ts` (+3 cases), `doctor.agent-api.test.ts` (+2 C011 cases) |
-| 2c gap-fill | ✅ Complete (`c2d96af`) | US-007 | Critical quality-review pass closed 7 gaps: end-to-end `POST /v1/bots/:id/ask` via `CommandRunner(claude-ndjson)` + `(codex-jsonl)` + `jsonl-text`→501 (10 tests in new `ask.command.test.ts`); `stopSideSession` unknown-id silent + concurrent coalescence; `startSideSession` rejects on exit-before-ready (new `crash-on-start` mock mode); `sideStartupMs` fallback verified; side-turn attachments for both protocols; explicit `TORANA_SESSION_ID` env var contract (new `reply-env` mock mode). **20 new tests** (10 ask.command + 10 command.side-session additions). No production code changed. |
-| 6b — CLI follow-ups + skills | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates |
-| 7 — Observability + docs | ✅ Complete (`23abefd`) | US-015 US-016 US-017 | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests |
-| 7 gap-fill | ✅ Complete (`adfbcc4`) | US-015 US-016 | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test |
-| 8 — §12.10 error-path coverage matrix | ✅ Complete (`799caad`) | US-015 | Closed the one gap in §12.10: `method_not_allowed` had zero emission sites + zero test assertions. Fix in `src/server.ts` — `/v1/*` paths now return canonical JSON `{error, message}` on 405 (non-`/v1/*` paths keep the plain-text 405 for backwards compat — no agent-api coupling at the transport layer). **93 new tests**: 6 in `test/server/router.method.test.ts` (PUT/PATCH against /v1/*, unregistered /v1 path, non-/v1 plain-text preserved, statusFor drift-guard, GET 200 no-regression) + 87 in `test/agent-api/errors.coverage.test.ts` (the matrix drift-guard itself: 29 codes × 3 invariants — `statusFor` returns a valid 4xx/5xx, emitted from ≥1 src file, asserted by ≥1 test). The coverage test parses `STATUS_MAP` out of `errors.ts` so new codes are auto-included; `method_not_allowed` is whitelisted to `src/server.ts` since its emission site is at the transport layer. Full suite: **987 pass / 4 skip / 0 fail**. |
-| 9 — §12.5 security matrix | ✅ Complete (`4ec673f`) | US-015 | All 30 matrix files under `test/security/agent-api/`, backed by a shared `_harness.ts` (spins up a real HTTP server + GatewayDB + stubbed pool/orphans/registry). **151 new tests across 31 files** (30 matrix + 1 manifest drift-guard): auth (no-header / wrong-scheme / wrong-token / timing / case-mutation / log-redaction — 6 files), authz (wrong-bot / wrong-scope / enumeration-resistance / admin-scope — 4), input validation (huge-body / zip-bomb / path-traversal / null-byte / source-label / idempotency-key-injection / yaml-bomb / marker-injection — 8), resource exhaustion (side-session-flood against real pool / disk-fill via `computeDiskUsage` injection / slow-loris behavioural pin / idempotency-store-bloat with 10k seeded rows + sweep timing — 4), injection class (chat-forgery / acl-bypass / cross-bot / idempotency-reuse-different-content / runner-prompt-injection — 5), disclosure (error-body / metrics-labels — verifies scrape output has only `bot_id/status/result/reason/outcome/replay/route/mode/le` labels / logs — end-to-end log capture with secret + URL-pattern redaction — 3). `_manifest.test.ts` pins the file list against the matrix in impl-plan §12.5; new rows must add both a test file and a manifest entry. No production code changed. Full suite: **1138 pass / 4 skip / 0 fail**. |
-| 10 — §12.4 E2E matrix + claude UUID fix | ✅ Complete (`fe3facf`) | US-015 | `test/e2e/agent-api/` created — 4 matrix files + 1 manifest drift-guard + shared `_harness.ts` (real `startGateway()` + `ClaudeCodeRunner`/`CodexRunner` + optional FakeTelegram). The suite is gated by `AGENT_API_E2E=1`; `inject-claude.test.ts` additionally needs `TELEGRAM_TEST_BOT_TOKEN` + `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`. Running `AGENT_API_E2E=1 bun test test/e2e/agent-api/` yields **10 pass / 1 skip / 0 fail in ~30s**. **Production fix discovered + landed**: Claude CLI 2.1+ validates `--session-id` as a strict UUID and rejects the pool's `eph-<uuid>` / caller-named IDs (which match `^[A-Za-z0-9_-]{1,64}$` only). `ClaudeCodeRunner` now mints a fresh UUID per `startSideSession` (stored on the entry as `claudeUuid`) and passes that to the CLI; the pool's `sessionId` remains the public API. Regression test in `test/runner/claude-code.side-session.test.ts` pins the substitution. Also: `_harness.ts` exports `inheritedEnv()` because claude + codex auth needs more than HOME + PATH in the subprocess (keychain, XDG_*); E2E runners inherit the full test env. Non-E2E suite: **1142 pass / 12 skip / 0 fail** (+4 from phase: manifest guard + UUID regression + pre-existing). |
-| 11 — §12.7 soak harness | ✅ Complete (`36255f0`) | US-015 | `test/soak/agent-api.test.ts` gated by `AGENT_API_SOAK=1`. Spins up a real gateway + `CommandRunner(claude-ndjson)` side-session path + FakeTelegram, fires ask + inject at env-configurable cadence, samples RSS / FDs (via `lsof -p`) / pool-live / idempotency rows on a timer, writes every sample to `artifacts/samples.jsonl`, and on completion aggregates into a pass/fail `report.json` per the §12.7 invariants: post-1h RSS within ±20% of median, FDs bounded (≤ 2× initial), `side_sessions_live` ≤ `max_global`, idempotency rows drop after retention, zero unhandled rejections, zero orphan `side_sessions` rows at shutdown, and ≥99% success on both routes. Env params: `AGENT_API_SOAK_DURATION_MS` (default 24h), `_SAMPLE_INTERVAL_MS` (default 60s), `_WORKLOAD_INTERVAL_MS` (default 60s for PRD rate), `_IDEMPOTENCY_RETENTION_MS` (default 24h), `_ARTIFACT_DIR`. **65-min short soak at 12×-rate passed clean**: 779/779 ask + 779/779 inject, RSS stable 52–67 MB (post-hour median 65 MB, within ±20%), FDs 140→142, pool peak 3/8, idempotency peaked 707 and dropped to 120 after the retention sweep, zero orphans, zero rejections. Full 24h at PRD rate is the final gate before 1.0.0 stable. |
-| rc.5 release prep | ✅ Complete (`952b0d8`) | — | Not a phase; bundles all of: `package.json` rc.4 → rc.5 + `files` extension for `examples/side-session-runner/`; `codex-plugin/{plugin.json, marketplace.json}` version sync; `scripts/verify-pack.ts` REQUIRED extension (agent-api migrations + skills + codex-plugin + example files); `.github/workflows/ci.yml` docker-install-smoke extension (every agent-api CLI subcommand --help + skill/codex-plugin path existence); CHANGELOG rc.5 cut with upgrade notes + Phase-10 "Fixed" entry; docs/agent-api.md MIME allowlist + idempotency-key rationale; docs/cli.md stale-profile-language fix; docs/writing-a-runner.md stale-CommandRunner fix + `TORANA_SESSION_ID` docs; README 675→1142 + new commands + rc.5/rc.4 in Recent + new test gates; `.gitignore` adds `.claude/` + `tasks/*.md`; `test/docs/agent-api.test.ts` CHANGELOG assertion updated for post-cut shape. Full suite **1142 pass / 13 skip / 0 fail**; `bun audit` + `bun run build` + `verify-pack.ts` all clean. |
+| Phase                                   | Status                  | User stories                | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------- | ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1 — Foundation                          | ✅ Complete (`c2b7cee`) | US-001 US-002 US-003 US-004 | Config + DB + /v1 routing + auth + runner iface stubs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| 2a — ClaudeCodeRunner side-sessions     | ✅ Complete (`117a9bb`) | US-005                      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 3 — Side-session pool                   | ✅ Complete (`24aec5b`) | US-008                      | LRU + idle/hard TTL + orphan listeners                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 4a — Ask + turns handlers               | ✅ Complete (`94445a1`) | US-009 US-010               | Real `handleAsk`, `handleGetTurn`, `awaitSideTurn`, admin session endpoints                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| — End-to-end smoke                      | ✅ Complete (`94445a1`) | —                           | `test/agent-api/ask.test.ts` round-trips through mock claude binary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 4b — Inject path                        | ✅ Complete (`b09f746`) | US-011 US-012               | `user_chats` writer, chat resolver, marker wrap, `handleInject` + 23 tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 4b e2e — Inject delivery round-trip     | ✅ Complete (`d2c99b0`) | US-011 US-012               | FakeTelegram round-trip: HTTP user_id/chat_id, idempotency replay (no double-send), ACL re-check, scope check, CLI subprocess (6 tests)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| 5 — Cross-cutting (full)                | ✅ Complete (`35b355d`) | US-013 US-014               | Multipart attachments + orphan-file sweep + `idempotency.ts` helpers + 32 tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 6 — CLI core                            | ✅ Complete (`f7aa077`) | US-018 (partial)            | `AgentApiClient` + `torana ask/inject/turns/bots` + 142 tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 2b — CodexRunner side-sessions          | ✅ Complete (`7967c93`) | US-006                      | Per-turn spawn with `codex exec resume`; per-entry threadId; 26 tests (20 unit + 6 integration)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 2c — CommandRunner side-sessions        | ✅ Complete (`b7ab18f`) | US-007                      | Protocol capability descriptors (`claudeNdjsonCapabilities`/`codexJsonlCapabilities`/`jsonlTextCapabilities`); per-session subprocess spawn with `TORANA_SESSION_ID=<id>` env var; `runnerSupportsSideSessions` now protocol-aware; doctor C011 labels offender as `command/<protocol>`; `examples/side-session-runner/` (~60 lines Bun) demonstrates the pattern; **31 new tests** across `command.side-session.test.ts` (26), `example-side-session-runner.test.ts` (1), `side-session-stub.test.ts` (+3 cases), `doctor.agent-api.test.ts` (+2 C011 cases)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 2c gap-fill                             | ✅ Complete (`c2d96af`) | US-007                      | Critical quality-review pass closed 7 gaps: end-to-end `POST /v1/bots/:id/ask` via `CommandRunner(claude-ndjson)` + `(codex-jsonl)` + `jsonl-text`→501 (10 tests in new `ask.command.test.ts`); `stopSideSession` unknown-id silent + concurrent coalescence; `startSideSession` rejects on exit-before-ready (new `crash-on-start` mock mode); `sideStartupMs` fallback verified; side-turn attachments for both protocols; explicit `TORANA_SESSION_ID` env var contract (new `reply-env` mock mode). **20 new tests** (10 ask.command + 10 command.side-session additions). No production code changed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 6b — CLI follow-ups + skills            | ✅ Complete (`7b62e1c`) | US-018 (rest) US-019 US-020 | Profile store (TOML, mode 0600) + `torana config` (5 subcommands) + `resolveCredentials` precedence (flag > env > named > default); `--file @-` stdin for ask/inject with magic-byte MIME; `torana skills install --host=claude\|codex` + parity gate; codex-plugin scaffold (plugin.json + marketplace.json + README); `torana doctor --profile NAME` resolver wired to `runRemoteDoctor`; **125 new tests** across 10 files (profile, precedence, config.cmd, skills.install, skills.parity, skills.codex-manifest, files.stdin, stdin.file, dispatch.profile, help-snapshots); CHANGELOG + docs/cli.md updates                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 7 — Observability + docs                | ✅ Complete (`23abefd`) | US-015 US-016 US-017        | Metrics (counters + gauges + 2 histograms, 1 façade, wired into pool + handlers), doctor C009–C014 + R001–R003 (`runRemoteDoctor`), docs/agent-api.md + cli.md + README + 4 existing docs + CHANGELOG + doc-shape guard tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 7 gap-fill                              | ✅ Complete (`adfbcc4`) | US-015 US-016               | Handler failure-path metrics (ask 202/500/503/501/429x2; inject in-txn replay), new `ask_orphan_resolutions_total` counter + orphan-listener wiring + 7 tests, `/metrics` scrape integration (3 tests), subprocess doctor round-trip (5 tests), `runnerTypeSupportsSideSessions` helper + drift-guard test, `DURATION_BUCKETS_MS` exported + doc-sync test                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| 8 — §12.10 error-path coverage matrix   | ✅ Complete (`799caad`) | US-015                      | Closed the one gap in §12.10: `method_not_allowed` had zero emission sites + zero test assertions. Fix in `src/server.ts` — `/v1/*` paths now return canonical JSON `{error, message}` on 405 (non-`/v1/*` paths keep the plain-text 405 for backwards compat — no agent-api coupling at the transport layer). **93 new tests**: 6 in `test/server/router.method.test.ts` (PUT/PATCH against /v1/\*, unregistered /v1 path, non-/v1 plain-text preserved, statusFor drift-guard, GET 200 no-regression) + 87 in `test/agent-api/errors.coverage.test.ts` (the matrix drift-guard itself: 29 codes × 3 invariants — `statusFor` returns a valid 4xx/5xx, emitted from ≥1 src file, asserted by ≥1 test). The coverage test parses `STATUS_MAP` out of `errors.ts` so new codes are auto-included; `method_not_allowed` is whitelisted to `src/server.ts` since its emission site is at the transport layer. Full suite: **987 pass / 4 skip / 0 fail**.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 9 — §12.5 security matrix               | ✅ Complete (`4ec673f`) | US-015                      | All 30 matrix files under `test/security/agent-api/`, backed by a shared `_harness.ts` (spins up a real HTTP server + GatewayDB + stubbed pool/orphans/registry). **151 new tests across 31 files** (30 matrix + 1 manifest drift-guard): auth (no-header / wrong-scheme / wrong-token / timing / case-mutation / log-redaction — 6 files), authz (wrong-bot / wrong-scope / enumeration-resistance / admin-scope — 4), input validation (huge-body / zip-bomb / path-traversal / null-byte / source-label / idempotency-key-injection / yaml-bomb / marker-injection — 8), resource exhaustion (side-session-flood against real pool / disk-fill via `computeDiskUsage` injection / slow-loris behavioural pin / idempotency-store-bloat with 10k seeded rows + sweep timing — 4), injection class (chat-forgery / acl-bypass / cross-bot / idempotency-reuse-different-content / runner-prompt-injection — 5), disclosure (error-body / metrics-labels — verifies scrape output has only `bot_id/status/result/reason/outcome/replay/route/mode/le` labels / logs — end-to-end log capture with secret + URL-pattern redaction — 3). `_manifest.test.ts` pins the file list against the matrix in impl-plan §12.5; new rows must add both a test file and a manifest entry. No production code changed. Full suite: **1138 pass / 4 skip / 0 fail**. |
+| 10 — §12.4 E2E matrix + claude UUID fix | ✅ Complete (`fe3facf`) | US-015                      | `test/e2e/agent-api/` created — 4 matrix files + 1 manifest drift-guard + shared `_harness.ts` (real `startGateway()` + `ClaudeCodeRunner`/`CodexRunner` + optional FakeTelegram). The suite is gated by `AGENT_API_E2E=1`; `inject-claude.test.ts` additionally needs `TELEGRAM_TEST_BOT_TOKEN` + `TELEGRAM_TEST_CHAT_ID` + `TELEGRAM_TEST_USER_ID`. Running `AGENT_API_E2E=1 bun test test/e2e/agent-api/` yields **10 pass / 1 skip / 0 fail in ~30s**. **Production fix discovered + landed**: Claude CLI 2.1+ validates `--session-id` as a strict UUID and rejects the pool's `eph-<uuid>` / caller-named IDs (which match `^[A-Za-z0-9_-]{1,64}$` only). `ClaudeCodeRunner` now mints a fresh UUID per `startSideSession` (stored on the entry as `claudeUuid`) and passes that to the CLI; the pool's `sessionId` remains the public API. Regression test in `test/runner/claude-code.side-session.test.ts` pins the substitution. Also: `_harness.ts` exports `inheritedEnv()` because claude + codex auth needs more than HOME + PATH in the subprocess (keychain, XDG\_\*); E2E runners inherit the full test env. Non-E2E suite: **1142 pass / 12 skip / 0 fail** (+4 from phase: manifest guard + UUID regression + pre-existing).                                                                                                        |
+| 11 — §12.7 soak harness                 | ✅ Complete (`36255f0`) | US-015                      | `test/soak/agent-api.test.ts` gated by `AGENT_API_SOAK=1`. Spins up a real gateway + `CommandRunner(claude-ndjson)` side-session path + FakeTelegram, fires ask + inject at env-configurable cadence, samples RSS / FDs (via `lsof -p`) / pool-live / idempotency rows on a timer, writes every sample to `artifacts/samples.jsonl`, and on completion aggregates into a pass/fail `report.json` per the §12.7 invariants: post-1h RSS within ±20% of median, FDs bounded (≤ 2× initial), `side_sessions_live` ≤ `max_global`, idempotency rows drop after retention, zero unhandled rejections, zero orphan `side_sessions` rows at shutdown, and ≥99% success on both routes. Env params: `AGENT_API_SOAK_DURATION_MS` (default 24h), `_SAMPLE_INTERVAL_MS` (default 60s), `_WORKLOAD_INTERVAL_MS` (default 60s for PRD rate), `_IDEMPOTENCY_RETENTION_MS` (default 24h), `_ARTIFACT_DIR`. **65-min short soak at 12×-rate passed clean**: 779/779 ask + 779/779 inject, RSS stable 52–67 MB (post-hour median 65 MB, within ±20%), FDs 140→142, pool peak 3/8, idempotency peaked 707 and dropped to 120 after the retention sweep, zero orphans, zero rejections. Full 24h at PRD rate is the final gate before 1.0.0 stable.                                                                                                                      |
+| rc.5 release prep                       | ✅ Complete (`952b0d8`) | —                           | Not a phase; bundles all of: `package.json` rc.4 → rc.5 + `files` extension for `examples/side-session-runner/`; `codex-plugin/{plugin.json, marketplace.json}` version sync; `scripts/verify-pack.ts` REQUIRED extension (agent-api migrations + skills + codex-plugin + example files); `.github/workflows/ci.yml` docker-install-smoke extension (every agent-api CLI subcommand --help + skill/codex-plugin path existence); CHANGELOG rc.5 cut with upgrade notes + Phase-10 "Fixed" entry; docs/agent-api.md MIME allowlist + idempotency-key rationale; docs/cli.md stale-profile-language fix; docs/writing-a-runner.md stale-CommandRunner fix + `TORANA_SESSION_ID` docs; README 675→1142 + new commands + rc.5/rc.4 in Recent + new test gates; `.gitignore` adds `.claude/` + `tasks/*.md`; `test/docs/agent-api.test.ts` CHANGELOG assertion updated for post-cut shape. Full suite **1142 pass / 13 skip / 0 fail**; `bun audit` + `bun run build` + `verify-pack.ts` all clean.                                                                                                                                                                                                                                                                                                                                                         |
 
 ---
 
@@ -303,6 +305,7 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 ### Commit `c2b7cee` — Phase 1 Foundation (US-001..US-004)
 
 ### US-001 — Config schema ✅
+
 - [src/config/schema.ts](../src/config/schema.ts): `AgentApiSchema` (tokens, side_sessions, inject, ask)
   added; `AgentApiTokenConfig` + `AgentApiConfig` exported; `SECRET_PATHS`
   extended with `agent_api.tokens[].secret_ref`; superRefine validates unknown
@@ -312,6 +315,7 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
   literal-token warning emitted for non-`${VAR}` secret_refs.
 
 ### US-002 — SQLite migration ✅
+
 - [src/db/migrations/0002_agent_api.sql](../src/db/migrations/0002_agent_api.sql): new tables (`user_chats`,
   `agent_api_idempotency`, `side_sessions`) + 7 nullable columns on `turns`
   (`source`, `agent_api_token_name`, `agent_api_source_label`, `final_text`,
@@ -336,6 +340,7 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
     `$from_user_id` / `$payload_json` named binds (bun:sqlite requires `$` prefix).
 
 ### US-003 — /v1 router + bearer auth ✅
+
 - [src/transport/types.ts](../src/transport/types.ts): `HttpMethod = "GET" | "POST" | "DELETE"`,
   `HttpRouter.route` accepts the widened type.
 - [src/server.ts](../src/server.ts): dispatcher recognizes DELETE.
@@ -363,6 +368,7 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
   through to `startGateway`.
 
 ### US-004 — Runner side-session interface ✅
+
 - [src/runner/types.ts](../src/runner/types.ts): `AgentRunner` gains `supportsSideSessions()`,
   `startSideSession(id)`, `sendSideTurn(id, turnId, text, attachments)`,
   `stopSideSession(id, graceMs?)`, `onSide(id, event, handler)`. Typed errors:
@@ -418,7 +424,7 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
 - [src/agent-api/pool.ts](../src/agent-api/pool.ts) — per-gateway pool.
   - `acquire(botId, sessionId|null)` returns
     `ok | capacity | busy | runner_error | gateway_shutting_down |
-    runner_does_not_support_side_sessions`.
+runner_does_not_support_side_sessions`.
   - Ephemeral path mints `eph-<uuid>`, auto-stops on release when inflight=0.
   - Keyed reuse: inflight=1 max; second acquire on same id while in-flight
     returns `busy`.
@@ -464,7 +470,7 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
   (handler-finally, orphan-listener-terminal) calls `pool.release`.
 - [src/agent-api/orphan-listeners.ts](../src/agent-api/orphan-listeners.ts)
   — `OrphanListenerManager`. `attach(runner, botId, sessionId, turnId,
-  backstopMs?)` subscribes to terminal events; applies them to the
+backstopMs?)` subscribes to terminal events; applies them to the
   `turns` row; calls `pool.release`. 1h backstop timer. `shutdown()`
   force-releases all pending registrations so `pool.shutdown` can drain.
 - [src/agent-api/handlers/turns.ts](../src/agent-api/handlers/turns.ts) —
@@ -553,12 +559,12 @@ c2b7cee agent-api phase 1: config + db + auth + runner iface stubs
   re-exports the key validator from schemas for call-site clarity;
   `sweepIdempotencyRows` wrapper that swallows transient DB errors.
 - [src/agent-api/handlers/inject.ts](../src/agent-api/handlers/inject.ts)
-  + [src/agent-api/handlers/ask.ts](../src/agent-api/handlers/ask.ts)
-  — both detect `multipart/form-data` and route through
-  `parseMultipartRequest`. File-lifecycle discipline: writes happen
-  BEFORE the DB transaction; any failure (zod validation, chat resolve,
-  ACL re-check, runner precheck, pool failure, DB throw, in-txn
-  replay) triggers `cleanupFiles` before return.
+  - [src/agent-api/handlers/ask.ts](../src/agent-api/handlers/ask.ts)
+    — both detect `multipart/form-data` and route through
+    `parseMultipartRequest`. File-lifecycle discipline: writes happen
+    BEFORE the DB transaction; any failure (zod validation, chat resolve,
+    ACL re-check, runner precheck, pool failure, DB throw, in-txn
+    replay) triggers `cleanupFiles` before return.
 - [src/main.ts](../src/main.ts) — `sweepUnreferencedAgentApiFiles`
   wired onto the hourly timer (agent-api-gated); cleared on shutdown.
 - Tests (32 new):
@@ -599,9 +605,9 @@ bytes" remains unverified. Real-claude E2E covers this in soak.
   `malformed_response` codes added for transport-level failures.
   `fetchImpl` injectable for tests.
 - [src/cli/shared/args.ts](../src/cli/shared/args.ts) — `extractChain`
-  + `parseFlags` (two-pass), `resolveCredentials` (flag > env),
-  `COMMON_FLAGS`. `CliUsageError` propagates to dispatch loop for
-  exit-2 mapping.
+  - `parseFlags` (two-pass), `resolveCredentials` (flag > env),
+    `COMMON_FLAGS`. `CliUsageError` propagates to dispatch loop for
+    exit-2 mapping.
 - [src/cli/shared/exit.ts](../src/cli/shared/exit.ts) — `ExitCode`
   enum (success/internal/badUsage/authFailed/notFound/serverError/
   timeout/capacity) + `exitCodeFor(code, status?)` covering every
@@ -627,9 +633,10 @@ bytes" remains unverified. Real-claude E2E covers this in soak.
   so users can read help without env vars set.
 
 **Tests added (142):**
+
 - [test/cli/args.test.ts](../test/cli/args.test.ts) — 24 tests:
   extractChain coverage, parseFlags bool/value/values + short + `--`
-  + every error path, resolveCredentials precedence + missing-flag.
+  - every error path, resolveCredentials precedence + missing-flag.
 - [test/cli/exit.test.ts](../test/cli/exit.test.ts) — 28 tests:
   every code mapped + status fallback for unknown future codes.
 - [test/cli/output.test.ts](../test/cli/output.test.ts) — 8 tests:
@@ -698,6 +705,7 @@ calls these out so the next session can pick up cleanly.
   `{accepted:false, reason:"not_ready"}` rather than throwing.
 
 Behavior chosen during implementation (not in plan):
+
 - `dispatchSide` clears `entry.activeTurn`/promotes status to ready on
   `done`/`error` (matching main runner). The "thread.started after
   turn.completed" test inserts a brief `await` between turns so
@@ -762,7 +770,7 @@ Behavior chosen during implementation (not in plan):
     thing between callers and the bot — confirm TLS + firewall posture).
   - `runRemoteDoctor({server, token, timeoutMs?, fetchImpl?})` →
     `DoctorResult`. R001 = `GET /v1/health` within 2s. R002 = `GET
-    /v1/bots` with token → 200 + non-empty (empty emits `warn`, not
+/v1/bots` with token → 200 + non-empty (empty emits `warn`, not
     `fail`). R003 = TLS handshake (re-probe /v1/health on https://;
     skip on http://). Uses a per-call `AbortController` + `signal`
     threaded into `fetchImpl` so timeouts actually fire.
@@ -786,7 +794,7 @@ Behavior chosen during implementation (not in plan):
   commands (start/doctor/validate/migrate/version) with the new
   C009–C014 + R001–R003 tables; agent-api client commands
   (ask/inject/turns get/bots list) with every flag + every exit code
-  + the stable 0/1/2/3/4/5/6/7 taxonomy.
+  - the stable 0/1/2/3/4/5/6/7 taxonomy.
 - [docs/security.md](../docs/security.md) — new "Agent API auth"
   subsection on bearer-only model, per-bot + per-scope scoping, inject
   ACL re-check, no-enumeration, attachment hardening, idempotency as a
@@ -942,6 +950,7 @@ observability hole. All addressed in this commit.
     NDJSON parser maps it to a `{kind:"error"}` event.
 
 **Tests added (+28, 691 → 719):**
+
 - 7 handler-failure tests (handlers.metrics.test.ts)
 - 7 orphan-listener tests (new orphan-listeners.test.ts)
 - 3 /metrics integration tests (new metrics.scrape.test.ts)
@@ -1030,7 +1039,7 @@ several gaps. Filled in this pass (+51 tests, 562 → 613):
   `db.createTurn` to throw, asserts `user_chats` row was rolled back —
   proves `upsertUserChat` is genuinely inside the same transaction.
 - **[test/agent-api/inject.source-regex.test.ts](../test/agent-api/inject.source-regex.test.ts)
-  (+8 tests).** Regex itself (lowercase/digit/_/- ok, uppercase/space/dot
+  (+8 tests).** Regex itself (lowercase/digit/\_/- ok, uppercase/space/dot
   rejected, 64 ok / 65 rejected) and HTTP-layer assertions: 64-char
   source accepted at the cap, 65-char rejected, uppercase rejected
   (PRD: lowercase only), dot rejected, empty rejected.
@@ -1039,6 +1048,7 @@ several gaps. Filled in this pass (+51 tests, 562 → 613):
 
 **Notes for the next session — confirmed-but-untested gaps left as
 follow-ups:**
+
 - Timing-safe constant-time token comparison: a meaningful microbench
   test is fragile; trust the `crypto.timingSafeEqual` invocation in
   [src/agent-api/auth.ts](../src/agent-api/auth.ts) and lock it in via
@@ -1088,10 +1098,10 @@ follow-ups:**
   `runnerSupportsSideSessions`. Offender label surfaces the protocol
   for command runners: `command/jsonl-text` vs `command/claude-ndjson`.
 - [test/runner/fixtures/command-ndjson-mock.ts](../test/runner/fixtures/command-ndjson-mock.ts)
-  + [test/runner/fixtures/command-codex-mock.ts](../test/runner/fixtures/command-codex-mock.ts)
-  — new behavior-configurable mocks (modes: `normal`, `slow-echo`,
-  `crash-on-turn`, `no-ready`). Both stamp `TORANA_SESSION_ID` onto
-  replies so tests can see routing worked end-to-end.
+  - [test/runner/fixtures/command-codex-mock.ts](../test/runner/fixtures/command-codex-mock.ts)
+    — new behavior-configurable mocks (modes: `normal`, `slow-echo`,
+    `crash-on-turn`, `no-ready`). Both stamp `TORANA_SESSION_ID` onto
+    replies so tests can see routing worked end-to-end.
 - [test/runner/command.side-session.test.ts](../test/runner/command.side-session.test.ts)
   — 26 tests. `jsonl-text` block (2 tests): supports-false + all four
   methods throw. Shared block iterated over both `claude-ndjson` and
@@ -1124,6 +1134,7 @@ follow-ups:**
   confirm `command/claude-ndjson` and `command/codex-jsonl` PASS C011.
 
 **Behavior chosen during implementation (not in plan):**
+
 - **No wire-format change.** Plan §4.3 mentioned adding a `session`
   field to the `claude-ndjson` outbound envelope for multiplexing.
   Skipped because the impl uses per-session subprocesses (Claude-style)
@@ -1190,9 +1201,9 @@ custom runner):**
     Previously only asserted implicitly via session-label tags.
 
 - [test/runner/fixtures/command-ndjson-mock.ts](../test/runner/fixtures/command-ndjson-mock.ts)
-  + [test/runner/fixtures/command-codex-mock.ts](../test/runner/fixtures/command-codex-mock.ts)
-  — 2 new modes (`crash-on-start`, `reply-env`) + codex mock parses
-  outbound `attachments[]` so it can surface paths in replies.
+  - [test/runner/fixtures/command-codex-mock.ts](../test/runner/fixtures/command-codex-mock.ts)
+    — 2 new modes (`crash-on-start`, `reply-env`) + codex mock parses
+    outbound `attachments[]` so it can surface paths in replies.
 
 **Phase 2c gap-fill tests**: 20 new expectations (10 ask.command + 10
 unit). Full suite 874 → **894 pass** / 4 skip / 0 fail.

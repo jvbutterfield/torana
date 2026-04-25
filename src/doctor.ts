@@ -139,7 +139,6 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
-
   // C006 — webhook base_url reachable (HEAD; any non-5xx is pass).
   const usesWebhook =
     config.transport.default_mode === "webhook" ||
@@ -220,7 +219,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       status: "skip",
       detail: "no alerts block configured",
     });
-  } else if (config.alerts.via_bot && config.bots.some((b) => b.id === config.alerts!.via_bot)) {
+  } else if (
+    config.alerts.via_bot &&
+    config.bots.some((b) => b.id === config.alerts!.via_bot)
+  ) {
     checks.push({
       id: "C008",
       status: "ok",
@@ -250,7 +252,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checks.push({
       id: "C009",
       status: "warn",
-      detail: "agent_api.enabled=true but no tokens defined — no callers can authenticate",
+      detail:
+        "agent_api.enabled=true but no tokens defined — no callers can authenticate",
     });
   } else {
     checks.push({
@@ -361,10 +364,14 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     const ask = agentApi.ask;
     const violations: string[] = [];
     if (ss.idle_ttl_ms > ss.hard_ttl_ms) {
-      violations.push(`side_sessions.idle_ttl_ms(${ss.idle_ttl_ms}) > hard_ttl_ms(${ss.hard_ttl_ms})`);
+      violations.push(
+        `side_sessions.idle_ttl_ms(${ss.idle_ttl_ms}) > hard_ttl_ms(${ss.hard_ttl_ms})`,
+      );
     }
     if (ss.max_per_bot > ss.max_global) {
-      violations.push(`side_sessions.max_per_bot(${ss.max_per_bot}) > max_global(${ss.max_global})`);
+      violations.push(
+        `side_sessions.max_per_bot(${ss.max_per_bot}) > max_global(${ss.max_global})`,
+      );
     }
     if (ask.default_timeout_ms > ask.max_timeout_ms) {
       violations.push(
@@ -402,9 +409,57 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checks.push({
       id: "C014",
       status: "warn",
-      detail:
-        `agent_api bound on port ${config.gateway.port}; ensure TLS + network access controls (reverse proxy, firewall, VPN) match the trust model of the ${agentApi.tokens.length} token(s)`,
+      detail: `agent_api bound on port ${config.gateway.port}; ensure TLS + network access controls (reverse proxy, firewall, VPN) match the trust model of the ${agentApi.tokens.length} token(s)`,
     });
+  }
+
+  // C015 — DB file permissions. The DB contains every bot token,
+  // inbound Telegram message payloads (text + PII), and agent-API
+  // turn rows. If the file is world/group-readable, any other user on
+  // the host can read credentials and message contents directly.
+  // GatewayDB + applyMigrations chmod the file to 0600 on open, but
+  // pre-existing DBs created before this release may still be wide
+  // open, and some filesystems (Windows NTFS, certain FUSE mounts)
+  // don't honour chmod — flag those here so operators notice.
+  const dbPath =
+    config.gateway.db_path ?? resolve(config.gateway.data_dir, "gateway.db");
+  if (process.platform === "win32") {
+    checks.push({
+      id: "C015",
+      status: "skip",
+      detail: "db permission check not applicable on Windows",
+    });
+  } else if (!existsSync(dbPath)) {
+    checks.push({
+      id: "C015",
+      status: "skip",
+      detail: `db does not exist yet (${dbPath})`,
+    });
+  } else {
+    try {
+      const stat = statSync(dbPath);
+      const mode = stat.mode & 0o777;
+      const worldOrGroupReadable = (mode & 0o044) !== 0;
+      if (worldOrGroupReadable) {
+        checks.push({
+          id: "C015",
+          status: "fail",
+          detail: `db file mode 0${mode.toString(8)} is group/world-readable; contains bot tokens + message history (recommend 0600)`,
+        });
+      } else {
+        checks.push({
+          id: "C015",
+          status: "ok",
+          detail: `db file mode 0${mode.toString(8)}`,
+        });
+      }
+    } catch (err) {
+      checks.push({
+        id: "C015",
+        status: "skip",
+        detail: `db permission check skipped: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   return { checks };
@@ -431,7 +486,9 @@ export async function runRemoteDoctor(
   const timeoutMs = opts.timeoutMs ?? 2_000;
   const fetchImpl = opts.fetchImpl ?? fetch;
 
-  async function withTimeout<T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async function withTimeout<T>(
+    fn: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {

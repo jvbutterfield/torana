@@ -28,7 +28,8 @@ function clientStub(overrides: Partial<AgentApiClient> = {}): AgentApiClient {
   return { ...base, ...overrides } as AgentApiClient;
 }
 
-const readerByPath = (map: Record<string, { data: Uint8Array; mime: string; filename: string }>) =>
+const readerByPath =
+  (map: Record<string, { data: Uint8Array; mime: string; filename: string }>) =>
   async (p: string) => {
     const r = map[p];
     if (!r) throw new Error(`reader: no stub for ${p}`);
@@ -51,7 +52,11 @@ describe("ask --file @-", () => {
       },
     });
     const read = readerByPath({
-      "@-": { data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mime: "image/png", filename: "stdin.png" },
+      "@-": {
+        data: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        mime: "image/png",
+        filename: "stdin.png",
+      },
     });
     const r = await runAsk(
       { argv: ["alpha", "hi", "--file", "@-"] },
@@ -78,8 +83,16 @@ describe("ask --file @-", () => {
       },
     });
     const read = readerByPath({
-      "@-": { data: new Uint8Array([0xff, 0xd8, 0xff]), mime: "image/jpeg", filename: "stdin.jpg" },
-      "/tmp/a.pdf": { data: new Uint8Array([0x25, 0x50, 0x44, 0x46]), mime: "application/pdf", filename: "a.pdf" },
+      "@-": {
+        data: new Uint8Array([0xff, 0xd8, 0xff]),
+        mime: "image/jpeg",
+        filename: "stdin.jpg",
+      },
+      "/tmp/a.pdf": {
+        data: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+        mime: "application/pdf",
+        filename: "a.pdf",
+      },
     });
     const r = await runAsk(
       { argv: ["alpha", "hi", "--file", "@-", "--file", "/tmp/a.pdf"] },
@@ -94,7 +107,11 @@ describe("ask --file @-", () => {
   test("two --file @- on the same call → bad usage (exit 2)", async () => {
     const client = clientStub();
     const read = readerByPath({
-      "@-": { data: new Uint8Array([0, 1]), mime: "application/octet-stream", filename: "stdin.bin" },
+      "@-": {
+        data: new Uint8Array([0, 1]),
+        mime: "application/octet-stream",
+        filename: "stdin.bin",
+      },
     });
     let caught: unknown;
     try {
@@ -107,7 +124,9 @@ describe("ask --file @-", () => {
     }
     // runAsk throws CliUsageError; the dispatcher converts it to exit 2.
     // Here we accept either a thrown error or a rendered bad-usage exit.
-    expect((caught as Error | undefined)?.message ?? "").toMatch(/@- may be given at most once/);
+    expect((caught as Error | undefined)?.message ?? "").toMatch(
+      /@- may be given at most once/,
+    );
   });
 });
 
@@ -121,7 +140,11 @@ describe("send --file @-", () => {
       },
     });
     const read = readerByPath({
-      "@-": { data: new Uint8Array([0x25, 0x50, 0x44, 0x46]), mime: "application/pdf", filename: "stdin.pdf" },
+      "@-": {
+        data: new Uint8Array([0x25, 0x50, 0x44, 0x46]),
+        mime: "application/pdf",
+        filename: "stdin.pdf",
+      },
     });
     const r = await runSend(
       {
@@ -150,20 +173,19 @@ describe("send --file @-", () => {
     });
     const r = await runSend(
       {
-        argv: [
-          "alpha",
-          "hi",
-          "--source",
-          "cal",
-          "--user-id",
-          "1",
-        ],
+        argv: ["alpha", "hi", "--source", "cal", "--user-id", "1"],
       },
       { client, generateKey: () => "auto-key-abcdef0123456789" },
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stderr.some((line) => line.startsWith("# auto-generated idempotency-key:"))).toBe(true);
-    expect(r.stderr.some((line) => line.includes("auto-key-abcdef0123456789"))).toBe(true);
+    expect(
+      r.stderr.some((line) =>
+        line.startsWith("# auto-generated idempotency-key:"),
+      ),
+    ).toBe(true);
+    expect(
+      r.stderr.some((line) => line.includes("auto-key-abcdef0123456789")),
+    ).toBe(true);
   });
 
   test("caller-supplied idempotency-key suppresses the auto notice", async () => {
@@ -192,7 +214,11 @@ describe("send --file @-", () => {
   test("two --file @- rejected with usage error", async () => {
     const client = clientStub();
     const read = readerByPath({
-      "@-": { data: new Uint8Array([0, 1]), mime: "application/octet-stream", filename: "stdin.bin" },
+      "@-": {
+        data: new Uint8Array([0, 1]),
+        mime: "application/octet-stream",
+        filename: "stdin.bin",
+      },
     });
     let caught: unknown;
     try {
@@ -216,6 +242,8 @@ describe("send --file @-", () => {
     } catch (e) {
       caught = e;
     }
-    expect((caught as Error | undefined)?.message ?? "").toMatch(/@- may be given at most once/);
+    expect((caught as Error | undefined)?.message ?? "").toMatch(
+      /@- may be given at most once/,
+    );
   });
 });

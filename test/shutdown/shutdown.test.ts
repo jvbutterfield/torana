@@ -17,7 +17,10 @@ import { FakeTelegram, findFreePort } from "../integration/fake-telegram.js";
 import type { Config } from "../../src/config/schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const RUNNER_SCRIPT = resolve(__dirname, "../integration/fixtures/test-runner.ts");
+const RUNNER_SCRIPT = resolve(
+  __dirname,
+  "../integration/fixtures/test-runner.ts",
+);
 const ALLOWED_USER = 111_222_333;
 
 let tmpDir: string;
@@ -30,7 +33,9 @@ beforeEach(() => {
 
 afterEach(async () => {
   if (gateway) {
-    await gateway.shutdown("test-teardown").catch(() => { /* already shut down */ });
+    await gateway.shutdown("test-teardown").catch(() => {
+      /* already shut down */
+    });
     gateway = null;
   }
   if (fake) {
@@ -50,6 +55,7 @@ function makeConfig(options: {
     version: 1,
     gateway: {
       port: options.port,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -86,7 +92,11 @@ function makeConfig(options: {
       hard_timeout_secs: 25,
       ...(options.shutdown ?? {}),
     },
-    dashboard: { enabled: false, mount_path: "/dashboard" },
+    dashboard: {
+      enabled: false,
+      mount_path: "/dashboard",
+      allow_non_loopback_proxy_target: false,
+    },
     metrics: { enabled: false },
     attachments: {
       max_bytes: 20 * 1024 * 1024,
@@ -102,14 +112,19 @@ function makeConfig(options: {
         hard_ttl_ms: 86_400_000,
         max_per_bot: 8,
         max_global: 64,
+        max_per_token_default: 8,
       },
-      send: { idempotency_retention_ms: 86_400_000 },
+      send: {
+        max_body_bytes: 100 * 1024 * 1024,
+        idempotency_retention_ms: 86_400_000,
+      },
       ask: {
         default_timeout_ms: 60_000,
         max_timeout_ms: 300_000,
         max_body_bytes: 100 * 1024 * 1024,
         max_files_per_request: 10,
       },
+      expose_runner_type: false,
     },
     bots: options.bots.map((b) => ({
       id: b.id,
@@ -136,7 +151,11 @@ describe("shutdown", () => {
     const port = await findFreePort();
 
     gateway = await startGateway({
-      config: makeConfig({ apiBaseUrl: apiBase, port, bots: [{ id: "alpha", token }] }),
+      config: makeConfig({
+        apiBaseUrl: apiBase,
+        port,
+        bots: [{ id: "alpha", token }],
+      }),
       secrets: [token],
       autoMigrate: true,
     });
@@ -156,7 +175,11 @@ describe("shutdown", () => {
     const port = await findFreePort();
 
     gateway = await startGateway({
-      config: makeConfig({ apiBaseUrl: apiBase, port, bots: [{ id: "alpha", token }] }),
+      config: makeConfig({
+        apiBaseUrl: apiBase,
+        port,
+        bots: [{ id: "alpha", token }],
+      }),
       secrets: [token],
       autoMigrate: true,
     });
@@ -181,7 +204,11 @@ describe("shutdown", () => {
         apiBaseUrl: apiBase,
         port,
         bots: [{ id: "alpha", token }],
-        shutdown: { outbox_drain_secs: 5, runner_grace_secs: 2, hard_timeout_secs: 15 },
+        shutdown: {
+          outbox_drain_secs: 5,
+          runner_grace_secs: 2,
+          hard_timeout_secs: 15,
+        },
       }),
       secrets: [token],
       autoMigrate: true,
@@ -203,12 +230,12 @@ describe("shutdown", () => {
     // send arrives well before the runner's done event, so waiting for any
     // send would race shutdown against the runner (flaky on slow CI).
     const hasEcho = (): boolean =>
-      fake!.callsFor("alpha", "sendMessage").some((c) =>
-        String(c.body.text ?? "").includes("echo: hello"),
-      ) ||
-      fake!.callsFor("alpha", "editMessageText").some((c) =>
-        String(c.body.text ?? "").includes("echo: hello"),
-      );
+      fake!
+        .callsFor("alpha", "sendMessage")
+        .some((c) => String(c.body.text ?? "").includes("echo: hello")) ||
+      fake!
+        .callsFor("alpha", "editMessageText")
+        .some((c) => String(c.body.text ?? "").includes("echo: hello"));
     await fake.waitFor(hasEcho, { timeoutMs: 10_000 });
 
     await gateway.shutdown("test");
@@ -228,7 +255,11 @@ describe("shutdown", () => {
         apiBaseUrl: apiBase,
         port,
         bots: [{ id: "alpha", token }],
-        shutdown: { outbox_drain_secs: 1, runner_grace_secs: 1, hard_timeout_secs: 10 },
+        shutdown: {
+          outbox_drain_secs: 1,
+          runner_grace_secs: 1,
+          hard_timeout_secs: 10,
+        },
       }),
       secrets: [token],
       autoMigrate: true,
@@ -250,7 +281,11 @@ describe("shutdown", () => {
     const port = await findFreePort();
 
     gateway = await startGateway({
-      config: makeConfig({ apiBaseUrl: apiBase, port, bots: [{ id: "alpha", token }] }),
+      config: makeConfig({
+        apiBaseUrl: apiBase,
+        port,
+        bots: [{ id: "alpha", token }],
+      }),
       secrets: [token],
       autoMigrate: true,
     });

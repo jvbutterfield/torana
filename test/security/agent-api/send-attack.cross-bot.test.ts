@@ -57,11 +57,12 @@ describe("§12.5.5 send-attack.cross-bot", () => {
     expect((await r.json()).error).toBe("bot_not_permitted");
   });
 
-  test("valid token on a NONEXISTENT bot returns unknown_bot (not bot_not_permitted — different shape)", async () => {
-    // Defensive: confirm the 404/403 distinction. If the router ever
-    // started returning bot_not_permitted for unknown bots, that
-    // would be an info leak (confirming bot names you shouldn't know
-    // about).
+  test("token-for-A probing a nonexistent bot ID gets 403 bot_not_permitted (not 404 unknown_bot — no enumeration)", async () => {
+    // Enumeration defense: a token scoped only to botA must not be able to
+    // distinguish "phantom bot doesn't exist" from "I'm not permitted on
+    // this bot". The router enforces authorization BEFORE the registry
+    // lookup, so both cases return the same 403 response and an attacker
+    // holding a legitimate-but-narrow token cannot map out other bot ids.
     h = startHarness({ botIds: ["botA"], tokens: [tokenForA] });
     const r = await fetch(`${h.base}/v1/bots/phantom/send`, {
       method: "POST",
@@ -72,7 +73,7 @@ describe("§12.5.5 send-attack.cross-bot", () => {
       },
       body: JSON.stringify({ text: "hi", source: "attack", user_id: "111" }),
     });
-    expect(r.status).toBe(404);
-    expect((await r.json()).error).toBe("unknown_bot");
+    expect(r.status).toBe(403);
+    expect((await r.json()).error).toBe("bot_not_permitted");
   });
 });

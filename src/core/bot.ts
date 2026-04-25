@@ -93,7 +93,12 @@ export class Bot {
    * Dispatch the given turn to the runner. Returns true if dispatch succeeded.
    * Called by the BotRegistry's dispatch loop.
    */
-  dispatchTurn(turnId: number, chatId: number, text: string, attachmentPaths: string[]): boolean {
+  dispatchTurn(
+    turnId: number,
+    chatId: number,
+    text: string,
+    attachmentPaths: string[],
+  ): boolean {
     if (!this.isReady) return false;
 
     const attachments = attachmentPaths.map((p) => ({
@@ -108,7 +113,10 @@ export class Bot {
 
     const result = this.runner.sendTurn(tid, text, attachments);
     if (!result.accepted) {
-      this.log.warn("runner rejected turn", { turn_id: turnId, reason: result.reason });
+      this.log.warn("runner rejected turn", {
+        turn_id: turnId,
+        reason: result.reason,
+      });
       // Unwind the stream start so we don't leave a dangling "thinking..." placeholder.
       this.streaming.cancelTurn(this.botConfig.id);
       return false;
@@ -129,7 +137,9 @@ export class Bot {
     // credit, so the next fatal starts backoff from zero.
     const state = this.db.getWorkerState(this.botConfig.id);
     if (state && state.consecutive_failures > 0) {
-      this.log.info("crash loop recovered", { prior_failures: state.consecutive_failures });
+      this.log.info("crash loop recovered", {
+        prior_failures: state.consecutive_failures,
+      });
       this.db.updateWorkerState(this.botConfig.id, { consecutive_failures: 0 });
     }
     this.db.updateWorkerState(this.botConfig.id, {
@@ -218,7 +228,9 @@ export class Bot {
 
     const max = this.config.worker_tuning.max_consecutive_failures;
     if (failures >= max) {
-      this.log.error("max consecutive failures — stopping retries", { failures });
+      this.log.error("max consecutive failures — stopping retries", {
+        failures,
+      });
       this.db.updateWorkerState(this.botConfig.id, { status: "degraded" });
       void this.alerts.workerDegraded(
         this.botConfig.id,
@@ -238,7 +250,10 @@ export class Bot {
       this.config.worker_tuning.crash_loop_backoff_base_ms,
       this.config.worker_tuning.crash_loop_backoff_cap_ms,
     );
-    this.log.info("scheduling runner restart", { failures, backoff_ms: backoff });
+    this.log.info("scheduling runner restart", {
+      failures,
+      backoff_ms: backoff,
+    });
     this.db.updateWorkerState(this.botConfig.id, { status: "restarting" });
 
     this.restartTimer = setTimeout(() => {

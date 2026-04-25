@@ -140,7 +140,10 @@ function fakeRegistry(
 export function startHarness(opts: HarnessOptions = {}): Harness {
   const botIds = opts.botIds ?? ["bot1"];
   const tokens = opts.tokens ?? [
-    mkToken("cos", "sekret-cos-value-123456", { bot_ids: botIds, scopes: ["ask", "send"] }),
+    mkToken("cos", "sekret-cos-value-123456", {
+      bot_ids: botIds,
+      scopes: ["ask", "send"],
+    }),
   ];
 
   const tmpDir = mkdtempSync(join(tmpdir(), "torana-sec-"));
@@ -162,7 +165,11 @@ export function startHarness(opts: HarnessOptions = {}): Harness {
   registerAgentApiRoutes(server.router, {
     config,
     db,
-    registry: fakeRegistry(botIds, config, opts.supportsSideSessions ?? true) as never,
+    registry: fakeRegistry(
+      botIds,
+      config,
+      opts.supportsSideSessions ?? true,
+    ) as never,
     tokens,
     log: logger("agent-api-sec-test"),
     pool: (opts.pool ?? stubPool()) as never,

@@ -67,6 +67,7 @@ describe("processUpdate writes user_chats", () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
       gateway: {
         port: 3000,
+        bind_host: "127.0.0.1",
         data_dir: tmpDir,
         db_path: join(tmpDir, "gateway.db"),
         log_level: "info",
@@ -93,6 +94,7 @@ describe("processUpdate writes user_chats", () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
       gateway: {
         port: 3000,
+        bind_host: "127.0.0.1",
         data_dir: tmpDir,
         db_path: join(tmpDir, "gateway.db"),
         log_level: "info",
@@ -130,6 +132,7 @@ describe("processUpdate writes user_chats", () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
       gateway: {
         port: 3000,
+        bind_host: "127.0.0.1",
         data_dir: tmpDir,
         db_path: join(tmpDir, "gateway.db"),
         log_level: "info",
@@ -171,6 +174,7 @@ describe("processUpdate writes user_chats", () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")], {
       gateway: {
         port: 3000,
+        bind_host: "127.0.0.1",
         data_dir: tmpDir,
         db_path: join(tmpDir, "gateway.db"),
         log_level: "info",

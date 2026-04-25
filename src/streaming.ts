@@ -16,6 +16,19 @@ export class StreamManager {
   private outbox: OutboxProcessor;
   private clients: Map<BotId, TelegramClient>;
 
+  /**
+   * Per-bot rate-limit cooldown timestamp (epoch ms). When set above
+   * `Date.now()`, flush() skips the editMessageText call entirely; the
+   * buffer continues to accumulate so the next non-rate-limited flush
+   * picks up the latest text. Populated when fireAndForgetEdit returns
+   * a 429 with Retry-After. Cleared implicitly by passing the timestamp.
+   *
+   * Without this, a runner producing fast edits would keep pinging
+   * Telegram every `edit_cadence_ms` during the cooldown — extending the
+   * throttle and amplifying the self-DoS surface (rc.7 review F3).
+   */
+  private rateLimitedUntil = new Map<BotId, number>();
+
   private activeTurns = new Map<
     BotId,
     {
@@ -58,7 +71,13 @@ export class StreamManager {
 
     if (prev.telegramMessageId) {
       const display = prev.buffer.trim() || "(interrupted)";
-      this.outbox.queueEdit(prev.turnId, botId, prev.chatId, prev.telegramMessageId, display);
+      this.outbox.queueEdit(
+        prev.turnId,
+        botId,
+        prev.chatId,
+        prev.telegramMessageId,
+        display,
+      );
     }
 
     this.activeTurns.delete(botId);
@@ -131,7 +150,9 @@ export class StreamManager {
 
     state.buffer += text;
 
-    if (state.buffer.length >= this.config.streaming.message_length_safe_margin) {
+    if (
+      state.buffer.length >= this.config.streaming.message_length_safe_margin
+    ) {
       this.flushAndSplit(botId);
       return;
     }
@@ -140,7 +161,8 @@ export class StreamManager {
     if (now - state.lastFlushTime >= this.config.streaming.edit_cadence_ms) {
       void this.flush(botId);
     } else if (!state.flushTimer) {
-      const delay = this.config.streaming.edit_cadence_ms - (now - state.lastFlushTime);
+      const delay =
+        this.config.streaming.edit_cadence_ms - (now - state.lastFlushTime);
       state.flushTimer = setTimeout(() => {
         state.flushTimer = null;
         void this.flush(botId);
@@ -211,6 +233,7 @@ export class StreamManager {
       if (state.flushTimer) clearTimeout(state.flushTimer);
     }
     this.activeTurns.clear();
+    this.rateLimitedUntil.clear();
   }
 
   // --- internals ---
@@ -218,6 +241,12 @@ export class StreamManager {
   private sendTyping(botId: BotId): void {
     const state = this.activeTurns.get(botId);
     if (!state) return;
+    // Skip the typing ping while we're inside a Telegram cooldown — the
+    // sendChatAction call counts against per-bot rate limits and
+    // produces no user-visible benefit while edits are paused (rc.7
+    // review F9).
+    const cooldownUntil = this.rateLimitedUntil.get(botId);
+    if (cooldownUntil && Date.now() < cooldownUntil) return;
     const client = this.clients.get(botId);
     if (client) client.sendChatAction(state.chatId).catch(() => {});
   }
@@ -226,13 +255,48 @@ export class StreamManager {
     const state = this.activeTurns.get(botId);
     if (!state || !state.telegramMessageId || !state.buffer.trim()) return;
 
+    // Skip the edit if we're inside a Telegram-asked cooldown for this
+    // bot. The buffer continues to accumulate; the next flush after
+    // the cooldown expires will push the latest content. Pinging during
+    // the cooldown extends the throttle and produces no user-visible
+    // benefit.
+    const cooldownUntil = this.rateLimitedUntil.get(botId);
+    if (cooldownUntil && Date.now() < cooldownUntil) {
+      return;
+    }
+
     state.lastFlushTime = Date.now();
-    await this.outbox.fireAndForgetEdit(
+    const result = await this.outbox.fireAndForgetEdit(
       botId,
       state.chatId,
       state.telegramMessageId,
       state.buffer,
     );
+
+    // Honor 429 / Retry-After signals from the streaming editMessage
+    // path. The cooldown is per-bot rather than per-chat because
+    // Telegram's per-chat 429s typically also imply a slower rate is
+    // expected on the same bot's other chats — being conservative here
+    // is the right move.
+    if (
+      result &&
+      !result.ok &&
+      result.retryAfterMs !== undefined &&
+      result.retryAfterMs > 0
+    ) {
+      const cappedMs = Math.min(result.retryAfterMs, 5 * 60_000);
+      this.rateLimitedUntil.set(botId, Date.now() + cappedMs);
+      log.warn("streaming flush throttled by Telegram; pausing edits", {
+        bot_id: botId,
+        retry_after_ms: result.retryAfterMs,
+        capped_until_ms: cappedMs,
+      });
+    } else if (cooldownUntil) {
+      // Successful flush past the cooldown — clear the map entry so we
+      // don't carry stale state.
+      this.rateLimitedUntil.delete(botId);
+    }
+
     this.sendTyping(botId);
 
     this.db.setTurnLastOutput(state.turnId);

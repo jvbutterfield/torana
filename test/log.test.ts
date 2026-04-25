@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { logger, resetLoggerState, setSecrets, setLogFormat, setLogLevel } from "../src/log.js";
+import {
+  logger,
+  resetLoggerState,
+  setSecrets,
+  setLogFormat,
+  setLogLevel,
+} from "../src/log.js";
 
 let captured: string[] = [];
 let originalLog: typeof console.log;

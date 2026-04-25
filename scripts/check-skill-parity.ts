@@ -117,7 +117,9 @@ if (import.meta.main) {
   if (result.ok) {
     console.log("skill parity: ok");
     for (const e of result.entries) {
-      console.log(`  ${e.skill}: ${e.sourceHash.slice(0, 12)} == ${e.targetHash?.slice(0, 12)}`);
+      console.log(
+        `  ${e.skill}: ${e.sourceHash.slice(0, 12)} == ${e.targetHash?.slice(0, 12)}`,
+      );
     }
     process.exit(0);
   }
@@ -129,7 +131,9 @@ if (import.meta.main) {
     } else if (e.drift === "missing-target") {
       console.error(`  ${e.skill}: target missing at ${e.target}`);
     } else {
-      console.error(`  ${e.skill}: ${e.sourceHash.slice(0, 12)} != ${e.targetHash?.slice(0, 12)}`);
+      console.error(
+        `  ${e.skill}: ${e.sourceHash.slice(0, 12)} != ${e.targetHash?.slice(0, 12)}`,
+      );
       console.error(`    diff: diff -u ${e.source} ${e.target}`);
     }
   }

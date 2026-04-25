@@ -11,9 +11,41 @@ export const BotIdSchema = z
     message: `bot id is reserved (one of: ${[...reservedBotIds].join(", ")})`,
   });
 
-const NonEmptyString = z.string().min(1, "must be non-empty after env interpolation");
+const NonEmptyString = z
+  .string()
+  .min(1, "must be non-empty after env interpolation");
 const UrlString = z.string().url("must be a valid URL");
 const PathString = z.string().min(1);
+
+// High-entropy secret. Used for bearer tokens the gateway itself validates
+// (webhook shared-secret, agent-api token secrets). Min 32 chars ≈ 192 bits of
+// entropy for a random base64/hex secret — overwhelmingly above any realistic
+// brute-force threshold and a clean schema-layer defence against operators who
+// paste a short, guessable value. Does NOT apply to `bots[].token` because
+// that value's format is set by Telegram, not by us.
+const SecretString = z
+  .string()
+  .min(
+    32,
+    "secret must be at least 32 characters (use a long, random value; generate with e.g. `openssl rand -base64 32`)",
+  );
+
+/**
+ * True for `http://127.0.0.1…`, `http://[::1]…`, `http://localhost…`, or any
+ * `unix:…` scheme. Used by the dashboard-proxy validation — an operator can
+ * opt out of this check, but the default refuses to proxy to arbitrary
+ * network destinations.
+ */
+function isLoopbackUrl(url: string): boolean {
+  if (url.startsWith("unix:")) return true;
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "127.0.0.1" || host === "::1" || host === "localhost";
+  } catch {
+    return false;
+  }
+}
 
 // Coerce env-interpolated strings into numbers. ${VAR} always yields a string.
 const NumberCoerce = z.coerce.number();
@@ -27,6 +59,15 @@ const BoolPermissive = z
 export const GatewaySchema = z
   .object({
     port: IntCoerce.default(3000),
+    /**
+     * Interface the HTTP server binds to. Defaults to `127.0.0.1` (loopback
+     * only) — a deliberate defense-in-depth choice: `/health`, `/metrics`,
+     * `/dashboard` and the agent API are not exposed to the network unless
+     * an operator opts in. Set to `0.0.0.0` to listen on all interfaces
+     * (required for container / PaaS deployments where traffic arrives on
+     * a non-loopback IP) or to a specific IP to bind to one interface.
+     */
+    bind_host: z.string().min(1).default("127.0.0.1"),
     data_dir: PathString,
     db_path: PathString.optional(),
     log_level: z.enum(["debug", "info", "warn", "error"]).default("info"),
@@ -44,7 +85,7 @@ export const TelegramSchema = z
 export const TransportWebhookSchema = z
   .object({
     base_url: UrlString.optional(),
-    secret: NonEmptyString.optional(),
+    secret: SecretString.optional(),
   })
   .strict();
 
@@ -133,18 +174,37 @@ export const ShutdownSchema = z
     hard_timeout_secs: IntCoerce.default(25),
   })
   .strict()
-  .default({ outbox_drain_secs: 10, runner_grace_secs: 5, hard_timeout_secs: 25 });
+  .default({
+    outbox_drain_secs: 10,
+    runner_grace_secs: 5,
+    hard_timeout_secs: 25,
+  });
 
 export const DashboardSchema = z
   .object({
     enabled: BoolPermissive.default(false),
     proxy_target: UrlString.optional(),
     mount_path: z.string().default("/dashboard"),
+    /**
+     * Required when `proxy_target` is not loopback. Strips sensitive headers
+     * (Authorization, Cookie, Idempotency-Key, X-Telegram-Bot-Api-Secret-Token,
+     * Host, Proxy-Authorization) and disables redirect-following regardless of
+     * this flag; this flag only gates whether the gateway will proxy to a
+     * non-loopback target at all, because a compromised or misconfigured
+     * upstream can still see every non-stripped header the dashboard UI
+     * sends. Loopback / UNIX-socket / `localhost` targets are always allowed.
+     */
+    allow_non_loopback_proxy_target: BoolPermissive.default(false),
   })
   .strict()
-  .default({ enabled: false, mount_path: "/dashboard" })
+  .default({
+    enabled: false,
+    mount_path: "/dashboard",
+    allow_non_loopback_proxy_target: false,
+  })
   .refine((d) => !d.enabled || !!d.proxy_target, {
-    message: "dashboard.proxy_target is required when dashboard.enabled is true",
+    message:
+      "dashboard.proxy_target is required when dashboard.enabled is true",
     path: ["proxy_target"],
   });
 
@@ -186,7 +246,12 @@ export const BotAccessControlSchema = z
 
 export const BotCommandSchema = z
   .object({
-    trigger: z.string().regex(/^\/[A-Za-z0-9_]+$/, "trigger must start with / and be alphanumeric"),
+    trigger: z
+      .string()
+      .regex(
+        /^\/[A-Za-z0-9_]+$/,
+        "trigger must start with / and be alphanumeric",
+      ),
     action: z.enum(["builtin:reset", "builtin:status", "builtin:health"]),
   })
   .strict();
@@ -206,6 +271,14 @@ export const BotReactionsSchema = z
 // NOT user-configurable — they are what makes torana able to parse the
 // CLI's output. The `args` key is for USER extras (e.g. `--agent cato`)
 // that get appended to the protocol flags.
+//
+// Because `--dangerously-skip-permissions` is always on, every claude-code
+// turn runs without the CLI's per-tool permission prompts. Any prompt
+// injection, leaked Agent API token, or compromised upstream inherits host
+// file + command access in the runner's cwd. The schema therefore requires
+// `acknowledge_dangerous: true` — operators must explicitly confirm they are
+// running the runner inside a container/VM or other externally-hardened
+// environment (validated in the root superRefine below).
 export const ClaudeCodeRunnerSchema = z
   .object({
     type: z.literal("claude-code"),
@@ -213,7 +286,21 @@ export const ClaudeCodeRunnerSchema = z
     args: z.array(z.string()).default([]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
+    /**
+     * Sibling of `env` whose values are registered with the log redactor at
+     * config load and rendered as `<redacted>` in `torana validate` output.
+     * Merged into the spawn env on top of `env` (collisions rejected at load).
+     * Prefer `${VAR}` indirection in `env` when feasible — `secrets:` is the
+     * fallback for inlined values. Optional: omit the key for non-secret runners.
+     */
+    secrets: z.record(z.string(), z.string()).optional(),
     pass_continue_flag: BoolPermissive.default(true),
+    /**
+     * Required to be true. The claude-code runner always passes
+     * `--dangerously-skip-permissions`, so every turn has unsandboxed host
+     * access in `cwd`. Operators must acknowledge this explicitly.
+     */
+    acknowledge_dangerous: BoolPermissive.default(false),
   })
   .strict();
 
@@ -235,6 +322,8 @@ export const CodexRunnerSchema = z
     args: z.array(z.string()).default([]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
+    /** See `ClaudeCodeRunnerSchema.secrets`. */
+    secrets: z.record(z.string(), z.string()).optional(),
     /** Capture the first turn's thread_id and resume on subsequent turns. */
     pass_resume_flag: BoolPermissive.default(true),
     /**
@@ -263,6 +352,8 @@ export const CommandRunnerSchema = z
     protocol: z.enum(["jsonl-text", "claude-ndjson", "codex-jsonl"]),
     cwd: PathString.optional(),
     env: z.record(z.string(), z.string()).default({}),
+    /** See `ClaudeCodeRunnerSchema.secrets`. */
+    secrets: z.record(z.string(), z.string()).optional(),
     on_reset: z.enum(["signal", "restart"]).default("signal"),
   })
   .strict();
@@ -294,10 +385,22 @@ export const AgentApiTokenSchema = z
   .object({
     name: z
       .string()
-      .regex(/^[a-z][a-z0-9_-]{0,63}$/, "name must be lowercase alnum/_-, max 64 chars"),
-    secret_ref: NonEmptyString,
+      .regex(
+        /^[a-z][a-z0-9_-]{0,63}$/,
+        "name must be lowercase alnum/_-, max 64 chars",
+      ),
+    secret_ref: SecretString,
     bot_ids: z.array(BotIdSchema).min(1),
     scopes: z.array(AgentApiScopeSchema).min(1),
+    /**
+     * Cap on concurrent inflight side-session acquisitions for this token,
+     * summed across every bot in `bot_ids`. When unset, falls back to
+     * `agent_api.side_sessions.max_per_token_default`. Defends against a
+     * single token whose `bot_ids` covers many bots holding up to
+     * `max_per_bot * len(bot_ids)` concurrent side-sessions and starving
+     * other tokens that share any of those bots.
+     */
+    max_concurrent_side_sessions: IntCoerce.min(1).max(512).optional(),
   })
   .strict();
 
@@ -307,6 +410,13 @@ export const AgentApiSideSessionsSchema = z
     hard_ttl_ms: IntCoerce.min(60_000).default(86_400_000),
     max_per_bot: IntCoerce.min(1).max(64).default(8),
     max_global: IntCoerce.min(1).max(512).default(64),
+    /**
+     * Default per-token concurrent side-session cap, applied to any token
+     * that does not set `max_concurrent_side_sessions` explicitly. Third
+     * dimension on top of `max_per_bot` and `max_global` — without this,
+     * a token spanning many bots could exhaust shared bot capacity.
+     */
+    max_per_token_default: IntCoerce.min(1).max(512).default(8),
   })
   .strict()
   .default({
@@ -314,14 +424,25 @@ export const AgentApiSideSessionsSchema = z
     hard_ttl_ms: 86_400_000,
     max_per_bot: 8,
     max_global: 64,
+    max_per_token_default: 8,
   });
 
 export const AgentApiSendSchema = z
   .object({
+    /**
+     * Cap on `POST /v1/bots/:id/send` request bodies. Applied as a
+     * Content-Length precheck for JSON bodies and as an aggregate (files +
+     * form fields) check for multipart. Mirrors `ask.max_body_bytes`; default
+     * 100 MB — generous, since send accepts attachments.
+     */
+    max_body_bytes: IntCoerce.min(4_096).default(100 * 1024 * 1024),
     idempotency_retention_ms: IntCoerce.min(60_000).default(86_400_000),
   })
   .strict()
-  .default({ idempotency_retention_ms: 86_400_000 });
+  .default({
+    max_body_bytes: 100 * 1024 * 1024,
+    idempotency_retention_ms: 86_400_000,
+  });
 
 export const AgentApiAskSchema = z
   .object({
@@ -345,6 +466,11 @@ export const AgentApiSchema = z
     side_sessions: AgentApiSideSessionsSchema,
     send: AgentApiSendSchema,
     ask: AgentApiAskSchema,
+    // When true, GET /v1/bots includes each bot's `runner_type`
+    // (claude-code/codex/command). Off by default so a bearer token
+    // doesn't reveal deployment shape — flip on if a caller actually
+    // needs to branch on runner type.
+    expose_runner_type: BoolPermissive.default(false),
   })
   .strict()
   .default({
@@ -355,14 +481,19 @@ export const AgentApiSchema = z
       hard_ttl_ms: 86_400_000,
       max_per_bot: 8,
       max_global: 64,
+      max_per_token_default: 8,
     },
-    send: { idempotency_retention_ms: 86_400_000 },
+    send: {
+      max_body_bytes: 100 * 1024 * 1024,
+      idempotency_retention_ms: 86_400_000,
+    },
     ask: {
       default_timeout_ms: 60_000,
       max_timeout_ms: 300_000,
       max_body_bytes: 100 * 1024 * 1024,
       max_files_per_request: 10,
     },
+    expose_runner_type: false,
   });
 
 // ---------- root ----------
@@ -449,6 +580,22 @@ export const ConfigSchema = z
       }
     }
 
+    // runner.env vs runner.secrets: same key in both is ambiguous and almost
+    // always a config bug. Reject explicitly so the operator picks one.
+    for (const [idx, bot] of cfg.bots.entries()) {
+      const envKeys = Object.keys(bot.runner.env);
+      const secretKeys = new Set(Object.keys(bot.runner.secrets ?? {}));
+      for (const k of envKeys) {
+        if (secretKeys.has(k)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["bots", idx, "runner", "secrets", k],
+            message: `key '${k}' is set in both runner.env and runner.secrets — pick one`,
+          });
+        }
+      }
+    }
+
     // codex approval_mode='yolo' requires explicit acknowledge_dangerous=true.
     for (const [idx, bot] of cfg.bots.entries()) {
       if (
@@ -460,7 +607,25 @@ export const ConfigSchema = z
           code: z.ZodIssueCode.custom,
           path: ["bots", idx, "runner", "acknowledge_dangerous"],
           message:
-            "approval_mode='yolo' requires acknowledge_dangerous=true (skips all sandboxing — use only inside an externally hardened environment)",
+            "approval_mode='yolo' requires acknowledge_dangerous=true (skips all sandboxing — use only inside an externally hardened environment; see docs/runners.md#concrete-isolation-patterns)",
+        });
+      }
+    }
+
+    // claude-code ALWAYS passes --dangerously-skip-permissions (protocol-
+    // required for the NDJSON shape torana parses), so every turn runs
+    // unsandboxed in the runner's cwd. Require operators to acknowledge this
+    // explicitly — matches the Codex yolo pattern above.
+    for (const [idx, bot] of cfg.bots.entries()) {
+      if (
+        bot.runner.type === "claude-code" &&
+        !bot.runner.acknowledge_dangerous
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["bots", idx, "runner", "acknowledge_dangerous"],
+          message:
+            "claude-code runner always passes --dangerously-skip-permissions; set acknowledge_dangerous=true after confirming this bot runs inside an externally hardened environment (container/VM with limited fs + network access; see docs/runners.md#concrete-isolation-patterns)",
         });
       }
     }
@@ -473,6 +638,27 @@ export const ConfigSchema = z
           code: z.ZodIssueCode.custom,
           path: ["dashboard", "mount_path"],
           message: `dashboard.mount_path first segment '${mp}' collides with bot id`,
+        });
+      }
+
+      // Dashboard proxy target must be loopback unless the operator has
+      // opted in. The proxy strips Authorization/Cookie/etc. at runtime,
+      // but a non-loopback upstream still sees whatever the dashboard UI
+      // sends — and the proxy itself (no auth by design, reachable to
+      // whoever can hit the gateway port) would otherwise serve as a
+      // generic outbound GET-SSRF gadget to anything the gateway host can
+      // reach. Keep it loopback-only unless the operator has a specific
+      // reason.
+      if (
+        cfg.dashboard.proxy_target &&
+        !cfg.dashboard.allow_non_loopback_proxy_target &&
+        !isLoopbackUrl(cfg.dashboard.proxy_target)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["dashboard", "proxy_target"],
+          message:
+            "dashboard.proxy_target must be loopback (127.0.0.1, ::1, localhost, or unix:…) unless `dashboard.allow_non_loopback_proxy_target: true` is set. The dashboard has no auth of its own; a non-loopback proxy target lets anyone reaching the gateway port drive GETs against that upstream.",
         });
       }
     }
@@ -518,6 +704,25 @@ export const ConfigSchema = z
           message: "max_per_bot must be <= max_global",
         });
       }
+      if (ss.max_per_token_default > ss.max_global) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["agent_api", "side_sessions", "max_per_token_default"],
+          message: "max_per_token_default must be <= max_global",
+        });
+      }
+      for (const [tIdx, tok] of cfg.agent_api.tokens.entries()) {
+        if (
+          tok.max_concurrent_side_sessions !== undefined &&
+          tok.max_concurrent_side_sessions > ss.max_global
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["agent_api", "tokens", tIdx, "max_concurrent_side_sessions"],
+            message: `max_concurrent_side_sessions (${tok.max_concurrent_side_sessions}) must be <= agent_api.side_sessions.max_global (${ss.max_global})`,
+          });
+        }
+      }
 
       const ask = cfg.agent_api.ask;
       if (ask.default_timeout_ms > ask.max_timeout_ms) {
@@ -542,6 +747,7 @@ export type CommandRunnerConfig = z.infer<typeof CommandRunnerSchema>;
 export const SECRET_PATHS = [
   "transport.webhook.secret",
   "bots[].token",
+  "bots[].runner.secrets[*]",
   "agent_api.tokens[].secret_ref",
 ] as const;
 

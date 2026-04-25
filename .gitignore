@@ -20,6 +20,7 @@ smoke/
 # Task docs (PRDs, impl plans, audit reports). Kept local during
 # development; not published to the public repo.
 tasks/*.md
-# …except the in-branch progress tracker, which is a handoff artifact
-# for the implementation branches and has been committed since Phase 1.
+# …except in-branch handoff trackers, which are committed so a fresh
+# checkout / collaborator can pick up where the previous session left off.
 !tasks/agent-api-progress.md
+!tasks/rc.7-security-hardening.md

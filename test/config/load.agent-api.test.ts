@@ -20,7 +20,10 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 
-import { loadConfigFromString, ConfigLoadError } from "../../src/config/load.js";
+import {
+  loadConfigFromString,
+  ConfigLoadError,
+} from "../../src/config/load.js";
 
 const BASE = `
 version: 1
@@ -37,6 +40,7 @@ bots:
     runner:
       type: claude-code
       cli_path: claude
+      acknowledge_dangerous: true
 `;
 
 function withAgentApi(block: string): string {
@@ -60,22 +64,23 @@ describe("config/load — agent_api defaults + token resolution", () => {
       bot_ids: [alpha]
       scopes: [ask]
 `);
+    const raw32 = "supersecret-value-123-padded-for-min32";
     const { agentApiTokens, secrets } = loadConfigFromString(raw, {
-      env: { COS_SECRET: "supersecret-value-123" },
+      env: { COS_SECRET: raw32 },
     });
     expect(agentApiTokens).toHaveLength(1);
     const tok = agentApiTokens[0]!;
     expect(tok.name).toBe("cos");
-    expect(tok.secret).toBe("supersecret-value-123");
+    expect(tok.secret).toBe(raw32);
     expect(tok.bot_ids).toEqual(["alpha"]);
     expect(tok.scopes).toEqual(["ask"]);
     // SHA-256 of the secret bytes — caller can recompute and compare.
     const expectedHash = new Uint8Array(
-      createHash("sha256").update("supersecret-value-123", "utf8").digest(),
+      createHash("sha256").update(raw32, "utf8").digest(),
     );
     expect([...tok.hash]).toEqual([...expectedHash]);
     // The raw secret is in the redaction set so structured logs scrub it.
-    expect(secrets).toContain("supersecret-value-123");
+    expect(secrets).toContain(raw32);
   });
 
   test("literal (non-${VAR}) secret_ref emits a warning", () => {
@@ -83,7 +88,7 @@ describe("config/load — agent_api defaults + token resolution", () => {
   enabled: true
   tokens:
     - name: literal
-      secret_ref: this-is-literal-not-an-env-ref
+      secret_ref: this-is-literal-not-an-env-ref-plenty-of-chars
       bot_ids: [alpha]
       scopes: [ask]
 `);
@@ -113,7 +118,9 @@ describe("config/load — agent_api defaults + token resolution", () => {
       bot_ids: [alpha]
       scopes: [ask]
 `);
-    const { warnings } = loadConfigFromString(raw, { env: { T: "abcdef" } });
+    const { warnings } = loadConfigFromString(raw, {
+      env: { T: "abcdef-padded-for-min-32-chars-ok" },
+    });
     expect(warnings.some((w) => w.includes("tokens are inert"))).toBe(true);
   });
 });
@@ -133,7 +140,12 @@ describe("config/load — agent_api superRefine error paths", () => {
       scopes: [send]
 `);
     expect(() =>
-      loadConfigFromString(raw, { env: { A: "secret-a-1234", B: "secret-b-1234" } }),
+      loadConfigFromString(raw, {
+        env: {
+          A: "secret-a-1234-padded-for-min32chars",
+          B: "secret-b-1234-padded-for-min32chars",
+        },
+      }),
     ).toThrow(/duplicate agent_api token name/);
   });
 
@@ -147,7 +159,9 @@ describe("config/load — agent_api superRefine error paths", () => {
       scopes: [ask]
 `);
     expect(() =>
-      loadConfigFromString(raw, { env: { T: "abcdef" } }),
+      loadConfigFromString(raw, {
+        env: { T: "abcdef-padded-for-min-32-chars-ok" },
+      }),
     ).toThrow(/unknown bot 'no-such-bot'/);
   });
 
@@ -161,7 +175,9 @@ describe("config/load — agent_api superRefine error paths", () => {
       scopes: []
 `);
     expect(() =>
-      loadConfigFromString(raw, { env: { T: "abcdef" } }),
+      loadConfigFromString(raw, {
+        env: { T: "abcdef-padded-for-min-32-chars-ok" },
+      }),
     ).toThrow(ConfigLoadError);
   });
 
@@ -175,7 +191,9 @@ describe("config/load — agent_api superRefine error paths", () => {
       scopes: [admin]
 `);
     expect(() =>
-      loadConfigFromString(raw, { env: { T: "abcdef" } }),
+      loadConfigFromString(raw, {
+        env: { T: "abcdef-padded-for-min-32-chars-ok" },
+      }),
     ).toThrow(ConfigLoadError);
   });
 
@@ -189,7 +207,9 @@ describe("config/load — agent_api superRefine error paths", () => {
       scopes: [ask]
 `);
     expect(() =>
-      loadConfigFromString(raw, { env: { T: "abcdef" } }),
+      loadConfigFromString(raw, {
+        env: { T: "abcdef-padded-for-min-32-chars-ok" },
+      }),
     ).toThrow(ConfigLoadError);
   });
 
@@ -201,7 +221,9 @@ describe("config/load — agent_api superRefine error paths", () => {
     idle_ttl_ms: 10000
     hard_ttl_ms: 5000
 `);
-    expect(() => loadConfigFromString(raw)).toThrow(/idle_ttl_ms must be <= hard_ttl_ms/);
+    expect(() => loadConfigFromString(raw)).toThrow(
+      /idle_ttl_ms must be <= hard_ttl_ms/,
+    );
   });
 
   test("max_per_bot > max_global → fails", () => {
@@ -212,7 +234,39 @@ describe("config/load — agent_api superRefine error paths", () => {
     max_per_bot: 100
     max_global: 10
 `);
-    expect(() => loadConfigFromString(raw)).toThrow(/max_per_bot must be <= max_global/);
+    expect(() => loadConfigFromString(raw)).toThrow(
+      /max_per_bot must be <= max_global/,
+    );
+  });
+
+  test("secret_ref < 32 chars is rejected (high-entropy minimum)", () => {
+    const raw = withAgentApi(`
+  enabled: true
+  tokens:
+    - name: weak
+      secret_ref: \${SHORT}
+      bot_ids: [alpha]
+      scopes: [ask]
+`);
+    expect(() =>
+      loadConfigFromString(raw, { env: { SHORT: "only-20-characters!!" } }),
+    ).toThrow(/at least 32 characters/);
+  });
+
+  test("secret_ref exactly 32 chars is accepted", () => {
+    const raw = withAgentApi(`
+  enabled: true
+  tokens:
+    - name: ok
+      secret_ref: \${OK}
+      bot_ids: [alpha]
+      scopes: [ask]
+`);
+    const longSecret = "a".repeat(32);
+    const { agentApiTokens } = loadConfigFromString(raw, {
+      env: { OK: longSecret },
+    });
+    expect(agentApiTokens[0]!.secret).toBe(longSecret);
   });
 
   test("default_timeout_ms > max_timeout_ms → fails", () => {
@@ -223,9 +277,9 @@ describe("config/load — agent_api superRefine error paths", () => {
     default_timeout_ms: 600000
     max_timeout_ms: 300000
 `);
-    expect(() =>
-      loadConfigFromString(raw),
-    ).toThrow(/default_timeout_ms must be <= max_timeout_ms/);
+    expect(() => loadConfigFromString(raw)).toThrow(
+      /default_timeout_ms must be <= max_timeout_ms/,
+    );
   });
 });
 
@@ -243,11 +297,13 @@ describe("config/load — agent_api: secrets redaction integration", () => {
       bot_ids: [alpha]
       scopes: [send]
 `);
+    const cosSecret = "secret-cos-12345-padded-to-min-32chars";
+    const calSecret = "secret-cal-67890-padded-to-min-32chars";
     const { secrets } = loadConfigFromString(raw, {
-      env: { COS: "secret-cos-12345", CAL: "secret-cal-67890" },
+      env: { COS: cosSecret, CAL: calSecret },
     });
-    expect(secrets).toContain("secret-cos-12345");
-    expect(secrets).toContain("secret-cal-67890");
+    expect(secrets).toContain(cosSecret);
+    expect(secrets).toContain(calSecret);
   });
 
   test("the bot token and the agent_api tokens are both in the redaction set", () => {
@@ -259,10 +315,11 @@ describe("config/load — agent_api: secrets redaction integration", () => {
       bot_ids: [alpha]
       scopes: [ask]
 `);
+    const apiSecret = "agent-api-secret-12345-padded-to-min32";
     const { secrets } = loadConfigFromString(raw, {
-      env: { COS: "agent-api-secret-12345" },
+      env: { COS: apiSecret },
     });
     expect(secrets).toContain("BOTTOK:AAAAAA");
-    expect(secrets).toContain("agent-api-secret-12345");
+    expect(secrets).toContain(apiSecret);
   });
 });

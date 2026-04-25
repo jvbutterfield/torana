@@ -38,8 +38,12 @@ async function main(): Promise<void> {
   }
   if (mode === "stubborn") {
     // Install ignoring handlers for SIGTERM so only SIGKILL works.
-    process.on("SIGTERM", () => { /* ignore */ });
-    process.on("SIGINT", () => { /* ignore */ });
+    process.on("SIGTERM", () => {
+      /* ignore */
+    });
+    process.on("SIGINT", () => {
+      /* ignore */
+    });
   }
 
   if (mode === "slow-start") {

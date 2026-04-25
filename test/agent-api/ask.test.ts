@@ -54,6 +54,7 @@ async function setup(
       args: ["run", MOCK, opts.mockMode ?? "normal"],
       env: {},
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   });
   const config = makeTestConfig([bot]);
@@ -126,7 +127,10 @@ afterEach(async () => {
   }
 });
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -142,7 +146,10 @@ describe("POST /v1/bots/:id/ask — happy path", () => {
     const { base } = await setup([tokenFor(secret, ["ask"])]);
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(r.status).toBe(200);
@@ -161,13 +168,19 @@ describe("POST /v1/bots/:id/ask — happy path", () => {
     const { base } = await setup([tokenFor(secret, ["ask"])]);
     const one = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "first", session_id: "demo-s1" }),
     });
     expect(one.status).toBe(200);
     const two = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "second", session_id: "demo-s1" }),
     });
     expect(two.status).toBe(200);
@@ -176,13 +189,65 @@ describe("POST /v1/bots/:id/ask — happy path", () => {
   }, 15_000);
 });
 
+describe("POST /v1/bots/:id/ask — body size cap", () => {
+  test("Content-Length > max_body_bytes → 413 body_too_large (early reject)", async () => {
+    const secret = "tok-body-cap-declared-12345-abcde";
+    const { base, config } = await setup([tokenFor(secret, ["ask"])]);
+    // Clamp the cap so we can test it without sending 100 MB.
+    config.agent_api.ask.max_body_bytes = 1024;
+    const huge = JSON.stringify({ text: "x".repeat(2048) });
+    const r = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: huge,
+    });
+    expect(r.status).toBe(413);
+    expect((await r.json()).error).toBe("body_too_large");
+  });
+
+  test("chunked body over cap is aborted mid-stream → 413", async () => {
+    // A chunked transfer hides Content-Length; the stream reader must track
+    // bytes and abort as soon as the cap is exceeded. Uses a ReadableStream
+    // so Bun's fetch emits chunked encoding.
+    const secret = "tok-body-cap-streamed-12345-abcde";
+    const { base, config } = await setup([tokenFor(secret, ["ask"])]);
+    config.agent_api.ask.max_body_bytes = 512;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Emit ~2 KB across several chunks with a tiny delay so the
+        // server sees multiple reads — the streaming abort is what we're
+        // exercising, not the header precheck.
+        const chunk = new Uint8Array(256).fill(0x61);
+        for (let i = 0; i < 8; i += 1) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const r = await fetch(`${base}/v1/bots/bot1/ask`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
+      body: stream,
+    });
+    expect(r.status).toBe(413);
+    expect((await r.json()).error).toBe("body_too_large");
+  });
+});
+
 describe("POST /v1/bots/:id/ask — error paths", () => {
   test("invalid body → 400", async () => {
     const secret = "tok-invalid-body-123";
     const { base } = await setup([tokenFor(secret, ["ask"])]);
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({}),
     });
     expect(r.status).toBe(400);
@@ -194,7 +259,10 @@ describe("POST /v1/bots/:id/ask — error paths", () => {
     const { base } = await setup([tokenFor(secret, ["ask"])]);
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hi", session_id: "has space" }),
     });
     expect(r.status).toBe(400);
@@ -207,7 +275,10 @@ describe("POST /v1/bots/:id/ask — error paths", () => {
     });
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hi" }),
     });
     expect(r.status).toBe(503);
@@ -223,13 +294,19 @@ describe("POST /v1/bots/:id/ask — error paths", () => {
     });
     const p1 = fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "first", session_id: "contend" }),
     });
     await new Promise((r) => setTimeout(r, 100));
     const p2 = fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "second", session_id: "contend" }),
     });
     const [r1, r2] = await Promise.all([p1, p2]);
@@ -244,7 +321,10 @@ describe("POST /v1/bots/:id/ask — error paths", () => {
     const { base } = await setup([tokenFor(secret, ["ask"])]);
     const askRes = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(askRes.status).toBe(200);

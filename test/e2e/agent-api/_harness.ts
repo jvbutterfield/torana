@@ -150,6 +150,7 @@ export async function startE2E(opts: StartE2EOptions): Promise<E2EHarness> {
     version: 1,
     gateway: {
       port,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -180,8 +181,16 @@ export async function startE2E(opts: StartE2EOptions): Promise<E2EHarness> {
       message_length_safe_margin: 3800,
     },
     outbox: { max_attempts: 2, retry_base_ms: 500 },
-    shutdown: { outbox_drain_secs: 5, runner_grace_secs: 5, hard_timeout_secs: 15 },
-    dashboard: { enabled: false, mount_path: "/dashboard" },
+    shutdown: {
+      outbox_drain_secs: 5,
+      runner_grace_secs: 5,
+      hard_timeout_secs: 15,
+    },
+    dashboard: {
+      enabled: false,
+      mount_path: "/dashboard",
+      allow_non_loopback_proxy_target: false,
+    },
     metrics: { enabled: false },
     attachments: {
       max_bytes: 20 * 1024 * 1024,
@@ -202,14 +211,19 @@ export async function startE2E(opts: StartE2EOptions): Promise<E2EHarness> {
         hard_ttl_ms: 86_400_000,
         max_per_bot: 4,
         max_global: 8,
+        max_per_token_default: 8,
       },
-      send: { idempotency_retention_ms: 86_400_000 },
+      send: {
+        max_body_bytes: 100 * 1024 * 1024,
+        idempotency_retention_ms: 86_400_000,
+      },
       ask: {
         default_timeout_ms: 90_000,
         max_timeout_ms: 300_000,
         max_body_bytes: 10 * 1024 * 1024,
         max_files_per_request: 5,
       },
+      expose_runner_type: false,
     },
     bots: [opts.botConfig],
   };
@@ -254,7 +268,12 @@ export async function pollTurn(
   bearer: string,
   turnId: number,
   timeoutMs: number,
-): Promise<{ status: string; text?: string; error?: string; [k: string]: unknown }> {
+): Promise<{
+  status: string;
+  text?: string;
+  error?: string;
+  [k: string]: unknown;
+}> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const r = await fetch(`${base}/v1/turns/${turnId}`, {

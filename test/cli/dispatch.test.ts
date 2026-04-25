@@ -66,6 +66,7 @@ async function setupGateway(
       args: ["run", MOCK, "normal"],
       env: {},
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   });
   const config = makeTestConfig([bot]);
@@ -117,7 +118,10 @@ async function setupGateway(
   return { base: `http://127.0.0.1:${server.port}` };
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -167,9 +171,15 @@ describe("torana ask — subprocess dispatch", () => {
   test("happy path: returns echoed text on stdout, exit 0", async () => {
     const secret = "tok-cli-ask-happy-12345";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const { stdout, stderr, exitCode } = await runCli(
-      ["ask", "bot1", "hello", "--server", base, "--token", secret],
-    );
+    const { stdout, stderr, exitCode } = await runCli([
+      "ask",
+      "bot1",
+      "hello",
+      "--server",
+      base,
+      "--token",
+      secret,
+    ]);
     expect(exitCode).toBe(0);
     expect(stdout.trim()).toBe("echo: hello");
     expect(stderr).toBe("");
@@ -178,10 +188,10 @@ describe("torana ask — subprocess dispatch", () => {
   test("env vars (TORANA_SERVER + TORANA_TOKEN) work without flags", async () => {
     const secret = "tok-cli-ask-env-1234567";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const { stdout, exitCode } = await runCli(
-      ["ask", "bot1", "via env"],
-      { TORANA_SERVER: base, TORANA_TOKEN: secret },
-    );
+    const { stdout, exitCode } = await runCli(["ask", "bot1", "via env"], {
+      TORANA_SERVER: base,
+      TORANA_TOKEN: secret,
+    });
     expect(exitCode).toBe(0);
     expect(stdout.trim()).toBe("echo: via env");
   }, 20_000);
@@ -189,9 +199,16 @@ describe("torana ask — subprocess dispatch", () => {
   test("--json mode emits parseable JSON", async () => {
     const secret = "tok-cli-ask-json-1234567";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const { stdout, exitCode } = await runCli(
-      ["ask", "bot1", "structured", "--server", base, "--token", secret, "--json"],
-    );
+    const { stdout, exitCode } = await runCli([
+      "ask",
+      "bot1",
+      "structured",
+      "--server",
+      base,
+      "--token",
+      secret,
+      "--json",
+    ]);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
     expect(parsed.status).toBe("done");
@@ -208,9 +225,15 @@ describe("torana ask — subprocess dispatch", () => {
   test("invalid token → exit 3 authFailed", async () => {
     const realSecret = "tok-cli-real-secret-123";
     const { base } = await setupGateway([tokenFor(realSecret, ["ask"])]);
-    const { exitCode, stderr } = await runCli(
-      ["ask", "bot1", "hi", "--server", base, "--token", "wrong-token-xx"],
-    );
+    const { exitCode, stderr } = await runCli([
+      "ask",
+      "bot1",
+      "hi",
+      "--server",
+      base,
+      "--token",
+      "wrong-token-xx",
+    ]);
     expect(exitCode).toBe(3);
     expect(stderr).toContain("invalid_token");
   }, 20_000);
@@ -218,9 +241,15 @@ describe("torana ask — subprocess dispatch", () => {
   test("send scope token rejected on ask → exit 3", async () => {
     const secret = "tok-cli-send-only-123";
     const { base } = await setupGateway([tokenFor(secret, ["send"])]);
-    const { exitCode, stderr } = await runCli(
-      ["ask", "bot1", "hi", "--server", base, "--token", secret],
-    );
+    const { exitCode, stderr } = await runCli([
+      "ask",
+      "bot1",
+      "hi",
+      "--server",
+      base,
+      "--token",
+      secret,
+    ]);
     expect(exitCode).toBe(3);
     expect(stderr).toContain("scope_not_permitted");
   }, 20_000);
@@ -236,20 +265,35 @@ describe("torana bots list — subprocess dispatch", () => {
   test("table output, exit 0", async () => {
     const secret = "tok-cli-bots-list-1234";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const { stdout, exitCode } = await runCli(
-      ["bots", "list", "--server", base, "--token", secret],
-    );
+    const { stdout, exitCode } = await runCli([
+      "bots",
+      "list",
+      "--server",
+      base,
+      "--token",
+      secret,
+    ]);
     expect(exitCode).toBe(0);
+    expect(stdout).toContain("BOT_ID");
     expect(stdout).toContain("bot1");
-    expect(stdout).toContain("claude-code");
+    // `runner_type` is hidden by default (`agent_api.expose_runner_type:
+    // false`), so the RUNNER column shouldn't render.
+    expect(stdout).not.toContain("RUNNER");
+    expect(stdout).not.toContain("claude-code");
   }, 15_000);
 
   test("--json mode parseable", async () => {
     const secret = "tok-cli-bots-json-1234";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const { stdout, exitCode } = await runCli(
-      ["bots", "list", "--server", base, "--token", secret, "--json"],
-    );
+    const { stdout, exitCode } = await runCli([
+      "bots",
+      "list",
+      "--server",
+      base,
+      "--token",
+      secret,
+      "--json",
+    ]);
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
     expect(parsed.bots[0].bot_id).toBe("bot1");
@@ -260,15 +304,28 @@ describe("torana turns get — subprocess dispatch", () => {
   test("after a real ask, turns get returns done", async () => {
     const secret = "tok-cli-turns-get-12345";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const askRes = await runCli(
-      ["ask", "bot1", "hello", "--server", base, "--token", secret, "--json"],
-    );
+    const askRes = await runCli([
+      "ask",
+      "bot1",
+      "hello",
+      "--server",
+      base,
+      "--token",
+      secret,
+      "--json",
+    ]);
     expect(askRes.exitCode).toBe(0);
     const turnId = JSON.parse(askRes.stdout).turn_id as number;
 
-    const { stdout, exitCode } = await runCli(
-      ["turns", "get", String(turnId), "--server", base, "--token", secret],
-    );
+    const { stdout, exitCode } = await runCli([
+      "turns",
+      "get",
+      String(turnId),
+      "--server",
+      base,
+      "--token",
+      secret,
+    ]);
     expect(exitCode).toBe(0);
     expect(stdout).toContain("status: done");
     expect(stdout).toContain("echo: hello");
@@ -277,9 +334,15 @@ describe("torana turns get — subprocess dispatch", () => {
   test("nonexistent turn → exit 4 notFound", async () => {
     const secret = "tok-cli-turns-404-12345";
     const { base } = await setupGateway([tokenFor(secret, ["ask"])]);
-    const { exitCode, stderr } = await runCli(
-      ["turns", "get", "999999", "--server", base, "--token", secret],
-    );
+    const { exitCode, stderr } = await runCli([
+      "turns",
+      "get",
+      "999999",
+      "--server",
+      base,
+      "--token",
+      secret,
+    ]);
     expect(exitCode).toBe(4);
     expect(stderr).toContain("turn_not_found");
   }, 15_000);
@@ -287,9 +350,14 @@ describe("torana turns get — subprocess dispatch", () => {
 
 describe("dispatcher — usage errors before network", () => {
   test("ask without text positional → exit 2", async () => {
-    const { exitCode, stderr } = await runCli(
-      ["ask", "bot1", "--server", "http://x", "--token", "t"],
-    );
+    const { exitCode, stderr } = await runCli([
+      "ask",
+      "bot1",
+      "--server",
+      "http://x",
+      "--token",
+      "t",
+    ]);
     expect(exitCode).toBe(2);
     expect(stderr).toMatch(/<bot_id> and <text>/);
   }, 15_000);
@@ -303,19 +371,17 @@ describe("dispatcher — usage errors before network", () => {
   test("send missing --source → exit 2", async () => {
     const secret = "tok-cli-send-nosrc-12";
     const { base } = await setupGateway([tokenFor(secret, ["send"])]);
-    const { exitCode, stderr } = await runCli(
-      [
-        "send",
-        "bot1",
-        "hi",
-        "--user-id",
-        "1",
-        "--server",
-        base,
-        "--token",
-        secret,
-      ],
-    );
+    const { exitCode, stderr } = await runCli([
+      "send",
+      "bot1",
+      "hi",
+      "--user-id",
+      "1",
+      "--server",
+      base,
+      "--token",
+      secret,
+    ]);
     expect(exitCode).toBe(2);
     expect(stderr).toMatch(/--source/);
   }, 15_000);

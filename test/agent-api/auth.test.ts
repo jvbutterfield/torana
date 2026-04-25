@@ -3,8 +3,14 @@ import { createHash } from "node:crypto";
 import { authenticate, authorize } from "../../src/agent-api/auth.js";
 import type { ResolvedAgentApiToken } from "../../src/config/load.js";
 
-function mkToken(name: string, secret: string, overrides: Partial<ResolvedAgentApiToken> = {}): ResolvedAgentApiToken {
-  const hash = new Uint8Array(createHash("sha256").update(secret, "utf8").digest());
+function mkToken(
+  name: string,
+  secret: string,
+  overrides: Partial<ResolvedAgentApiToken> = {},
+): ResolvedAgentApiToken {
+  const hash = new Uint8Array(
+    createHash("sha256").update(secret, "utf8").digest(),
+  );
   return {
     name,
     secret,
@@ -16,7 +22,10 @@ function mkToken(name: string, secret: string, overrides: Partial<ResolvedAgentA
 }
 
 describe("agent-api/auth: authenticate", () => {
-  const tokens = [mkToken("cos", "s3cret-cos-value-1234"), mkToken("cal", "s3cret-cal-value-5678")];
+  const tokens = [
+    mkToken("cos", "s3cret-cos-value-1234"),
+    mkToken("cal", "s3cret-cal-value-5678"),
+  ];
 
   test("null header → missing_auth", () => {
     const r = authenticate(tokens, null);
@@ -29,7 +38,9 @@ describe("agent-api/auth: authenticate", () => {
   });
 
   test("wrong secret → invalid_token", () => {
-    expect(authenticate(tokens, "Bearer nope")).toEqual({ kind: "invalid_token" });
+    expect(authenticate(tokens, "Bearer nope")).toEqual({
+      kind: "invalid_token",
+    });
   });
 
   test("correct secret → token", () => {
@@ -45,7 +56,10 @@ describe("agent-api/auth: authenticate", () => {
 });
 
 describe("agent-api/auth: authorize", () => {
-  const token = mkToken("cos", "s3cret", { bot_ids: ["bot1"], scopes: ["ask"] });
+  const token = mkToken("cos", "s3cret", {
+    bot_ids: ["bot1"],
+    scopes: ["ask"],
+  });
 
   test("wrong bot → bot_not_permitted", () => {
     expect(authorize(token, "bot2", "ask")).toEqual({

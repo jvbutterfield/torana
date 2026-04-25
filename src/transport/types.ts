@@ -19,11 +19,7 @@ export type HttpMethod = "GET" | "POST" | "DELETE";
 
 /** In-process HTTP router contract. server.ts implements this; transports consume it. */
 export interface HttpRouter {
-  route(
-    method: HttpMethod,
-    path: string,
-    handler: RouteHandler,
-  ): Unregister;
+  route(method: HttpMethod, path: string, handler: RouteHandler): Unregister;
   setFallback(handler: (req: Request) => Promise<Response>): void;
   setErrorHandler(
     handler: (err: unknown, req: Request) => Promise<Response>,

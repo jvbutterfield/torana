@@ -70,7 +70,11 @@ describe("§12.5.4 resource.idempotency-store-bloat", () => {
     seedIdempotencyRows(N);
 
     // Confirm seed landed.
-    const inner = (db as unknown as { _db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown } } })._db;
+    const inner = (
+      db as unknown as {
+        _db: { prepare: (s: string) => { get: (...a: unknown[]) => unknown } };
+      }
+    )._db;
     const beforeRow = inner
       .prepare(`SELECT COUNT(*) as n FROM agent_api_idempotency`)
       .get() as { n: number };

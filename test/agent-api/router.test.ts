@@ -28,7 +28,10 @@ let dbPath: string;
 let db: GatewayDB;
 let server: Server;
 
-function fakeRegistry(botIds: string[], config: Config): {
+function fakeRegistry(
+  botIds: string[],
+  config: Config,
+): {
   bot(id: string): unknown;
   botIds: string[];
 } {
@@ -47,7 +50,10 @@ function fakeRegistry(botIds: string[], config: Config): {
   return reg;
 }
 
-function setup(tokens: ResolvedAgentApiToken[]): string {
+function setup(
+  tokens: ResolvedAgentApiToken[],
+  opts: { exposeRunnerType?: boolean } = {},
+): string {
   tmpDir = mkdtempSync(join(tmpdir(), "torana-router-"));
   dbPath = join(tmpDir, "gateway.db");
   applyMigrations(dbPath);
@@ -56,6 +62,7 @@ function setup(tokens: ResolvedAgentApiToken[]): string {
   const bot = makeTestBotConfig("bot1");
   const config = makeTestConfig([bot]);
   config.agent_api.enabled = true;
+  config.agent_api.expose_runner_type = opts.exposeRunnerType === true;
 
   server = createServer({ port: 0, hostname: "127.0.0.1" });
   registerAgentApiHealthRoute(server.router, {
@@ -74,7 +81,10 @@ function setup(tokens: ResolvedAgentApiToken[]): string {
   return `http://127.0.0.1:${server.port}`;
 }
 
-function stubPool(): { listForBot: () => unknown[]; stop: () => Promise<void> } {
+function stubPool(): {
+  listForBot: () => unknown[];
+  stop: () => Promise<void>;
+} {
   return {
     listForBot: () => [],
     stop: async () => {
@@ -109,7 +119,10 @@ describe("/v1/health (public, no auth)", () => {
     const base = setup([]);
     const r = await fetch(`${base}/v1/health`);
     expect(r.status).toBe(200);
-    const body = (await r.json()) as { ok: boolean; agent_api_enabled: boolean };
+    const body = (await r.json()) as {
+      ok: boolean;
+      agent_api_enabled: boolean;
+    };
     expect(body.ok).toBe(true);
     expect(body.agent_api_enabled).toBe(true);
   });
@@ -146,11 +159,51 @@ describe("/v1 auth preamble", () => {
     expect((await r.json()).error).toBe("invalid_token");
   });
 
-  test("unknown bot → 404 unknown_bot (before auth probe)", async () => {
+  test("unknown bot with a token that is NOT authorized for it → 403 bot_not_permitted (not 404, to prevent enumeration)", async () => {
+    // Enumeration defense: a bearer authorized only for `bot1` must not be
+    // able to distinguish unknown bot IDs from known ones. We check
+    // authorization BEFORE bot existence, so this returns 403 with a
+    // bot_not_permitted error even though the bot does not exist.
     const base = setup([token]);
     const r = await fetch(`${base}/v1/bots/nope/ask`, {
       method: "POST",
       headers: { Authorization: `Bearer ${secret}` },
+      body: JSON.stringify({ text: "hi" }),
+    });
+    expect(r.status).toBe(403);
+    expect((await r.json()).error).toBe("bot_not_permitted");
+  });
+
+  test("unknown bot probed without auth → 401 missing_auth (bot existence not revealed)", async () => {
+    // Stronger enumeration defense: an unauthenticated caller cannot tell a
+    // registered bot id apart from an unregistered one — both return 401.
+    const base = setup([token]);
+    const r = await fetch(`${base}/v1/bots/nope/ask`, {
+      method: "POST",
+      body: JSON.stringify({ text: "hi" }),
+    });
+    expect(r.status).toBe(401);
+    expect((await r.json()).error).toBe("missing_auth");
+  });
+
+  test("unknown bot WITH a token that lists the unknown id → 404 unknown_bot", async () => {
+    // A token whose bot_ids array actually includes the unknown id will
+    // pass authorization, at which point the registry check becomes the
+    // next gate — and legitimately reports unknown_bot. This path should
+    // only ever fire for a misconfigured deployment where tokens.bot_ids
+    // references a bot id that no longer exists.
+    const liberalSecret = "liberal-secret-value-abcdefghij123";
+    const liberalToken: ResolvedAgentApiToken = {
+      name: "liberal",
+      secret: liberalSecret,
+      hash: hash(liberalSecret),
+      bot_ids: ["bot1", "nope"],
+      scopes: ["ask"],
+    };
+    const base = setup([liberalToken]);
+    const r = await fetch(`${base}/v1/bots/nope/ask`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${liberalSecret}` },
       body: JSON.stringify({ text: "hi" }),
     });
     expect(r.status).toBe(404);
@@ -260,6 +313,53 @@ describe("/v1/bots listing is caller-scoped", () => {
     expect(r.status).toBe(200);
     const body = (await r.json()) as { bots: Array<{ bot_id: string }> };
     expect(body.bots.map((b) => b.bot_id)).toEqual(["bot1"]);
+  });
+});
+
+// `runner_type` leaks deployment shape — we hide it by default and
+// require an explicit `agent_api.expose_runner_type: true` opt-in.
+// See docs/agent-api.md "Security model".
+describe("/v1/bots runner_type exposure", () => {
+  const secret = "caller-runner-tok-9876";
+  const token: ResolvedAgentApiToken = {
+    name: "caller",
+    secret,
+    hash: hash(secret),
+    bot_ids: ["bot1"],
+    scopes: ["ask"],
+  };
+
+  test("default config: response omits runner_type entirely", async () => {
+    const base = setup([token]);
+    const r = await fetch(`${base}/v1/bots`, {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      bots: Array<{
+        bot_id: string;
+        supports_side_sessions: boolean;
+        runner_type?: string;
+      }>;
+    };
+    expect(body.bots).toHaveLength(1);
+    const item = body.bots[0]!;
+    expect(item.bot_id).toBe("bot1");
+    expect(item.supports_side_sessions).toBe(true);
+    expect("runner_type" in item).toBe(false);
+    expect(item.runner_type).toBeUndefined();
+  });
+
+  test("expose_runner_type=true: response includes runner_type", async () => {
+    const base = setup([token], { exposeRunnerType: true });
+    const r = await fetch(`${base}/v1/bots`, {
+      headers: { Authorization: `Bearer ${secret}` },
+    });
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as {
+      bots: Array<{ bot_id: string; runner_type?: string }>;
+    };
+    expect(body.bots[0]!.runner_type).toBe("claude-code");
   });
 });
 

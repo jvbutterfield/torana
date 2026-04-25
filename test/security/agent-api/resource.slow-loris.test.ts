@@ -36,7 +36,9 @@ describe("§12.5.4 resource.slow-loris (behavioural pin)", () => {
     // Caps are small enough (MiB-scale, not GiB-scale) that even a
     // request held open indefinitely can only commit `max_body_bytes`
     // worth of buffering per request.
-    expect(cfg.agent_api.ask.max_body_bytes).toBeLessThanOrEqual(1024 * 1024 * 1024);
+    expect(cfg.agent_api.ask.max_body_bytes).toBeLessThanOrEqual(
+      1024 * 1024 * 1024,
+    );
   });
 
   test("per-request caps prevent a slow client from steering around limits via content-length removal", () => {
@@ -48,7 +50,10 @@ describe("§12.5.4 resource.slow-loris (behavioural pin)", () => {
     // This test is a docblock-level guard — it pins that the check
     // exists in source by string-matching on it.
     const src = require("node:fs").readFileSync(
-      require("node:path").resolve(__dirname, "../../../src/agent-api/attachments.ts"),
+      require("node:path").resolve(
+        __dirname,
+        "../../../src/agent-api/attachments.ts",
+      ),
       "utf8",
     );
     expect(src).toContain("aggregate >");

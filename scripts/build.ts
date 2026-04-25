@@ -7,7 +7,14 @@
 // See plan §14.L bug 2.
 
 import { $ } from "bun";
-import { mkdirSync, readdirSync, copyFileSync, existsSync, rmSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  copyFileSync,
+  existsSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { syncSkills, checkParity } from "./check-skill-parity.js";
 
@@ -23,14 +30,18 @@ if (existsSync(distRoot)) {
 }
 
 // 2. Bundle.
-await $`bun build src/cli.ts --target=bun --outdir=dist --external bun:sqlite`.cwd(repoRoot);
+await $`bun build src/cli.ts --target=bun --outdir=dist --external bun:sqlite`.cwd(
+  repoRoot,
+);
 
 // 3. Copy schema + migrations. Mirror the src/db/ layout so both candidates in
 //    migrate.ts (source-relative + bundle-relative) resolve cleanly.
 mkdirSync(distMigrations, { recursive: true });
 copyFileSync(join(srcDb, "schema.sql"), join(distDb, "schema.sql"));
 
-const migrationFiles = readdirSync(srcDb + "/migrations").filter((f) => f.endsWith(".sql"));
+const migrationFiles = readdirSync(srcDb + "/migrations").filter((f) =>
+  f.endsWith(".sql"),
+);
 if (migrationFiles.length === 0) {
   console.error("build: no migration .sql files found in src/db/migrations/");
   process.exit(1);

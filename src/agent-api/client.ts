@@ -50,8 +50,10 @@ export class AgentApiError extends Error {
 
 export interface BotsListItem {
   bot_id: string;
-  runner_type: string;
   supports_side_sessions: boolean;
+  // Present iff the gateway has `agent_api.expose_runner_type: true`.
+  // Off by default — see docs/agent-api.md "Security model".
+  runner_type?: string;
 }
 
 export interface BotsListResponse {
@@ -325,9 +327,10 @@ export class AgentApiClient {
       // Copy through a fresh ArrayBuffer so the BlobPart type narrows; the
       // alternative (declaring `data: ArrayBuffer | Uint8Array`) trips
       // SharedArrayBuffer/ArrayBuffer variance under strict tsc.
-      const part: ArrayBuffer = f.data instanceof Uint8Array
-        ? f.data.slice().buffer as ArrayBuffer
-        : (f.data as ArrayBuffer);
+      const part: ArrayBuffer =
+        f.data instanceof Uint8Array
+          ? (f.data.slice().buffer as ArrayBuffer)
+          : (f.data as ArrayBuffer);
       const blob = new Blob([part], { type: f.contentType });
       form.append("file", blob, f.filename);
     }
@@ -344,12 +347,14 @@ export class AgentApiClient {
       // body not JSON — fall through; we'll surface the status text instead
     }
     const code = (
-      parsed && typeof parsed.error === "string" ? parsed.error : "internal_error"
+      parsed && typeof parsed.error === "string"
+        ? parsed.error
+        : "internal_error"
     ) as ErrorKind;
     const message =
-      (parsed && typeof parsed.message === "string"
-        ? parsed.message
-        : null) ?? text ?? response.statusText;
+      (parsed && typeof parsed.message === "string" ? parsed.message : null) ??
+      text ??
+      response.statusText;
     return new AgentApiError({
       code,
       status: response.status,

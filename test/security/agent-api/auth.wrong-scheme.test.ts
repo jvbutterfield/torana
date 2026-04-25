@@ -16,11 +16,11 @@ afterEach(async () => {
 describe("§12.5.1 auth.wrong-scheme", () => {
   const schemes = [
     "Basic dXNlcjpwYXNz",
-    "Digest username=\"admin\"",
+    'Digest username="admin"',
     "Token abcdef",
     "APIKey xyz123",
     "OAuth oauth_token=abc",
-    "Hawk id=\"dh37\"",
+    'Hawk id="dh37"',
     "Bearer", // bearer with no token
     "  Bearer  ", // bearer-like with no token
   ];

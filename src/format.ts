@@ -35,16 +35,19 @@ export function markdownToTelegramHtml(text: string): string {
   // Phase 1: Extract fenced code blocks before any other processing.
   // They must not have their contents transformed.
   const codeBlocks: CodeBlock[] = [];
-  let processed = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
-    const placeholder = `\x00CB${codeBlocks.length}\x00`;
-    const escapedCode = escapeHtml(code.replace(/\n$/, "")); // trim trailing newline inside block
-    const langAttr = lang ? ` class="language-${escapeHtml(lang)}"` : "";
-    codeBlocks.push({
-      placeholder,
-      html: `<pre><code${langAttr}>${escapedCode}</code></pre>`,
-    });
-    return placeholder;
-  });
+  let processed = text.replace(
+    /```(\w*)\n([\s\S]*?)```/g,
+    (_match, lang, code) => {
+      const placeholder = `\x00CB${codeBlocks.length}\x00`;
+      const escapedCode = escapeHtml(code.replace(/\n$/, "")); // trim trailing newline inside block
+      const langAttr = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+      codeBlocks.push({
+        placeholder,
+        html: `<pre><code${langAttr}>${escapedCode}</code></pre>`,
+      });
+      return placeholder;
+    },
+  );
 
   // Phase 2: Extract markdown tables and wrap in <pre> for monospace alignment.
   // A table is a sequence of lines starting with |, with a separator row (|---|).
@@ -56,11 +59,11 @@ export function markdownToTelegramHtml(text: string): string {
       // row containing only |, -, :, and spaces
       const lines = tableBlock.replace(/\n$/, "").split("\n");
       if (lines.length < 2) return match;
-      const hasSeparator = lines.some(l => /^\|[\s:|-]+\|$/.test(l));
+      const hasSeparator = lines.some((l) => /^\|[\s:|-]+\|$/.test(l));
       if (!hasSeparator) return match;
 
       // Strip the separator row — it's visual noise in monospace
-      const displayLines = lines.filter(l => !/^\|[\s:|-]+\|$/.test(l));
+      const displayLines = lines.filter((l) => !/^\|[\s:|-]+\|$/.test(l));
       const placeholder = `\x00TBL${tables.length}\x00`;
       tables.push({
         placeholder,
@@ -101,8 +104,14 @@ export function markdownToTelegramHtml(text: string): string {
 
   // Italic: *text* or _text_ (but not inside words like file_name_here)
   // Only match _text_ when preceded by space/start and followed by space/end/punct
-  processed = processed.replace(/(?<![*\w])\*([^*\n]+?)\*(?![*\w])/g, "<i>$1</i>");
-  processed = processed.replace(/(?<=^|[\s(])\b_([^_\n]+?)_\b(?=$|[\s).,;:!?])/gm, "<i>$1</i>");
+  processed = processed.replace(
+    /(?<![*\w])\*([^*\n]+?)\*(?![*\w])/g,
+    "<i>$1</i>",
+  );
+  processed = processed.replace(
+    /(?<=^|[\s(])\b_([^_\n]+?)_\b(?=$|[\s).,;:!?])/gm,
+    "<i>$1</i>",
+  );
 
   // Strikethrough: ~~text~~
   processed = processed.replace(/~~(.+?)~~/g, "<s>$1</s>");
@@ -110,14 +119,15 @@ export function markdownToTelegramHtml(text: string): string {
   // Blockquotes: "> text" → <blockquote>text</blockquote>
   // Consecutive > lines are merged into a single blockquote.
   processed = processed.replace(/(?:^&gt; .+$\n?)+/gm, (block) => {
-    const content = block
-      .replace(/^&gt; /gm, "")
-      .replace(/\n$/, "");
+    const content = block.replace(/^&gt; /gm, "").replace(/\n$/, "");
     return `<blockquote>${content}</blockquote>`;
   });
 
   // Links: [text](url)
-  processed = processed.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  processed = processed.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    '<a href="$2">$1</a>',
+  );
 
   // Phase 6: Restore protected blocks (inline code, tables, fenced code)
   for (const ic of inlineCode) {

@@ -17,7 +17,9 @@ let tmpDir: string;
 let db: GatewayDB;
 
 function loadSchema(dbPath: string): void {
-  const sql = readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") + "\nPRAGMA user_version=1;";
+  const sql =
+    readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") +
+    "\nPRAGMA user_version=1;";
   const raw = new Database(dbPath, { create: true });
   raw.exec(sql);
   raw.close();
@@ -44,7 +46,10 @@ describe("PollingTransport", () => {
     // signal-respecting abort. This mimics a long-poll with no new updates —
     // the test aborts by calling stop(), which propagates to fetch via the
     // AbortController.
-    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       const urlStr =
         typeof url === "string"
           ? url
@@ -88,7 +93,9 @@ describe("PollingTransport", () => {
           );
         });
       }
-      return new Response(JSON.stringify({ ok: false, error_code: 500, description: "x" }));
+      return new Response(
+        JSON.stringify({ ok: false, error_code: 500, description: "x" }),
+      );
     }) as unknown as typeof fetch;
 
     const clients = new Map<string, TelegramClient>();

@@ -39,7 +39,10 @@ interface RecordedCall {
   text?: string;
 }
 
-function makeRecordingClient(): { client: TelegramClient; calls: RecordedCall[] } {
+function makeRecordingClient(): {
+  client: TelegramClient;
+  calls: RecordedCall[];
+} {
   const calls: RecordedCall[] = [];
   const client = {
     async sendMessage(chatId: number, text: string) {
@@ -114,7 +117,11 @@ describe("runCrashRecovery", () => {
 
     runCrashRecovery(db, new Map([["alpha", client]]));
 
-    const row = db.query("SELECT status, started_at, worker_generation FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      ._unsafeQuery(
+        "SELECT status, started_at, worker_generation FROM turns WHERE id=?",
+      )
+      .get(turnId) as {
       status: string;
       started_at: string | null;
       worker_generation: number | null;
@@ -144,7 +151,9 @@ describe("runCrashRecovery", () => {
 
     runCrashRecovery(db, new Map([["alpha", client]]));
 
-    const row = db.query("SELECT status, error_text FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      ._unsafeQuery("SELECT status, error_text FROM turns WHERE id=?")
+      .get(turnId) as {
       status: string;
       error_text: string | null;
     };
@@ -160,6 +169,70 @@ describe("runCrashRecovery", () => {
     expect(edits[0].text).toContain("in-progress");
     expect(sends).toHaveLength(1);
     expect(sends[0].text?.toLowerCase()).toContain("restarted");
+  });
+
+  test("orphaned agent-API send turn is interrupted SILENTLY (no Telegram apology)", () => {
+    // Agent-API-originated turns are polled by the external caller via
+    // /v1/turns/:id; sending a "Gateway restarted …" message to the end
+    // user's Telegram chat exposes the existence of a backend job the user
+    // never initiated. The recovery path must skip the sendMessage on
+    // these turns.
+    const { client, calls } = makeRecordingClient();
+    // Build a synthetic agent-API send turn: need source = 'agent_api_send'.
+    const turnId = db.insertSendTurn({
+      botId: "alpha",
+      tokenName: "caller",
+      chatId: 111,
+      markerWrappedText: '[system-message from "legit"]\n\nhi',
+      idempotencyKey: "idem-key-crash-recovery-agentapi-001",
+      sourceLabel: "legit",
+      attachmentPaths: [],
+    }).turnId;
+    // Transition queued → running → mid-stream so we hit the "interrupted"
+    // branch, not the "re-queue" branch.
+    db.startTurn(turnId, 1);
+    db.setTurnFirstOutput(turnId);
+    db.initWorkerState("alpha");
+
+    runCrashRecovery(db, new Map([["alpha", client]]));
+
+    const row = db
+      ._unsafeQuery("SELECT status, source FROM turns WHERE id=?")
+      .get(turnId) as { status: string; source: string };
+    expect(row.status).toBe("interrupted");
+    expect(row.source).toBe("agent_api_send");
+
+    // Crucially, NO sendMessage to the user's chat.
+    const sends = calls.filter((c) => c.method === "sendMessage");
+    expect(sends).toHaveLength(0);
+  });
+
+  test("orphaned agent-API ask turn is interrupted SILENTLY (no Telegram notify)", () => {
+    // Same policy as send — ask callers poll /v1/turns/:id; no end user
+    // is involved.
+    const { client, calls } = makeRecordingClient();
+    const turnId = db.insertAskTurn({
+      botId: "alpha",
+      tokenName: "caller",
+      sessionId: "eph-ask-crash",
+      textPreview: "hi",
+      attachmentPaths: [],
+    });
+    // insertAskTurn creates the row as 'running' already; mark first_output
+    // to hit the interrupted branch.
+    db.setTurnFirstOutput(turnId);
+    db.initWorkerState("alpha");
+
+    runCrashRecovery(db, new Map([["alpha", client]]));
+
+    const row = db
+      ._unsafeQuery("SELECT status, source FROM turns WHERE id=?")
+      .get(turnId) as { status: string; source: string };
+    expect(row.status).toBe("interrupted");
+    expect(row.source).toBe("agent_api_ask");
+
+    const sends = calls.filter((c) => c.method === "sendMessage");
+    expect(sends).toHaveLength(0);
   });
 
   test("turn with first_output but empty buffer edits '(restarted)' placeholder", () => {
@@ -193,7 +266,9 @@ describe("runCrashRecovery", () => {
     runCrashRecovery(db, new Map<string, TelegramClient>());
 
     // Turn state was still updated even without a client.
-    const row = db.query("SELECT status FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(turnId) as {
       status: string;
     };
     expect(row.status).toBe("interrupted");
@@ -242,9 +317,18 @@ describe("runCrashRecovery", () => {
     db.initWorkerState("alpha");
     db.initWorkerState("beta");
     db.updateWorkerState("alpha", { status: "ready", pid: 1234 });
-    db.updateWorkerState("beta", { status: "degraded", consecutive_failures: 7 });
+    db.updateWorkerState("beta", {
+      status: "degraded",
+      consecutive_failures: 7,
+    });
 
-    runCrashRecovery(db, new Map([["alpha", client], ["beta", client]]));
+    runCrashRecovery(
+      db,
+      new Map([
+        ["alpha", client],
+        ["beta", client],
+      ]),
+    );
 
     const alpha = db.getWorkerState("alpha");
     const beta = db.getWorkerState("beta");
@@ -276,7 +360,9 @@ describe("runCrashRecovery", () => {
     const edits = calls.filter((c) => c.method === "editMessageText");
     expect(edits).toHaveLength(0);
     // Turn still transitions to interrupted and user is notified.
-    const row = db.query("SELECT status FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(turnId) as {
       status: string;
     };
     expect(row.status).toBe("interrupted");
@@ -290,16 +376,33 @@ describe("runCrashRecovery", () => {
     // alpha: running+first_output → interrupted
     const tA = seedRunningTurn("alpha", 111, true, { updateId: 1 });
     db.initStreamState(tA);
-    db.updateStreamState(tA, { active_telegram_message_id: 100, buffer_text: "A text" });
+    db.updateStreamState(tA, {
+      active_telegram_message_id: 100,
+      buffer_text: "A text",
+    });
     // beta: running, no first_output → requeued
     const tB = seedRunningTurn("beta", 222, false, { updateId: 2 });
     db.initWorkerState("alpha");
     db.initWorkerState("beta");
 
-    runCrashRecovery(db, new Map([["alpha", cA], ["beta", cB]]));
+    runCrashRecovery(
+      db,
+      new Map([
+        ["alpha", cA],
+        ["beta", cB],
+      ]),
+    );
 
-    const rowA = db.query("SELECT status FROM turns WHERE id=?").get(tA) as { status: string };
-    const rowB = db.query("SELECT status FROM turns WHERE id=?").get(tB) as { status: string };
+    const rowA = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(tA) as {
+      status: string;
+    };
+    const rowB = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(tB) as {
+      status: string;
+    };
     expect(rowA.status).toBe("interrupted");
     expect(rowB.status).toBe("queued");
 

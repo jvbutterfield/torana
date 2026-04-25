@@ -12,16 +12,15 @@ import { fileURLToPath } from "node:url";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import { OutboxProcessor } from "../../src/outbox.js";
 import { Metrics } from "../../src/metrics.js";
-import {
-  TelegramClient,
-  TelegramError,
-} from "../../src/telegram/client.js";
+import { TelegramClient, TelegramError } from "../../src/telegram/client.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function loadSchema(dbPath: string): void {
-  const sql = readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") + "\nPRAGMA user_version=1;";
+  const sql =
+    readFileSync(resolve(__dirname, "../../src/db/schema.sql"), "utf8") +
+    "\nPRAGMA user_version=1;";
   const raw = new Database(dbPath, { create: true });
   raw.exec(sql);
   raw.close();
@@ -34,7 +33,11 @@ type FetchArgs = { url: string; init: RequestInit | undefined };
  * per-method. Each bot gets its own instance; the fetch impl sits underneath.
  */
 function makeFetch(
-  handler: (method: string, body: Record<string, unknown>, args: FetchArgs) => Response | Promise<Response>,
+  handler: (
+    method: string,
+    body: Record<string, unknown>,
+    args: FetchArgs,
+  ) => Response | Promise<Response>,
 ): typeof fetch {
   return (async (url: string | URL | Request, init?: RequestInit) => {
     const urlStr =
@@ -64,7 +67,12 @@ interface Harness {
     fetchImpl?: typeof fetch;
     max_attempts?: number;
     retry_base_ms?: number;
-  }) => { outbox: OutboxProcessor; metrics: Metrics; calls: Array<{ method: string; body: Record<string, unknown> }> };
+    inFlightGraceSecs?: number;
+  }) => {
+    outbox: OutboxProcessor;
+    metrics: Metrics;
+    calls: Array<{ method: string; body: Record<string, unknown> }>;
+  };
   seedTurn: (botId: string, chatId?: number) => number;
 }
 
@@ -91,7 +99,8 @@ beforeEach(() => {
       return db.createTurn(botId, chatId, inboundId!);
     },
     makeProcessor(opts = {}) {
-      const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+      const calls: Array<{ method: string; body: Record<string, unknown> }> =
+        [];
       const defaultFetch = makeFetch((method) => {
         if (method === "sendMessage") {
           return Response.json({ ok: true, result: { message_id: 9001 } });
@@ -104,12 +113,20 @@ beforeEach(() => {
       const fetchImpl = opts.fetchImpl ?? defaultFetch;
       const wrapped = ((url: string | URL | Request, init?: RequestInit) => {
         const urlStr =
-          typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+          typeof url === "string"
+            ? url
+            : url instanceof URL
+              ? url.toString()
+              : url.url;
         const methodMatch = urlStr.match(/\/bot[^/]+\/(.+)$/);
         const m = methodMatch?.[1] ?? "";
         let body: Record<string, unknown> = {};
         if (init?.body && typeof init.body === "string") {
-          try { body = JSON.parse(init.body); } catch { /* ignore */ }
+          try {
+            body = JSON.parse(init.body);
+          } catch {
+            /* ignore */
+          }
         }
         calls.push({ method: m, body });
         return fetchImpl(url as never, init);
@@ -123,6 +140,7 @@ beforeEach(() => {
         },
         gateway: {
           port: 3000,
+          bind_host: "127.0.0.1",
           data_dir: tmpDir,
           db_path: join(tmpDir, "gateway.db"),
           log_level: "warn",
@@ -136,7 +154,9 @@ beforeEach(() => {
       });
       const clients = new Map<string, TelegramClient>([["alpha", client]]);
       const metrics = new Metrics(config);
-      const outbox = new OutboxProcessor(config, db, clients, metrics);
+      const outbox = new OutboxProcessor(config, db, clients, metrics, null, {
+        inFlightGraceSecs: opts.inFlightGraceSecs,
+      });
       return { outbox, metrics, calls };
     },
   };
@@ -166,9 +186,14 @@ describe("OutboxProcessor.drain", () => {
 
   test("respects deadline: returns when maxMs elapses even with rows remaining", async () => {
     // Hand-rolled fetch that hangs forever: drain must return by deadline.
-    const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
       return new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        init?.signal?.addEventListener("abort", () =>
+          reject(new Error("aborted")),
+        );
       });
     }) as unknown as typeof fetch;
     const { outbox } = harness.makeProcessor({ fetchImpl });
@@ -183,10 +208,7 @@ describe("OutboxProcessor.drain", () => {
     // We can't cancel the fetch from here, so just verify drain does return
     // once processPending returns. For a robust assertion, call drain with
     // a completed queue after some time.
-    await Promise.race([
-      drainPromise,
-      new Promise((r) => setTimeout(r, 1500)),
-    ]);
+    await Promise.race([drainPromise, new Promise((r) => setTimeout(r, 1500))]);
     const elapsed = Date.now() - t0;
     // We don't need drain to be bounded tightly — just bound enough that it
     // doesn't hang indefinitely. The hanging fetch would stall forever
@@ -223,14 +245,22 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const row = harness.db.getOutboxRow(outboxId);
     expect(row?.status).toBe("retrying");
     const raw = harness.db
-      .query("SELECT attempt_count, next_attempt_at, last_error FROM outbox WHERE id = ?")
-      .get(outboxId) as { attempt_count: number; next_attempt_at: string; last_error: string };
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at, last_error FROM outbox WHERE id = ?",
+      )
+      .get(outboxId) as {
+      attempt_count: number;
+      next_attempt_at: string;
+      last_error: string;
+    };
     expect(raw.attempt_count).toBe(1);
     expect(raw.next_attempt_at).not.toBeNull();
     // Stored format must be SQLite's datetime() format (space separator, no
     // millis, no Z) so that lexicographic comparison with datetime('now')
     // works correctly during retry eligibility checks.
-    expect(raw.next_attempt_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    expect(raw.next_attempt_at).toMatch(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+    );
     expect(new Date(raw.next_attempt_at + "Z").getTime()).toBeGreaterThan(
       Date.now() - 1000,
     );
@@ -244,7 +274,11 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const fetchImpl = makeFetch((method) => {
       if (method === "sendMessage") {
         return Response.json(
-          { ok: false, error_code: 429, description: "Too Many Requests: retry after 5" },
+          {
+            ok: false,
+            error_code: 429,
+            description: "Too Many Requests: retry after 5",
+          },
           { status: 429 },
         );
       }
@@ -260,6 +294,95 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     await outbox.drain(300);
     const row = harness.db.getOutboxRow(id);
     expect(row?.status).toBe("retrying");
+  });
+
+  test("429 with Retry-After: schedules at server-asked time and does NOT bump attempt_count", async () => {
+    // Telegram returns Retry-After=4. The retry must be scheduled at
+    // approx now+4s (NOT at the natural exponential backoff), and
+    // attempt_count must remain 0 — Retry-After waits don't burn the
+    // retry budget.
+    const fetchImpl = makeFetch((method) => {
+      if (method === "sendMessage") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error_code: 429,
+            description: "Too Many Requests",
+            parameters: { retry_after: 4 },
+          }),
+          {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return Response.json({ ok: true, result: true });
+    });
+    const { outbox } = harness.makeProcessor({
+      fetchImpl,
+      retry_base_ms: 10, // exponential would only be 10ms, but Retry-After overrides
+      max_attempts: 5,
+    });
+    const turnId = harness.seedTurn("alpha");
+    const id = outbox.queueSend(turnId, "alpha", 111, "hi");
+    await outbox.drain(200);
+
+    // Read back attempt_count via the raw row.
+    const raw = harness.db
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at, status FROM outbox WHERE id = ?",
+      )
+      .get(id) as {
+      attempt_count: number;
+      next_attempt_at: string;
+      status: string;
+    };
+    expect(raw.status).toBe("retrying");
+    expect(raw.attempt_count).toBe(0); // NOT bumped
+    // next_attempt_at should be ~4s in the future. Compare to "now+3s"
+    // as a generous lower bound.
+    const lowerBound = new Date(Date.now() + 3_000)
+      .toISOString()
+      .slice(0, 19)
+      .replace("T", " ");
+    expect(raw.next_attempt_at >= lowerBound).toBe(true);
+  });
+
+  test("Retry-After is capped at 5 minutes against a malicious upstream", async () => {
+    // A compromised CDN or malicious peer could return retry_after=86400
+    // (1 day), which would dead-letter outbound traffic for that chat.
+    // Cap at 5 minutes.
+    const fetchImpl = makeFetch((method) => {
+      if (method === "sendMessage") {
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            error_code: 429,
+            description: "Too Many Requests",
+            parameters: { retry_after: 86_400 }, // 1 day
+          }),
+          {
+            status: 429,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return Response.json({ ok: true, result: true });
+    });
+    const { outbox } = harness.makeProcessor({ fetchImpl });
+    const turnId = harness.seedTurn("alpha");
+    const id = outbox.queueSend(turnId, "alpha", 111, "hi");
+    await outbox.drain(200);
+
+    const raw = harness.db
+      ._unsafeQuery("SELECT next_attempt_at FROM outbox WHERE id = ?")
+      .get(id) as { next_attempt_at: string };
+    // next_attempt_at must be ≤ now + 5 min + a few seconds slop.
+    const upperBound = new Date(Date.now() + 5 * 60_000 + 2_000)
+      .toISOString()
+      .slice(0, 19)
+      .replace("T", " ");
+    expect(raw.next_attempt_at <= upperBound).toBe(true);
   });
 
   test("max_attempts reached → dead-letter (status: dead, no further attempts)", async () => {
@@ -300,7 +423,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
 
     // Metrics recorded failures.
     const snap = metrics.snapshot();
-    expect(snap.alpha.counters.telegram_send_failures).toBeGreaterThanOrEqual(2);
+    expect(snap.alpha.counters.telegram_send_failures).toBeGreaterThanOrEqual(
+      2,
+    );
   });
 
   test("retry succeeds: row transitions retrying → sent and callback fires", async () => {
@@ -447,7 +572,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     const id = outbox.queueSend(turnId, "alpha", 111, "hi");
     // Manually set next_attempt_at to a future time and status=retrying.
     harness.db
-      .query("UPDATE outbox SET status='retrying', next_attempt_at=datetime('now','+1 hour') WHERE id=?")
+      ._unsafeQuery(
+        "UPDATE outbox SET status='retrying', next_attempt_at=datetime('now','+1 hour') WHERE id=?",
+      )
       .run(id);
     await outbox.drain(100);
     expect(calls).toBe(0);
@@ -496,18 +623,24 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     // Capture next_attempt_at after attempt 1 (rolls to retrying w/ +10s).
     await outbox.drain(100);
     const r1 = harness.db
-      .query("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?",
+      )
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r1.attempt_count).toBe(1);
     const t1 = new Date(r1.next_attempt_at + "Z").getTime();
 
     // Force the row eligible again by rewinding next_attempt_at, then drain.
     harness.db
-      .query("UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?")
+      ._unsafeQuery(
+        "UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?",
+      )
       .run(id);
     await outbox.drain(100);
     const r2 = harness.db
-      .query("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?",
+      )
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r2.attempt_count).toBe(2);
     // Attempt 2: backoff = 10s * 2^1 = 20s. Should be ~10s further than attempt 1.
@@ -516,11 +649,15 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
 
     // Attempt 3: backoff = 10s * 2^2 = 40s.
     harness.db
-      .query("UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?")
+      ._unsafeQuery(
+        "UPDATE outbox SET next_attempt_at='2000-01-01 00:00:00' WHERE id=?",
+      )
       .run(id);
     await outbox.drain(100);
     const r3 = harness.db
-      .query("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?",
+      )
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r3.attempt_count).toBe(3);
     const t3 = new Date(r3.next_attempt_at + "Z").getTime();
@@ -681,5 +818,212 @@ describe("OutboxProcessor.fireAndForgetEdit", () => {
   test("no-op for unregistered bot id", async () => {
     const { outbox } = harness.makeProcessor();
     await outbox.fireAndForgetEdit("unknown", 111, 1234, "hi");
+  });
+});
+
+describe("OutboxProcessor in-flight crash recovery", () => {
+  test("processOne marks the row 'in_flight' before the Telegram POST", async () => {
+    // Capture the row's status at the moment fetch is invoked. The mock
+    // fetch resolves only after we've snapshotted the DB state, so any
+    // concurrent observer (or a crash here) would see status='in_flight'
+    // — exactly the state the rc.7 fix introduces to make crash-affected
+    // rows recoverable instead of silently re-sending.
+    const observed: { status: string | null } = { status: null };
+    const fetchImpl = makeFetch((method) => {
+      if (method === "sendMessage") {
+        const row = harness.db.getOutboxRow(rowId);
+        observed.status = (row as { status: string } | null)?.status ?? null;
+        return Response.json({ ok: true, result: { message_id: 9001 } });
+      }
+      return Response.json({ ok: true, result: true });
+    });
+    const { outbox } = harness.makeProcessor({ fetchImpl });
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+
+    await outbox.drain(2000);
+
+    expect(observed.status).toBe("in_flight");
+    const finalRow = harness.db.getOutboxRow(rowId);
+    expect((finalRow as { status: string }).status).toBe("sent");
+  });
+
+  test("getPendingOutbox skips an in_flight row inside the grace window", async () => {
+    // Simulate a crash mid-send: row is in_flight with a future
+    // next_attempt_at. Until the grace expires, the row must NOT be
+    // returned by getPendingOutbox — otherwise a fast restart would
+    // double-send.
+    const { outbox } = harness.makeProcessor({ inFlightGraceSecs: 60 });
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    harness.db.markOutboxInFlight(rowId, 60);
+
+    const eligible = harness.db.getPendingOutbox();
+    expect(eligible.find((r) => r.id === rowId)).toBeUndefined();
+
+    const inFlight = harness.db.getInFlightOutbox();
+    expect(inFlight).toHaveLength(1);
+    expect(inFlight[0].id).toBe(rowId);
+  });
+
+  test("getPendingOutbox auto-recovers an in_flight row after the grace expires", async () => {
+    // A 0-second grace makes the row immediately eligible for retry —
+    // the same path a real crashed-then-restarted process would take
+    // once 60s have elapsed since the original markOutboxInFlight.
+    const { outbox, calls } = harness.makeProcessor({ inFlightGraceSecs: 0 });
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    harness.db.markOutboxInFlight(rowId, 0);
+
+    // Brief wait so 'now' advances past next_attempt_at = datetime('now', '+0 seconds').
+    await new Promise((r) => setTimeout(r, 1100));
+
+    await outbox.drain(2000);
+
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+    const finalRow = harness.db.getOutboxRow(rowId);
+    expect((finalRow as { status: string }).status).toBe("sent");
+  });
+
+  test("recoverInFlight() logs each crash-affected row but does not mutate state", async () => {
+    const { outbox } = harness.makeProcessor();
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    harness.db.markOutboxInFlight(rowId, 60);
+
+    const beforeRow = harness.db.getOutboxRow(rowId);
+    outbox.recoverInFlight();
+    const afterRow = harness.db.getOutboxRow(rowId);
+
+    // recoverInFlight() is a logging-only pass; state is untouched.
+    expect((afterRow as { status: string }).status).toBe(
+      (beforeRow as { status: string }).status,
+    );
+    expect((afterRow as { status: string }).status).toBe("in_flight");
+    expect(harness.db.getInFlightOutbox()).toHaveLength(1);
+  });
+
+  test("markOutboxInFlight is idempotent: a 'sent' row is not regressed back to in_flight", async () => {
+    // Defence against a stray re-mark from a buggy caller. The UPDATE is
+    // guarded by `status IN ('pending', 'retrying')`, so a row that
+    // already transitioned to 'sent' / 'failed' / 'dead' is left alone.
+    const { outbox } = harness.makeProcessor();
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    await outbox.drain(2000);
+    expect((harness.db.getOutboxRow(rowId) as { status: string }).status).toBe(
+      "sent",
+    );
+
+    harness.db.markOutboxInFlight(rowId, 60);
+    expect((harness.db.getOutboxRow(rowId) as { status: string }).status).toBe(
+      "sent",
+    );
+  });
+});
+
+describe("OutboxProcessor per-bot sharding", () => {
+  test("a slow Telegram response on bot A does not block bot B's queue", async () => {
+    // Two bots, two queues. Bot A's sendMessage hangs for 500ms; bot B's
+    // returns immediately. Pre-fix (single global mutex) would have meant
+    // bot B's row sat behind bot A's await for the full 500ms. Post-fix
+    // (per-bot sharding), bot B should drain in well under 500ms.
+    //
+    // We assert: bot B's row is `sent` while bot A's is still in flight.
+    let aResolve: ((r: Response) => void) | null = null;
+    const aPromise = new Promise<Response>((resolve) => {
+      aResolve = resolve;
+    });
+
+    const dispatch = (botId: string, method: string): Promise<Response> => {
+      if (botId === "alpha" && method === "sendMessage") {
+        // Bot A: hangs until we resolve manually.
+        return aPromise;
+      }
+      // Bot B (and anything else): respond immediately.
+      return Promise.resolve(
+        Response.json({ ok: true, result: { message_id: 4242 } }),
+      );
+    };
+
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const urlStr =
+        typeof url === "string"
+          ? url
+          : url instanceof URL
+            ? url.toString()
+            : url.url;
+      const tokenMatch = urlStr.match(/\/bot([^/]+)\/(.+)$/);
+      const token = tokenMatch?.[1] ?? "";
+      const method = tokenMatch?.[2] ?? "";
+      // Map token suffix to botId (we encode in the token below).
+      const botId = token.startsWith("ALPHA") ? "alpha" : "beta";
+      return dispatch(botId, method);
+    }) as unknown as typeof fetch;
+
+    const botAlpha = makeTestBotConfig("alpha");
+    const botBeta = makeTestBotConfig("beta");
+    const config = makeTestConfig([botAlpha, botBeta], {
+      outbox: { max_attempts: 3, retry_base_ms: 10 },
+      gateway: {
+        port: 3000,
+        bind_host: "127.0.0.1",
+        data_dir: harness.tmpDir,
+        db_path: join(harness.tmpDir, "gateway.db"),
+        log_level: "warn",
+      },
+    });
+    const clients = new Map<string, TelegramClient>([
+      [
+        "alpha",
+        new TelegramClient({
+          botId: "alpha",
+          token: "ALPHATOK:AAAA",
+          apiBaseUrl: "https://api.telegram.org",
+          fetchImpl,
+        }),
+      ],
+      [
+        "beta",
+        new TelegramClient({
+          botId: "beta",
+          token: "BETATOK:AAAA",
+          apiBaseUrl: "https://api.telegram.org",
+          fetchImpl,
+        }),
+      ],
+    ]);
+    const metrics = new Metrics(config);
+    const outbox = new OutboxProcessor(config, harness.db, clients, metrics);
+
+    // Seed two turns: one per bot. Both rows go into the outbox.
+    const tA = harness.seedTurn("alpha");
+    const tB = harness.seedTurn("beta", 222);
+    const rowA = outbox.queueSend(tA, "alpha", 111, "from-alpha");
+    const rowB = outbox.queueSend(tB, "beta", 222, "from-beta");
+
+    // Kick processing without waiting for completion. Bot A's promise
+    // hasn't resolved yet, so it sits in_flight; bot B should still drain.
+    const draining = outbox.drain(2000);
+
+    // Give the dispatcher a tick to enqueue the per-bot loops, then wait
+    // for bot B's call to complete (it returns synchronously, so a small
+    // sleep is enough — bot A is still pending).
+    await new Promise((r) => setTimeout(r, 100));
+
+    const rowBAfter = harness.db.getOutboxRow(rowB) as { status: string };
+    const rowAAfter = harness.db.getOutboxRow(rowA) as { status: string };
+
+    // Bot B's row reached sent while bot A's is still in_flight (or
+    // pending — depending on exactly when this snapshot lands).
+    expect(rowBAfter.status).toBe("sent");
+    expect(["in_flight", "pending"]).toContain(rowAAfter.status);
+
+    // Now release bot A and let drain complete.
+    if (aResolve)
+      (aResolve as (r: Response) => void)(
+        Response.json({ ok: true, result: { message_id: 9001 } }),
+      );
+    await draining;
   });
 });

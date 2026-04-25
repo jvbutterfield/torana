@@ -33,8 +33,17 @@ function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
-  return { name: "caller", secret, hash: hash(secret), bot_ids: ["bot1"], scopes };
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
+  return {
+    name: "caller",
+    secret,
+    hash: hash(secret),
+    bot_ids: ["bot1"],
+    scopes,
+  };
 }
 
 let tmpDir: string;
@@ -64,6 +73,7 @@ async function setup(): Promise<{ base: string; secret: string }> {
       args: ["run", MOCK, "normal"],
       env: {},
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   });
   const config = makeTestConfig([bot]);
@@ -91,18 +101,26 @@ async function setup(): Promise<{ base: string; secret: string }> {
     dispatchFor(_id: string) {},
   };
 
-  pool = new SideSessionPool({ config, db, registry: registry as never, metrics });
+  pool = new SideSessionPool({
+    config,
+    db,
+    registry: registry as never,
+    metrics,
+  });
   orphans = new OrphanListenerManager(db, pool, metrics);
 
   const secret = `tok-${randomUUID().slice(0, 8)}`;
   server = createServer({ port: 0, hostname: "127.0.0.1" });
 
   // Register /metrics exactly the way registerFixedRoutes does.
-  server.router.route("GET", "/metrics", async () =>
-    new Response(metrics.renderPrometheus({ bot1: 2 }), {
-      status: 200,
-      headers: { "Content-Type": "text/plain; version=0.0.4" },
-    }),
+  server.router.route(
+    "GET",
+    "/metrics",
+    async () =>
+      new Response(metrics.renderPrometheus({ bot1: 2 }), {
+        status: 200,
+        headers: { "Content-Type": "text/plain; version=0.0.4" },
+      }),
   );
 
   registerAgentApiRoutes(server.router, {
@@ -146,7 +164,10 @@ describe("GET /metrics — agent-api counters appear after traffic", () => {
     // Drive an ask.
     const r = await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
     expect(r.status).toBe(200);
@@ -180,7 +201,11 @@ describe("GET /metrics — agent-api counters appear after traffic", () => {
         "Content-Type": "application/json",
         "Idempotency-Key": "scrape-test-metrics-001",
       },
-      body: JSON.stringify({ source: "test", text: "hi", user_id: "111222333" }),
+      body: JSON.stringify({
+        source: "test",
+        text: "hi",
+        user_id: "111222333",
+      }),
     });
 
     const body = await (await fetch(`${base}/metrics`)).text();
@@ -200,7 +225,10 @@ describe("GET /metrics — agent-api counters appear after traffic", () => {
 
     await fetch(`${base}/v1/bots/bot1/ask`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${secret}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${secret}`,
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ text: "hello" }),
     });
 

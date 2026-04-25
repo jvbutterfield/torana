@@ -48,9 +48,8 @@ export function createServer(opts: ServerOptions): Server {
   const prefixRoutes: PrefixRoute[] = [];
 
   let fallback: ((req: Request) => Promise<Response>) | null = null;
-  let errorHandler:
-    | ((err: unknown, req: Request) => Promise<Response>)
-    | null = null;
+  let errorHandler: ((err: unknown, req: Request) => Promise<Response>) | null =
+    null;
 
   function key(k: ExactKey): string {
     return `${k.method} ${k.path}`;
@@ -114,7 +113,10 @@ export function createServer(opts: ServerOptions): Server {
     });
   }
 
-  async function defaultErrorHandler(err: unknown, req: Request): Promise<Response> {
+  async function defaultErrorHandler(
+    err: unknown,
+    req: Request,
+  ): Promise<Response> {
     log.error("request handler threw", {
       method: req.method,
       url: req.url,
@@ -128,12 +130,17 @@ export function createServer(opts: ServerOptions): Server {
 
   const bun = Bun.serve({
     port: opts.port,
-    hostname: opts.hostname ?? "0.0.0.0",
+    // Caller is responsible for supplying hostname. Defaults to loopback so
+    // standalone `createServer()` uses in tests/tools do not accidentally
+    // expose a port to the network.
+    hostname: opts.hostname ?? "127.0.0.1",
     async fetch(req) {
       try {
         const url = new URL(req.url);
         const method: HttpMethod | null =
-          req.method === "GET" || req.method === "POST" || req.method === "DELETE"
+          req.method === "GET" ||
+          req.method === "POST" ||
+          req.method === "DELETE"
             ? (req.method as HttpMethod)
             : null;
         if (!method) {

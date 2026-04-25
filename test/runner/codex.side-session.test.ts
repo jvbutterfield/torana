@@ -273,8 +273,7 @@ describe("CodexRunner side-sessions", () => {
       expect(second).toEqual({ accepted: false, reason: "busy" });
       // Don't strand the in-flight turn — wait for it or stop teardown will hang.
       await waitFor(
-        () =>
-          collectSide(r, "s1").find((e) => false) ?? undefined,
+        () => collectSide(r, "s1").find((e) => false) ?? undefined,
         100,
       ).catch(() => {
         /* expected timeout */
@@ -446,8 +445,7 @@ describe("CodexRunner side-sessions — threadId resume continuity", () => {
           .split("\n")
           .filter((l) => l.includes('"thread.started"'))
           .map(
-            (l) =>
-              JSON.parse(l) as { __argv?: string[]; __resuming?: boolean },
+            (l) => JSON.parse(l) as { __argv?: string[]; __resuming?: boolean },
           );
         return parsed.length >= 2 ? parsed : undefined;
       }, 2000);

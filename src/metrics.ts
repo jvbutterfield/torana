@@ -211,8 +211,10 @@ export class Metrics {
    * zero-allocation on the hot path.
    */
   initAgentApi(botId: BotId): void {
-    if (!this.agentApi.has(botId)) this.agentApi.set(botId, zeroAgentApiCounters());
-    if (!this.agentApiGauges.has(botId)) this.agentApiGauges.set(botId, zeroAgentApiGauges());
+    if (!this.agentApi.has(botId))
+      this.agentApi.set(botId, zeroAgentApiCounters());
+    if (!this.agentApiGauges.has(botId))
+      this.agentApiGauges.set(botId, zeroAgentApiGauges());
   }
 
   incAgentApi(botId: BotId, counter: keyof AgentApiCounters, amount = 1): void {
@@ -265,7 +267,10 @@ export class Metrics {
     BotId,
     { counters: AgentApiCounters; gauges: AgentApiGauges }
   > {
-    const out: Record<BotId, { counters: AgentApiCounters; gauges: AgentApiGauges }> = {};
+    const out: Record<
+      BotId,
+      { counters: AgentApiCounters; gauges: AgentApiGauges }
+    > = {};
     for (const [botId, counters] of this.agentApi) {
       out[botId] = {
         counters: { ...counters },
@@ -276,7 +281,8 @@ export class Metrics {
   }
 
   snapshot(): Record<BotId, { counters: BotCounters; timers: BotTimers }> {
-    const result: Record<BotId, { counters: BotCounters; timers: BotTimers }> = {};
+    const result: Record<BotId, { counters: BotCounters; timers: BotTimers }> =
+      {};
     for (const [botId, counters] of this.counters) {
       result[botId] = {
         counters: { ...counters },
@@ -297,15 +303,21 @@ export class Metrics {
   /** Prometheus text-exposition format. */
   renderPrometheus(botStates: Record<BotId, number>): string {
     const lines: string[] = [];
-    lines.push("# HELP gateway_uptime_secs Seconds since gateway process start.");
+    lines.push(
+      "# HELP gateway_uptime_secs Seconds since gateway process start.",
+    );
     lines.push("# TYPE gateway_uptime_secs gauge");
     lines.push(`gateway_uptime_secs ${this.uptimeSecs()}`);
 
     lines.push("# HELP turns_total Turns by terminal status.");
     lines.push("# TYPE turns_total counter");
     for (const [botId, c] of this.counters) {
-      lines.push(`turns_total{bot_id="${botId}",status="completed"} ${c.turns_completed}`);
-      lines.push(`turns_total{bot_id="${botId}",status="failed"} ${c.turns_failed}`);
+      lines.push(
+        `turns_total{bot_id="${botId}",status="completed"} ${c.turns_completed}`,
+      );
+      lines.push(
+        `turns_total{bot_id="${botId}",status="failed"} ${c.turns_failed}`,
+      );
     }
 
     lines.push("# HELP bot_state Current bot lifecycle state.");
@@ -318,17 +330,23 @@ export class Metrics {
     lines.push("# TYPE outbox_depth gauge");
     // outbox depth is computed at scrape time by caller; metrics.ts doesn't own the DB.
 
-    lines.push("# HELP outbox_attempts_total Outbox delivery attempts by result.");
+    lines.push(
+      "# HELP outbox_attempts_total Outbox delivery attempts by result.",
+    );
     lines.push("# TYPE outbox_attempts_total counter");
     for (const [botId, c] of this.counters) {
       const sent = c.turns_completed + c.turns_dispatched; // rough proxy; accurate bookkeeping in db.
-      lines.push(`outbox_attempts_total{bot_id="${botId}",result="sent"} ${sent}`);
+      lines.push(
+        `outbox_attempts_total{bot_id="${botId}",result="sent"} ${sent}`,
+      );
       lines.push(
         `outbox_attempts_total{bot_id="${botId}",result="retry"} ${c.telegram_send_failures + c.telegram_edit_failures}`,
       );
     }
 
-    lines.push("# HELP telegram_api_calls_total Outbound Telegram API calls by HTTP class.");
+    lines.push(
+      "# HELP telegram_api_calls_total Outbound Telegram API calls by HTTP class.",
+    );
     lines.push("# TYPE telegram_api_calls_total counter");
     for (const [bucket, v] of Object.entries(this.telegramCounters)) {
       lines.push(`telegram_api_calls_total{status="${bucket}"} ${v}`);
@@ -366,7 +384,9 @@ export class Metrics {
       lines.push(
         "# HELP torana_agent_api_send_idempotent_replays_total Send requests served from the idempotency cache.",
       );
-      lines.push("# TYPE torana_agent_api_send_idempotent_replays_total counter");
+      lines.push(
+        "# TYPE torana_agent_api_send_idempotent_replays_total counter",
+      );
       for (const [botId, c] of this.agentApi) {
         lines.push(
           `torana_agent_api_send_idempotent_replays_total{bot_id="${botId}"} ${c.send_idempotent_replays_total}`,
@@ -386,7 +406,9 @@ export class Metrics {
       lines.push(
         "# HELP torana_agent_api_side_session_evictions_total Side-session evictions by reason.",
       );
-      lines.push("# TYPE torana_agent_api_side_session_evictions_total counter");
+      lines.push(
+        "# TYPE torana_agent_api_side_session_evictions_total counter",
+      );
       for (const [botId, c] of this.agentApi) {
         lines.push(
           `torana_agent_api_side_session_evictions_total{bot_id="${botId}",reason="idle"} ${c.side_session_evictions_idle}`,
@@ -402,7 +424,9 @@ export class Metrics {
       lines.push(
         "# HELP torana_agent_api_side_session_capacity_rejected_total Acquire attempts rejected for capacity.",
       );
-      lines.push("# TYPE torana_agent_api_side_session_capacity_rejected_total counter");
+      lines.push(
+        "# TYPE torana_agent_api_side_session_capacity_rejected_total counter",
+      );
       for (const [botId, c] of this.agentApi) {
         lines.push(
           `torana_agent_api_side_session_capacity_rejected_total{bot_id="${botId}"} ${c.side_session_capacity_rejected_total}`,
@@ -412,7 +436,9 @@ export class Metrics {
       lines.push(
         "# HELP torana_agent_api_ask_orphan_resolutions_total Terminal outcomes for asks that were 202-handed-off to the orphan listener.",
       );
-      lines.push("# TYPE torana_agent_api_ask_orphan_resolutions_total counter");
+      lines.push(
+        "# TYPE torana_agent_api_ask_orphan_resolutions_total counter",
+      );
       for (const [botId, c] of this.agentApi) {
         lines.push(
           `torana_agent_api_ask_orphan_resolutions_total{bot_id="${botId}",outcome="done"} ${c.ask_orphan_resolutions_done}`,
@@ -467,7 +493,9 @@ export class Metrics {
       lines.push(
         "# HELP torana_agent_api_side_session_acquire_duration_ms Pool acquire duration by bot + outcome.",
       );
-      lines.push("# TYPE torana_agent_api_side_session_acquire_duration_ms histogram");
+      lines.push(
+        "# TYPE torana_agent_api_side_session_acquire_duration_ms histogram",
+      );
       for (const [key, h] of this.agentApiAcquireHistograms) {
         const [botId, outcome] = key.split("\u0000");
         for (let i = 0; i < h.buckets.length; i++) {

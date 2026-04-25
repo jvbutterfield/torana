@@ -6,7 +6,13 @@ import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
 import type { ResolvedAgentApiToken } from "./config/load.js";
-import { logger, setLogLevel, setLogFormat, setSecrets, autoFormat } from "./log.js";
+import {
+  logger,
+  setLogLevel,
+  setLogFormat,
+  setSecrets,
+  autoFormat,
+} from "./log.js";
 import { GatewayDB } from "./db/gateway-db.js";
 import { applyMigrations } from "./db/migrate.js";
 import { TelegramClient } from "./telegram/client.js";
@@ -46,7 +52,9 @@ export interface RunningGateway {
   shutdown(signal: string): Promise<void>;
 }
 
-export async function startGateway(opts: StartOptions): Promise<RunningGateway> {
+export async function startGateway(
+  opts: StartOptions,
+): Promise<RunningGateway> {
   const { config } = opts;
   setLogLevel(config.gateway.log_level);
   setLogFormat(config.gateway.log_format ?? autoFormat());
@@ -127,7 +135,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   runCrashRecovery(db, clients);
 
   // HTTP server + router.
-  const server = createServer({ port: config.gateway.port });
+  const server = createServer({
+    port: config.gateway.port,
+    hostname: config.gateway.bind_host,
+  });
   registerFixedRoutes(server, config, db, metrics, registry);
 
   // /v1/health is always available — operators need to confirm the binary
@@ -159,15 +170,18 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       }),
     );
     const retention = config.agent_api.send.idempotency_retention_ms;
-    agentApiIdempotencySweep = setInterval(() => {
-      try {
-        db.sweepIdempotency(Date.now() - retention);
-      } catch (err) {
-        log.warn("idempotency sweep failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }, 60 * 60 * 1000);
+    agentApiIdempotencySweep = setInterval(
+      () => {
+        try {
+          db.sweepIdempotency(Date.now() - retention);
+        } catch (err) {
+          log.warn("idempotency sweep failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+      60 * 60 * 1000,
+    );
     (agentApiIdempotencySweep as unknown as { unref?: () => void }).unref?.();
     log.info("agent_api routes registered", { tokens: tokens.length });
   }
@@ -202,10 +216,16 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
 
   await Promise.all(
     transports.map((t) =>
-      t.start((botId, update) => registry.handleUpdate(botId, update).then(() => {})),
+      t.start((botId, update) =>
+        registry.handleUpdate(botId, update).then(() => {}),
+      ),
     ),
   );
 
+  // Surface any outbox rows left in `in_flight` by a previous process
+  // crash. These auto-retry via the grace window in getPendingOutbox; the
+  // log line just makes the dup-risk visible.
+  outbox.recoverInFlight();
   outbox.start();
   await registry.startAll();
 
@@ -229,7 +249,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
         config.attachments.retention_secs,
       );
       if (result.turns > 0) {
-        log.info("attachment sweeper", { turns: result.turns, files: result.files });
+        log.info("attachment sweeper", {
+          turns: result.turns,
+          files: result.files,
+        });
       }
     } catch (err) {
       log.warn("attachment sweeper failed", {
@@ -240,7 +263,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
   // Run once at startup to clear anything left over from the prior process,
   // then on a fixed cadence.
   void runSweeper();
-  const attachmentSweeperTimer = setInterval(() => void runSweeper(), 60 * 60 * 1000);
+  const attachmentSweeperTimer = setInterval(
+    () => void runSweeper(),
+    60 * 60 * 1000,
+  );
 
   // Agent-API orphan-file sweep: catches the crash window between a
   // multipart write and the DB commit. Only relevant when agent-api is
@@ -263,7 +289,10 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       });
     }
   };
-  const orphanSweeperTimer = setInterval(() => void runOrphanSweep(), 60 * 60 * 1000);
+  const orphanSweeperTimer = setInterval(
+    () => void runOrphanSweep(),
+    60 * 60 * 1000,
+  );
   (orphanSweeperTimer as unknown as { unref?: () => void }).unref?.();
 
   let shutdownStarted = false;
@@ -276,8 +305,7 @@ export async function startGateway(opts: StartOptions): Promise<RunningGateway> 
       shutdownStarted = true;
       log.info("shutting down", { signal });
 
-      const deadline =
-        Date.now() + config.shutdown.hard_timeout_secs * 1000;
+      const deadline = Date.now() + config.shutdown.hard_timeout_secs * 1000;
 
       // Hard-cutoff watchdog: if the orderly path hangs, exit 1.
       const hardTimer = setTimeout(() => {
@@ -365,7 +393,9 @@ export function warnOnEmptyAcl(config: Config): void {
 
 export function warnOnYoloCodexBots(config: Config): void {
   const bots = config.bots
-    .filter((b) => b.runner.type === "codex" && b.runner.approval_mode === "yolo")
+    .filter(
+      (b) => b.runner.type === "codex" && b.runner.approval_mode === "yolo",
+    )
     .map((b) => b.id);
   if (bots.length === 0) return;
   log.warn(
@@ -437,11 +467,40 @@ function registerFixedRoutes(
       const url = new URL(req.url);
       const rel = url.pathname.slice(mountPath.length) || "/";
       const backendUrl = `${target}${rel}${url.search}`;
+
+      // Strip hop-by-hop and sensitive request headers before forwarding:
+      //   - Authorization, Cookie, Proxy-Authorization: keeping these would
+      //     leak Agent-API bearer tokens, browser session cookies, or any
+      //     upstream auth header through the dashboard proxy.
+      //   - Idempotency-Key, X-Telegram-Bot-Api-Secret-Token: torana-internal
+      //     secrets the dashboard must never see.
+      //   - Host: the fetch() rewrites this correctly; copying the gateway's
+      //     Host to the backend confuses virtual-hosted upstreams.
+      // Retain everything else so request routing + Accept/Accept-Language
+      // still work for the dashboard UI.
+      const forwardedHeaders = new Headers(req.headers);
+      for (const h of [
+        "authorization",
+        "cookie",
+        "proxy-authorization",
+        "idempotency-key",
+        "x-telegram-bot-api-secret-token",
+        "host",
+      ]) {
+        forwardedHeaders.delete(h);
+      }
+
       try {
+        // - method: GET is enforced by the router (we only register GET);
+        //   passing req.method preserves that explicitly.
+        // - redirect: "manual" stops fetch from following a backend Location:
+        //   header. Without this the proxy can be used as an open redirect
+        //   / SSRF stepping-stone into anywhere the gateway host can reach.
         const proxyReq = new Request(backendUrl, {
           method: req.method,
-          headers: req.headers,
+          headers: forwardedHeaders,
           body: req.body,
+          redirect: "manual",
         });
         return await fetch(proxyReq);
       } catch {
@@ -463,32 +522,53 @@ export function runCrashRecovery(
       const client = clients.get(turn.bot_id);
       if (client) {
         const display = ss.buffer_text?.trim() || "(restarted)";
-        void client.editMessageText(turn.chat_id, ss.active_telegram_message_id, display).catch(() => {});
+        void client
+          .editMessageText(turn.chat_id, ss.active_telegram_message_id, display)
+          .catch(() => {});
       }
     }
     if (!turn.first_output_at) {
-      log.info("re-queueing orphaned turn", { turn_id: turn.id, bot_id: turn.bot_id });
+      log.info("re-queueing orphaned turn", {
+        turn_id: turn.id,
+        bot_id: turn.bot_id,
+      });
       db.requeueTurn(turn.id);
       db.cancelPendingOutboxForTurn(turn.id);
     } else {
       log.info("marking orphaned turn interrupted", {
         turn_id: turn.id,
         bot_id: turn.bot_id,
+        source: turn.source ?? null,
       });
       db.interruptTurn(turn.id, "Gateway restarted during active turn");
-      const client = clients.get(turn.bot_id);
-      if (client) {
-        void client.sendMessage(
-          turn.chat_id,
-          "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
-        );
+
+      // For Agent-API-originated turns (ask / send), the end user in the
+      // Telegram chat never initiated anything — the external agent did,
+      // and it polls /v1/turns/:id for the outcome. Sending a "Gateway
+      // restarted …" message into the user's DM leaks the existence of
+      // a backend job the user has no context for. Skip the notify on
+      // agent_api_* turns; the polling caller sees the `failed` /
+      // `interrupted_by_gateway_restart` status.
+      const isAgentApi =
+        turn.source === "agent_api_send" || turn.source === "agent_api_ask";
+      if (!isAgentApi) {
+        const client = clients.get(turn.bot_id);
+        if (client) {
+          void client.sendMessage(
+            turn.chat_id,
+            "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
+          );
+        }
       }
     }
   }
 
   const pending = db.getPendingOutbox();
   for (const row of pending) {
-    if (row.kind === "edit" && db.hasSupersedingEdit(row.telegram_message_id, row.id)) {
+    if (
+      row.kind === "edit" &&
+      db.hasSupersedingEdit(row.telegram_message_id, row.id)
+    ) {
       db.markOutboxFailed(row.id, "superseded by later send");
     }
   }

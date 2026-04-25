@@ -20,8 +20,10 @@ async function getFreePort(): Promise<number> {
 describe("server/router — method_not_allowed (defence-in-depth for /v1/*)", () => {
   test("PUT against /v1/* route returns 405 with canonical JSON body", async () => {
     server = createServer({ port: await getFreePort() });
-    server.router.route("POST", "/v1/bots/:bot_id/ask", async () =>
-      new Response("should not be reached"),
+    server.router.route(
+      "POST",
+      "/v1/bots/:bot_id/ask",
+      async () => new Response("should not be reached"),
     );
 
     const resp = await fetch(
@@ -38,14 +40,16 @@ describe("server/router — method_not_allowed (defence-in-depth for /v1/*)", ()
 
   test("PATCH against /v1/* route returns 405 with canonical JSON body", async () => {
     server = createServer({ port: await getFreePort() });
-    server.router.route("GET", "/v1/turns/:turn_id", async () =>
-      new Response("should not be reached"),
+    server.router.route(
+      "GET",
+      "/v1/turns/:turn_id",
+      async () => new Response("should not be reached"),
     );
 
-    const resp = await fetch(
-      `http://127.0.0.1:${server.port}/v1/turns/t_123`,
-      { method: "PATCH", body: "{}" },
-    );
+    const resp = await fetch(`http://127.0.0.1:${server.port}/v1/turns/t_123`, {
+      method: "PATCH",
+      body: "{}",
+    });
     expect(resp.status).toBe(405);
     expect(resp.headers.get("content-type")).toContain("application/json");
     const body = await resp.json();
@@ -66,12 +70,15 @@ describe("server/router — method_not_allowed (defence-in-depth for /v1/*)", ()
 
   test("non-/v1 paths keep the legacy plain-text 405 body (no agent-api coupling)", async () => {
     server = createServer({ port: await getFreePort() });
-    server.router.route("POST", "/webhook/:botId", async () => new Response("ok"));
-
-    const resp = await fetch(
-      `http://127.0.0.1:${server.port}/webhook/alpha`,
-      { method: "PUT" },
+    server.router.route(
+      "POST",
+      "/webhook/:botId",
+      async () => new Response("ok"),
     );
+
+    const resp = await fetch(`http://127.0.0.1:${server.port}/webhook/alpha`, {
+      method: "PUT",
+    });
     expect(resp.status).toBe(405);
     expect(resp.headers.get("content-type")).not.toContain("application/json");
     expect(await resp.text()).toBe("Method Not Allowed");
@@ -94,11 +101,14 @@ describe("server/router — method_not_allowed (defence-in-depth for /v1/*)", ()
 
   test("registered GET/POST/DELETE still work normally on /v1/* (no regression)", async () => {
     server = createServer({ port: await getFreePort() });
-    server.router.route("GET", "/v1/health", async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+    server.router.route(
+      "GET",
+      "/v1/health",
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
     );
 
     const resp = await fetch(`http://127.0.0.1:${server.port}/v1/health`);

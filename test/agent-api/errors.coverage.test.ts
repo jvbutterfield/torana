@@ -56,7 +56,8 @@ function allCodes(): string[] {
 function walkTs(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
-    if (entry === "node_modules" || entry === "dist" || entry.startsWith(".")) continue;
+    if (entry === "node_modules" || entry === "dist" || entry.startsWith("."))
+      continue;
     const full = join(dir, entry);
     const s = statSync(full);
     if (s.isDirectory()) out.push(...walkTs(full));

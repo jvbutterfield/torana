@@ -74,9 +74,7 @@ async function main(): Promise<void> {
       // `reply-env` mode stamps the raw env var value ("unset" when
       // absent) so tests can assert whether TORANA_SESSION_ID was set.
       const envTag =
-        mode === "reply-env"
-          ? ` env=${rawEnvSessionId ?? "unset"}`
-          : "";
+        mode === "reply-env" ? ` env=${rawEnvSessionId ?? "unset"}` : "";
       const reply = `echo[${sessionId}]: ${content}${envTag}`;
 
       emit({

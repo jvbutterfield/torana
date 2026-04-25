@@ -79,16 +79,22 @@ export function registerAgentApiRoutes(
       const a = authenticate(deps.tokens, req.headers.get("Authorization"));
       if ("kind" in a) return mapAuthFailure(a);
       const permitted = new Set(a.token.bot_ids);
+      const exposeRunner = deps.config.agent_api?.expose_runner_type === true;
       const bots = deps.registry.botIds
         .filter((id) => permitted.has(id))
         .sort()
         .map((id) => {
           const bot = deps.registry.bot(id)!;
-          return {
+          const item: {
+            bot_id: string;
+            supports_side_sessions: boolean;
+            runner_type?: string;
+          } = {
             bot_id: id,
-            runner_type: bot.botConfig.runner.type,
             supports_side_sessions: bot.runner.supportsSideSessions(),
           };
+          if (exposeRunner) item.runner_type = bot.botConfig.runner.type;
+          return item;
         });
       return jsonResponse(200, { bots });
     }),
@@ -120,11 +126,19 @@ function authed(
 ): (req: Request, params: Record<string, string>) => Promise<Response> {
   return async (req, params) => {
     const botId = params.bot_id!;
-    if (!deps.registry.bot(botId)) return errorResponse("unknown_bot");
+    // Authenticate FIRST so unauthenticated callers cannot probe bot
+    // existence by comparing "unknown_bot" against "missing_auth"/"invalid_token".
     const a = authenticate(deps.tokens, req.headers.get("Authorization"));
     if ("kind" in a) return mapAuthFailure(a);
+    // Authorization (token→bot+scope) comes next: a token that is not
+    // permitted for this bot gets the same response regardless of whether
+    // the bot exists, so enumeration stays blocked even for authenticated
+    // but unauthorized callers.
     const authz = authorize(a.token, botId, scope);
     if (authz) return mapAuthFailure(authz);
+    // Only reveal the bot-existence signal to a caller whose token is
+    // authorized for this exact bot id.
+    if (!deps.registry.bot(botId)) return errorResponse("unknown_bot");
     return handler(req, { ...params, token: a.token, botId });
   };
 }

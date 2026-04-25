@@ -38,6 +38,7 @@ function makeConfig(mode: string): ClaudeCodeRunnerConfig {
     args: ["run", MOCK, mode],
     env: {},
     pass_continue_flag: false,
+    acknowledge_dangerous: true,
   };
 }
 
@@ -53,15 +54,35 @@ function newRunner(mode = "normal"): ClaudeCodeRunner {
 
 function collect(runner: ClaudeCodeRunner): RunnerEvent[] {
   const events: RunnerEvent[] = [];
-  const kinds = ["ready", "text_delta", "done", "error", "fatal", "rate_limit", "status"] as const;
+  const kinds = [
+    "ready",
+    "text_delta",
+    "done",
+    "error",
+    "fatal",
+    "rate_limit",
+    "status",
+  ] as const;
   for (const k of kinds) runner.on(k, (ev) => events.push(ev as RunnerEvent));
   return events;
 }
 
-function collectSide(runner: ClaudeCodeRunner, sessionId: string): RunnerEvent[] {
+function collectSide(
+  runner: ClaudeCodeRunner,
+  sessionId: string,
+): RunnerEvent[] {
   const events: RunnerEvent[] = [];
-  const kinds = ["ready", "text_delta", "done", "error", "fatal", "rate_limit", "status"] as const;
-  for (const k of kinds) runner.onSide(sessionId, k, (ev) => events.push(ev as RunnerEvent));
+  const kinds = [
+    "ready",
+    "text_delta",
+    "done",
+    "error",
+    "fatal",
+    "rate_limit",
+    "status",
+  ] as const;
+  for (const k of kinds)
+    runner.onSide(sessionId, k, (ev) => events.push(ev as RunnerEvent));
   return events;
 }
 
@@ -83,7 +104,9 @@ describe("ClaudeCodeRunner side-sessions", () => {
     const r = newRunner();
     await r.start();
     try {
-      await expect(r.startSideSession("")).rejects.toBeInstanceOf(InvalidSideSessionId);
+      await expect(r.startSideSession("")).rejects.toBeInstanceOf(
+        InvalidSideSessionId,
+      );
       await expect(r.startSideSession("has space")).rejects.toBeInstanceOf(
         InvalidSideSessionId,
       );
@@ -111,7 +134,9 @@ describe("ClaudeCodeRunner side-sessions", () => {
 
   test("onSide before startSideSession → SideSessionNotFound", () => {
     const r = newRunner();
-    expect(() => r.onSide("nope", "done", () => {})).toThrow(SideSessionNotFound);
+    expect(() => r.onSide("nope", "done", () => {})).toThrow(
+      SideSessionNotFound,
+    );
   });
 
   test("side sendSideTurn: ready → text_delta + done land only on side emitter", async () => {
@@ -135,8 +160,12 @@ describe("ClaudeCodeRunner side-sessions", () => {
       // Side emitter got both text_delta and done for the expected turn.
       const sideText = sideEvents.find((e) => e.kind === "text_delta");
       const sideDone = sideEvents.find((e) => e.kind === "done");
-      expect(sideText && (sideText as { text: string }).text).toBe("echo: hello-side");
-      expect(sideDone && (sideDone as { turnId: string }).turnId).toBe("turn-1");
+      expect(sideText && (sideText as { text: string }).text).toBe(
+        "echo: hello-side",
+      );
+      expect(sideDone && (sideDone as { turnId: string }).turnId).toBe(
+        "turn-1",
+      );
     } finally {
       await r.stopSideSession("s1", 500);
       await r.stop(500);
@@ -158,18 +187,30 @@ describe("ClaudeCodeRunner side-sessions", () => {
       await waitFor(() => e1.find((e) => e.kind === "done"), 5000);
       await waitFor(() => e2.find((e) => e.kind === "done"), 5000);
 
-      const t1 = e1.find((e) => e.kind === "text_delta") as { text: string } | undefined;
-      const t2 = e2.find((e) => e.kind === "text_delta") as { text: string } | undefined;
+      const t1 = e1.find((e) => e.kind === "text_delta") as
+        | { text: string }
+        | undefined;
+      const t2 = e2.find((e) => e.kind === "text_delta") as
+        | { text: string }
+        | undefined;
       expect(t1?.text).toBe("echo: payload-one");
       expect(t2?.text).toBe("echo: payload-two");
 
       // Neither side saw the other's payload.
-      expect(e1.every((e) => e.kind !== "text_delta" || (e as { text: string }).text.includes("one"))).toBe(
-        true,
-      );
-      expect(e2.every((e) => e.kind !== "text_delta" || (e as { text: string }).text.includes("two"))).toBe(
-        true,
-      );
+      expect(
+        e1.every(
+          (e) =>
+            e.kind !== "text_delta" ||
+            (e as { text: string }).text.includes("one"),
+        ),
+      ).toBe(true);
+      expect(
+        e2.every(
+          (e) =>
+            e.kind !== "text_delta" ||
+            (e as { text: string }).text.includes("two"),
+        ),
+      ).toBe(true);
     } finally {
       await r.stopSideSession("s1", 500);
       await r.stopSideSession("s2", 500);
@@ -301,9 +342,7 @@ describe("ClaudeCodeRunner side-sessions", () => {
       await r.startSideSession(poolSessionId);
       try {
         // Find the side-session argv (second spawn call; first is main.start).
-        const sideArgv = captured.find(
-          (cmd) => cmd.includes("--session-id"),
-        );
+        const sideArgv = captured.find((cmd) => cmd.includes("--session-id"));
         expect(sideArgv).toBeDefined();
         const idx = sideArgv!.indexOf("--session-id");
         const passedId = sideArgv![idx + 1]!;
@@ -330,6 +369,7 @@ describe("ClaudeCodeRunner side-sessions", () => {
         args: [],
         env: {},
         pass_continue_flag: false,
+        acknowledge_dangerous: true,
       },
       logDir: tmpDir,
       protocolFlags: [],
@@ -346,7 +386,9 @@ describe("ClaudeCodeRunner side-sessions", () => {
         },
       );
       // Entry was scrubbed — retrying a different id should NOT see leftover state.
-      expect(() => r.onSide("s1", "done", () => {})).toThrow(SideSessionNotFound);
+      expect(() => r.onSide("s1", "done", () => {})).toThrow(
+        SideSessionNotFound,
+      );
     } finally {
       await r.stop(500);
     }

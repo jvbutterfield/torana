@@ -28,6 +28,7 @@ import type { BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { Attachment } from "../telegram/types.js";
 import { computeAttachmentsDiskUsage } from "../core/attachments.js";
+import { detectMimeFromMagic } from "../mime-magic.js";
 
 const log = logger("agent-api-attachments");
 
@@ -92,6 +93,13 @@ export interface ParseMultipartOptions {
    * to the real `computeAttachmentsDiskUsage`.
    */
   computeDiskUsage?: (dataDir: string) => Promise<number>;
+  /**
+   * Body-size cap. Callers pass the handler-specific cap
+   * (agent_api.ask.max_body_bytes for /ask, agent_api.send.max_body_bytes
+   * for /send). Defaults to `agent_api.ask.max_body_bytes` if omitted to
+   * preserve historical behaviour.
+   */
+  maxBodyBytes?: number;
 }
 
 /**
@@ -119,7 +127,11 @@ export async function parseMultipartRequest(
 
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("multipart/form-data")) {
-    return { kind: "err", code: "invalid_body", detail: "expected multipart/form-data" };
+    return {
+      kind: "err",
+      code: "invalid_body",
+      detail: "expected multipart/form-data",
+    };
   }
 
   // Early aggregate check via Content-Length (stream-reading with hard abort
@@ -127,7 +139,7 @@ export async function parseMultipartRequest(
   // v1 threat model — the subsequent formData() call buffers, and we're
   // checking a known-valid header before we allocate any buffer).
   const contentLength = Number(req.headers.get("content-length") ?? 0);
-  const maxBody = config.agent_api.ask.max_body_bytes;
+  const maxBody = opts.maxBodyBytes ?? config.agent_api.ask.max_body_bytes;
   if (contentLength > 0 && contentLength > maxBody) {
     return {
       kind: "err",
@@ -140,10 +152,18 @@ export async function parseMultipartRequest(
   try {
     form = await req.formData();
   } catch (err) {
+    // Log raw parser error server-side; respond with a canonical detail.
+    // Bun's multipart parser surfaces internal boundary/state info in
+    // its messages — not safe to echo into the client response body.
+    log.warn("multipart formData parse failed", {
+      bot_id: botId,
+      request_id: requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "malformed multipart body",
     };
   }
 
@@ -172,10 +192,17 @@ export async function parseMultipartRequest(
   }
 
   // Aggregate-size fallback when Content-Length is absent (some clients
-  // drop it for multipart). Sum decoded file sizes and compare against
-  // the same cap.
+  // drop it for multipart). Sum decoded file sizes PLUS the UTF-8 byte
+  // sizes of every string field (including `text`) so a caller cannot
+  // bypass max_body_bytes by submitting, e.g., 100 MB of text and no
+  // files — text-only traffic must obey the same cap as files.
   let aggregate = 0;
   for (const { file } of rawFiles) aggregate += file.size;
+  const te = new TextEncoder();
+  if (textField) aggregate += te.encode(textField).byteLength;
+  for (const [name, value] of Object.entries(fields)) {
+    aggregate += te.encode(name).byteLength + te.encode(value).byteLength;
+  }
   if (aggregate > maxBody) {
     return {
       kind: "err",
@@ -236,6 +263,28 @@ export async function parseMultipartRequest(
           { code: "attachment_too_large" as const },
         );
       }
+      // Magic-byte MIME validation. Up to this point we've trusted the
+      // multipart part's declared Content-Type header. A caller can declare
+      // any allowlisted MIME (say, `image/png`) and send arbitrary bytes —
+      // an HTML file with embedded JS, a shell script, an EICAR test
+      // signature, anything. The gateway-controlled on-disk name has an
+      // `.png` extension and the runner (or any downstream viewer) sees
+      // what it thinks is a PNG. Sniff the actual bytes and refuse to
+      // write if the declared MIME doesn't match what the content actually
+      // is. We reject rather than coerce, so a mislabeled-but-recognised
+      // payload (e.g. JPEG declared as PNG) still errors rather than
+      // silently landing under a corrected extension.
+      const detected = detectMimeFromMagic(bytes);
+      if (detected !== mime) {
+        throw Object.assign(
+          new Error(
+            detected
+              ? `declared mime '${mime}' does not match magic bytes (detected '${detected}')`
+              : `declared mime '${mime}' but file bytes do not match any allowed type`,
+          ),
+          { code: "attachment_mime_not_allowed" as const },
+        );
+      }
       await writeFile(target, bytes);
       written.push({
         kind: "document",
@@ -258,15 +307,29 @@ export async function parseMultipartRequest(
         detail: err instanceof Error ? err.message : String(err),
       };
     }
+    if (code === "attachment_mime_not_allowed") {
+      // Magic-byte mismatch detail is actionable client-side info, not a
+      // server-internal leak — keep it.
+      return {
+        kind: "err",
+        code: "attachment_mime_not_allowed",
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+    // Unclassified failure (writeFile EACCES/ENOSPC/EFBIG, etc.). Log raw
+    // error server-side so ops can debug; respond with a canonical detail.
+    // Filesystem errors carry absolute paths and errno detail that must
+    // not surface to the client.
     log.error("multipart write failed", {
       bot_id: botId,
       request_id: requestId,
       error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
     });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "attachment write failed",
     };
   }
 
@@ -356,11 +419,7 @@ export async function sweepUnreferencedAgentApiFiles(
 }
 
 function loadReferencedAttachmentPaths(db: GatewayDB): Set<string> {
-  const rows = db
-    .query(
-      "SELECT attachment_paths_json FROM turns WHERE attachment_paths_json IS NOT NULL",
-    )
-    .all() as Array<{ attachment_paths_json: string }>;
+  const rows = db.listTurnAttachmentRows();
   const set = new Set<string>();
   for (const row of rows) {
     try {

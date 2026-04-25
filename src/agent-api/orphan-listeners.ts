@@ -98,11 +98,10 @@ export class OrphanListenerManager {
     reg.unsubs.push(
       runner.onSide(sessionId, "done", (ev) => {
         const final =
-          "finalText" in ev && typeof ev.finalText === "string" ? ev.finalText : buffer;
-        onTerminal(
-          { ...ev, finalText: final } as RunnerEvent,
-          "done",
-        );
+          "finalText" in ev && typeof ev.finalText === "string"
+            ? ev.finalText
+            : buffer;
+        onTerminal({ ...ev, finalText: final } as RunnerEvent, "done");
       }),
     );
     reg.unsubs.push(

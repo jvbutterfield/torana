@@ -30,6 +30,7 @@ import type { SideSessionPool } from "../pool.js";
 import { AskBodySchema } from "../schemas.js";
 import { errorResponse, jsonResponse } from "../errors.js";
 import { cleanupFiles, parseMultipartRequest } from "../attachments.js";
+import { readJsonBody } from "../body.js";
 import { recordAsk } from "../metrics.js";
 
 export interface AskDeps extends AgentApiDeps {
@@ -44,7 +45,17 @@ export function handleAsk(deps: AskDeps): AuthedHandler {
     const resp = await inner(req, params);
     recordAsk(deps.metrics, params.botId, {
       // narrow: every exit path is one of the documented ask statuses.
-      status: resp.status as 200 | 202 | 400 | 401 | 403 | 404 | 429 | 500 | 501 | 503,
+      status: resp.status as
+        | 200
+        | 202
+        | 400
+        | 401
+        | 403
+        | 404
+        | 429
+        | 500
+        | 501
+        | 503,
       durationMs: Date.now() - startMs,
     });
     return resp;
@@ -78,11 +89,14 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
         timeout_ms: multipart.fields.timeout_ms,
       };
     } else {
-      try {
-        bodyRaw = await req.json();
-      } catch {
-        return errorResponse("invalid_body", "body must be JSON");
+      const read = await readJsonBody(
+        req,
+        deps.config.agent_api.ask.max_body_bytes,
+      );
+      if (read.kind === "err") {
+        return errorResponse(read.code, read.detail);
       }
+      bodyRaw = read.value;
     }
     const parsed = AskBodySchema.safeParse(bodyRaw);
     if (!parsed.success) {
@@ -108,13 +122,27 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
       askCfg.max_timeout_ms,
     );
 
-    // 3. Acquire side session.
-    const acquire = await deps.pool.acquire(botId, body.session_id ?? null);
+    // 3. Acquire side session. Per-token cap: explicit token override falls
+    //    back to the config-wide default (schema default 8). Both are always
+    //    set in production; the `??` keeps stub tokens in tests valid.
+    const tokenLimit =
+      token.maxConcurrentSideSessions ??
+      deps.config.agent_api.side_sessions.max_per_token_default;
+    const acquire = await deps.pool.acquire(botId, body.session_id ?? null, {
+      name: token.name,
+      limit: tokenLimit,
+    });
     if (acquire.kind !== "ok") {
       await cleanupFiles(attachments.map((a) => a.path));
       switch (acquire.kind) {
         case "capacity":
           return errorResponse("side_session_capacity");
+        case "token_capacity":
+          return errorResponse(
+            "token_concurrency_limit",
+            `token '${acquire.tokenName}' is at its concurrent side-session limit (${acquire.limit})`,
+            { limit: acquire.limit },
+          );
         case "busy":
           return errorResponse("side_session_busy");
         case "runner_does_not_support_side_sessions":
@@ -158,7 +186,12 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
 
       if (result.kind === "done") {
         const usageJson = result.usage ? JSON.stringify(result.usage) : null;
-        deps.db.setTurnFinalText(turnId, result.text, usageJson, result.durationMs ?? null);
+        deps.db.setTurnFinalText(
+          turnId,
+          result.text,
+          usageJson,
+          result.durationMs ?? null,
+        );
         return jsonResponse(200, {
           text: result.text,
           turn_id: turnId,
@@ -205,14 +238,14 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
       });
       return errorResponse("runner_fatal", result.message, { turn_id: turnId });
     } catch (err) {
+      // Log raw cause + stack server-side; never echo exception text into
+      // the response body. Matches the send.ts policy from commit 4c6ae18.
       deps.log.error("ask handler threw", {
         bot_id: botId,
         error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
       });
-      return errorResponse(
-        "internal_error",
-        err instanceof Error ? err.message : String(err),
-      );
+      return errorResponse("internal_error");
     } finally {
       releaseSync();
     }

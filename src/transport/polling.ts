@@ -18,6 +18,18 @@ export interface PollingTransportOptions {
   clients: Map<BotId, TelegramClient>;
 }
 
+/**
+ * Cap on the failureCount counter. The actual backoff is already clamped to
+ * `backoff_cap_ms`; once we've reached the saturation point in
+ * `nextBackoffMs`, the counter itself ceases to be informative and could
+ * grow without bound on long-lived deployments cycling between transient
+ * failures and successes. Cap matches `nextBackoffMs`'s saturation: with
+ * base=100ms and cap=30_000ms, attempt 9 already saturates (100*2^9 >
+ * 30_000), so 16 is comfortably above that and below MAX_SAFE_INTEGER for
+ * any sane configuration.
+ */
+const FAILURE_COUNT_CAP = 16;
+
 class BotPoller {
   readonly botId: BotId;
   private client: TelegramClient;
@@ -78,7 +90,10 @@ class BotPoller {
     while (this.running) {
       const state = this.db.getBotState(this.botId);
       if (state?.disabled) {
-        log.warn("bot disabled — poller exiting", { bot_id: this.botId, reason: state.disabled_reason });
+        log.warn("bot disabled — poller exiting", {
+          bot_id: this.botId,
+          reason: state.disabled_reason,
+        });
         return;
       }
 
@@ -95,37 +110,64 @@ class BotPoller {
         this.failureCount = 0;
 
         if (updates.length > 0) {
-          let maxId = 0;
+          // Track the highest *successfully-processed* update_id rather
+          // than the highest in the batch. A transient DB error or
+          // exception inside onUpdate must not cause the offset to
+          // advance past the failing update — otherwise the dedup ledger
+          // (`inbound_updates`) was never written, and Telegram will
+          // never redeliver. Stop advancing on the first failure so
+          // ordering is preserved across retries.
+          let maxSuccessfulId = 0;
+          let stopAdvancing = false;
           for (const update of updates) {
-            if (update.update_id > maxId) maxId = update.update_id;
+            if (stopAdvancing) break;
             try {
               await onUpdate(this.botId, update);
+              if (update.update_id > maxSuccessfulId) {
+                maxSuccessfulId = update.update_id;
+              }
             } catch (err) {
-              log.error("update handler threw", {
+              log.error("update handler threw; offset will not advance", {
                 bot_id: this.botId,
                 update_id: update.update_id,
                 error: err instanceof Error ? err.message : String(err),
               });
+              stopAdvancing = true;
             }
           }
-          this.db.setBotLastUpdateId(this.botId, maxId);
+          if (maxSuccessfulId > 0) {
+            this.db.setBotLastUpdateId(this.botId, maxSuccessfulId);
+          }
         }
       } catch (err) {
         if (!this.running) return;
         if (err instanceof TelegramError && err.isAuth) {
           log.error("auth failure in poll loop", { bot_id: this.botId });
-          this.db.setBotDisabled(
-            this.botId,
-            "Telegram 401 — check bot token",
-          );
+          this.db.setBotDisabled(this.botId, "Telegram 401 — check bot token");
           return;
         }
-        this.failureCount += 1;
-        const wait = nextBackoffMs(this.failureCount - 1, baseBackoff, capBackoff);
+        // Cap the counter so it can't grow unbounded on cyclic failures
+        // (e.g. every Nth poll throws). The backoff is already cap'd, but
+        // a bare counter that ticks up forever is misleading in logs and
+        // metrics.
+        this.failureCount = Math.min(this.failureCount + 1, FAILURE_COUNT_CAP);
+        const backoff = nextBackoffMs(
+          this.failureCount - 1,
+          baseBackoff,
+          capBackoff,
+        );
+        // Honor Telegram's Retry-After cooldown when present. Hammering
+        // before the cooldown expires extends the throttle and makes the
+        // self-DoS surface worse.
+        const retryAfterMs =
+          err instanceof TelegramError ? err.retryAfterMs : undefined;
+        const wait = retryAfterMs ? Math.max(backoff, retryAfterMs) : backoff;
         log.warn("poll failed; backing off", {
           bot_id: this.botId,
           failure: this.failureCount,
           wait_ms: wait,
+          backoff_ms: backoff,
+          retry_after_ms: retryAfterMs,
           error: err instanceof Error ? err.message : String(err),
         });
         await this.sleep(wait);

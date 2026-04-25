@@ -17,7 +17,11 @@ export interface ProtocolCapabilities {
   sideSessions: boolean;
 }
 
-export type StopReason = "end_turn" | "max_tokens" | "stop_sequence" | "tool_use";
+export type StopReason =
+  | "end_turn"
+  | "max_tokens"
+  | "stop_sequence"
+  | "tool_use";
 
 export function normalizeStopReason(raw: unknown): StopReason | undefined {
   if (
@@ -57,14 +61,20 @@ export function createLineBufferedParser(
 ): LineBufferedParser {
   let remainder = "";
 
-  function handleLine(line: string, onEvent: (event: RunnerEvent) => void): void {
+  function handleLine(
+    line: string,
+    onEvent: (event: RunnerEvent) => void,
+  ): void {
     const trimmed = line.trim();
     if (!trimmed) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(trimmed);
     } catch {
-      log.debug("non-json line dropped", { parser: name, line: trimmed.slice(0, 120) });
+      log.debug("non-json line dropped", {
+        parser: name,
+        line: trimmed.slice(0, 120),
+      });
       return;
     }
     translate(parsed, onEvent);
@@ -91,10 +101,15 @@ export function createLineBufferedParser(
  * Attachments are surfaced as plain-text "[Attached file: <path>]" lines — the
  * CLI reads files itself from the injected paths.
  */
-export function encodeClaudeNdjsonTurn(text: string, attachments: Attachment[]): string {
+export function encodeClaudeNdjsonTurn(
+  text: string,
+  attachments: Attachment[],
+): string {
   const content =
     attachments.length > 0
       ? `${text}\n\n${attachments.map((a) => `[Attached file: ${a.path}]`).join("\n")}`
       : text;
-  return JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n";
+  return (
+    JSON.stringify({ type: "user", message: { role: "user", content } }) + "\n"
+  );
 }

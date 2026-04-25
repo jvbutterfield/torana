@@ -7,7 +7,12 @@ export {}; // mark as module so top-level declarations don't collide across file
 
 process.stdout.write(JSON.stringify({ type: "ready" }) + "\n");
 
-type TurnIn = { type: "turn"; turn_id: string; text: string; attachments?: unknown[] };
+type TurnIn = {
+  type: "turn";
+  turn_id: string;
+  text: string;
+  attachments?: unknown[];
+};
 type ResetIn = { type: "reset" };
 
 function emit(obj: unknown): void {

@@ -50,21 +50,30 @@ describe("codex-plugin/marketplace.json", () => {
 
   test("entry matches plugin.json name and version", () => {
     const pj = JSON.parse(
-      readFileSync(join(REPO_ROOT, "codex-plugin", ".codex-plugin", "plugin.json"), "utf-8"),
+      readFileSync(
+        join(REPO_ROOT, "codex-plugin", ".codex-plugin", "plugin.json"),
+        "utf-8",
+      ),
     );
     expect(parsed.plugins[0].name).toBe(pj.name);
     expect(parsed.plugins[0].version).toBe(pj.version);
   });
 
   test("source type=local, path=./codex-plugin", () => {
-    expect(parsed.plugins[0].source).toEqual({ type: "local", path: "./codex-plugin" });
+    expect(parsed.plugins[0].source).toEqual({
+      type: "local",
+      path: "./codex-plugin",
+    });
   });
 });
 
 describe("skills SKILL.md frontmatter", () => {
   for (const skill of ["torana-ask", "torana-send"]) {
     test(`${skill}: frontmatter declares allow_implicit_invocation: true`, () => {
-      const text = readFileSync(join(REPO_ROOT, "skills", skill, "SKILL.md"), "utf-8");
+      const text = readFileSync(
+        join(REPO_ROOT, "skills", skill, "SKILL.md"),
+        "utf-8",
+      );
       expect(text.startsWith("---\n")).toBe(true);
       const end = text.indexOf("\n---\n", 4);
       expect(end).toBeGreaterThan(0);

@@ -30,9 +30,15 @@ export function handleDeleteSession(deps: SessionsDeps): AuthedHandler {
   return async (_req, params) => {
     const botId = params.botId;
     const sessionId = (params.session_id as string | undefined) ?? "";
-    const snap = deps.pool.listForBot(botId).find((s) => s.sessionId === sessionId);
+    const snap = deps.pool
+      .listForBot(botId)
+      .find((s) => s.sessionId === sessionId);
     if (!snap) return errorResponse("session_not_found");
-    await deps.pool.stop(botId, sessionId, deps.config.shutdown.runner_grace_secs * 1000);
+    await deps.pool.stop(
+      botId,
+      sessionId,
+      deps.config.shutdown.runner_grace_secs * 1000,
+    );
     return new Response(null, { status: 204 });
   };
 }

@@ -7,7 +7,10 @@ import {
 } from "../../src/runner/protocols/jsonl-text.js";
 import type { RunnerEvent } from "../../src/runner/types.js";
 
-function collect(parser: { feed: (c: string, cb: (e: RunnerEvent) => void) => void }, input: string): RunnerEvent[] {
+function collect(
+  parser: { feed: (c: string, cb: (e: RunnerEvent) => void) => void },
+  input: string,
+): RunnerEvent[] {
   const events: RunnerEvent[] = [];
   parser.feed(input, (ev) => events.push(ev));
   return events;
@@ -18,7 +21,8 @@ describe("claude-ndjson parser", () => {
     const parser = createClaudeNdjsonParser({ currentTurnId: () => null });
     const events = collect(
       parser,
-      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }) + "\n",
+      JSON.stringify({ type: "system", subtype: "init", session_id: "s1" }) +
+        "\n",
     );
     expect(events).toEqual([{ kind: "ready" }]);
   });
@@ -33,7 +37,9 @@ describe("claude-ndjson parser", () => {
       },
     };
     const events = collect(parser, JSON.stringify(event) + "\n");
-    expect(events).toEqual([{ kind: "text_delta", turnId: "42", text: "hello" }]);
+    expect(events).toEqual([
+      { kind: "text_delta", turnId: "42", text: "hello" },
+    ]);
   });
 
   test("thinking_delta is dropped", () => {
@@ -59,7 +65,9 @@ describe("claude-ndjson parser", () => {
       },
     };
     const events = collect(parser, JSON.stringify(event) + "\n");
-    expect(events).toEqual([{ kind: "status", turnId: "42", phase: "tool_use" }]);
+    expect(events).toEqual([
+      { kind: "status", turnId: "42", phase: "tool_use" },
+    ]);
   });
 
   test("result success emits done", () => {
@@ -103,7 +111,10 @@ describe("claude-ndjson parser", () => {
 
   test("unknown event types are dropped", () => {
     const parser = createClaudeNdjsonParser({ currentTurnId: () => null });
-    const events = collect(parser, JSON.stringify({ type: "future_event" }) + "\n");
+    const events = collect(
+      parser,
+      JSON.stringify({ type: "future_event" }) + "\n",
+    );
     expect(events).toHaveLength(0);
   });
 
@@ -111,7 +122,10 @@ describe("claude-ndjson parser", () => {
     const parser = createClaudeNdjsonParser({ currentTurnId: () => "42" });
     const event = {
       type: "stream_event",
-      event: { type: "content_block_delta", delta: { type: "text_delta", text: "abc" } },
+      event: {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "abc" },
+      },
     };
     const raw = JSON.stringify(event) + "\n";
     const events: RunnerEvent[] = [];
@@ -135,12 +149,17 @@ describe("jsonl-text parser", () => {
       parser,
       JSON.stringify({ type: "text", turn_id: "7", text: "hello" }) + "\n",
     );
-    expect(events).toEqual([{ kind: "text_delta", turnId: "7", text: "hello" }]);
+    expect(events).toEqual([
+      { kind: "text_delta", turnId: "7", text: "hello" },
+    ]);
   });
 
   test("done terminates turn", () => {
     const parser = createJsonlTextParser();
-    const events = collect(parser, JSON.stringify({ type: "done", turn_id: "7" }) + "\n");
+    const events = collect(
+      parser,
+      JSON.stringify({ type: "done", turn_id: "7" }) + "\n",
+    );
     expect(events).toHaveLength(1);
     expect(events[0].kind).toBe("done");
   });
@@ -149,7 +168,12 @@ describe("jsonl-text parser", () => {
     const parser = createJsonlTextParser();
     const events = collect(
       parser,
-      JSON.stringify({ type: "error", turn_id: "7", message: "x", retriable: true }) + "\n",
+      JSON.stringify({
+        type: "error",
+        turn_id: "7",
+        message: "x",
+        retriable: true,
+      }) + "\n",
     );
     expect(events).toHaveLength(1);
     const e = events[0];
@@ -190,6 +214,82 @@ describe("codex-jsonl parser", () => {
     expect(events).toHaveLength(0);
   });
 
+  test("thread.started accepts a real codex UUID v7 thread_id", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    collect(
+      parser,
+      JSON.stringify({
+        type: "thread.started",
+        thread_id: "019c26ef-d872-7393-9740-415004d30307",
+      }) + "\n",
+    );
+    expect(captured).toEqual(["019c26ef-d872-7393-9740-415004d30307"]);
+  });
+
+  // The thread_id is persisted to worker_state and replayed as an argv
+  // element on the next turn. A subprocess that emits a control-char-bearing
+  // id could land it in `ps`/log output even though Bun's argv separation
+  // blocks flag-boundary injection. Validation drops the event silently
+  // (the codex side-session is effectively abandoned — safe failure mode).
+  test.each([
+    ["newline", "tid\nbreak"],
+    ["NUL byte", "tid\u0000break"],
+    ["ANSI escape", "tid\u001b[31mred"],
+    ["carriage return", "tid\rbreak"],
+    ["space", "tid abc"],
+    ["tab", "tid\tabc"],
+    ["empty string", ""],
+    ["overlong (129 chars)", "a".repeat(129)],
+    ["shell metachar", "tid;rm -rf"],
+    ["path separator", "../../etc/passwd"],
+  ])(
+    "thread.started rejects pathological thread_id (%s) without invoking callback",
+    (_label, badId) => {
+      const captured: string[] = [];
+      const parser = createCodexJsonlParser({
+        currentTurnId: () => "T1",
+        onThreadStarted: (id) => captured.push(id),
+      });
+      const events = collect(
+        parser,
+        JSON.stringify({ type: "thread.started", thread_id: badId }) + "\n",
+      );
+      expect(captured).toEqual([]);
+      expect(events).toHaveLength(0);
+    },
+  );
+
+  test("thread.started accepts an id at the 128-char boundary", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    const id = "a".repeat(128);
+    collect(
+      parser,
+      JSON.stringify({ type: "thread.started", thread_id: id }) + "\n",
+    );
+    expect(captured).toEqual([id]);
+  });
+
+  test("thread.started with non-string thread_id is dropped silently", () => {
+    const captured: string[] = [];
+    const parser = createCodexJsonlParser({
+      currentTurnId: () => "T1",
+      onThreadStarted: (id) => captured.push(id),
+    });
+    collect(
+      parser,
+      JSON.stringify({ type: "thread.started", thread_id: 12345 }) + "\n",
+    );
+    expect(captured).toEqual([]);
+  });
+
   test("synthetic ready promotes status (for command-runner wrappers)", () => {
     const parser = createCodexJsonlParser({ currentTurnId: () => null });
     const events = collect(parser, JSON.stringify({ type: "ready" }) + "\n");
@@ -198,7 +298,10 @@ describe("codex-jsonl parser", () => {
 
   test("turn.started is silent", () => {
     const parser = createCodexJsonlParser({ currentTurnId: () => "T1" });
-    const events = collect(parser, JSON.stringify({ type: "turn.started" }) + "\n");
+    const events = collect(
+      parser,
+      JSON.stringify({ type: "turn.started" }) + "\n",
+    );
     expect(events).toHaveLength(0);
   });
 
@@ -211,7 +314,9 @@ describe("codex-jsonl parser", () => {
         item: { id: "i1", type: "command_execution", status: "in_progress" },
       }) + "\n",
     );
-    expect(events).toEqual([{ kind: "status", turnId: "T1", phase: "tool_use" }]);
+    expect(events).toEqual([
+      { kind: "status", turnId: "T1", phase: "tool_use" },
+    ]);
   });
 
   test("item.started for reasoning is silent (not surfaced)", () => {
@@ -258,7 +363,11 @@ describe("codex-jsonl parser", () => {
       parser,
       JSON.stringify({
         type: "turn.completed",
-        usage: { input_tokens: 100, cached_input_tokens: 50, output_tokens: 25 },
+        usage: {
+          input_tokens: 100,
+          cached_input_tokens: 50,
+          output_tokens: 25,
+        },
       }) + "\n",
     );
     expect(events).toHaveLength(1);

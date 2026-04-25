@@ -11,7 +11,10 @@ import { applyMigrations } from "../../src/db/migrate.js";
 import { loadConfigFromFile } from "../../src/config/load.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ECHO_RUNNER = resolve(__dirname, "../integration/fixtures/test-runner.ts");
+const ECHO_RUNNER = resolve(
+  __dirname,
+  "../integration/fixtures/test-runner.ts",
+);
 
 let tmpDir: string;
 
@@ -55,7 +58,9 @@ ${extra}
 async function doctor(path: string) {
   const { config } = loadConfigFromFile(path);
   const fetchImpl = (async () =>
-    new Response(JSON.stringify({ ok: true, result: { id: 1 } }))) as unknown as typeof fetch;
+    new Response(
+      JSON.stringify({ ok: true, result: { id: 1 } }),
+    )) as unknown as typeof fetch;
   return runDoctor({ config, configPath: path, fetchImpl });
 }
 
@@ -72,11 +77,13 @@ describe("doctor — agent-api disabled", () => {
 
 describe("doctor — C009 enabled + no tokens", () => {
   test("warn when agent_api.enabled=true and tokens=[]", async () => {
-    const cfg = writeConfig(baseYaml(`
+    const cfg = writeConfig(
+      baseYaml(`
 agent_api:
   enabled: true
   tokens: []
-`));
+`),
+    );
     const r = await doctor(cfg);
     const c009 = r.checks.find((c) => c.id === "C009");
     expect(c009?.status).toBe("warn");
@@ -84,7 +91,8 @@ agent_api:
   });
 
   test("ok when tokens list is non-empty", async () => {
-    const cfg = writeConfig(baseYaml(`
+    const cfg = writeConfig(
+      baseYaml(`
 agent_api:
   enabled: true
   tokens:
@@ -92,7 +100,8 @@ agent_api:
       secret_ref: "super-secret-token-value-1234567890"
       bot_ids: ["alpha"]
       scopes: ["ask"]
-`));
+`),
+    );
     const r = await doctor(cfg);
     const c009 = r.checks.find((c) => c.id === "C009");
     expect(c009?.status).toBe("ok");
@@ -101,7 +110,8 @@ agent_api:
 
 describe("doctor — C011 ask scope + side-session support", () => {
   test("fail: ask scope on command runner w/ jsonl-text (no side-session support)", async () => {
-    const cfg = writeConfig(baseYaml(`
+    const cfg = writeConfig(
+      baseYaml(`
 agent_api:
   enabled: true
   tokens:
@@ -109,7 +119,8 @@ agent_api:
       secret_ref: "super-secret-token-value-abcdefghij"
       bot_ids: ["alpha"]
       scopes: ["ask"]
-`));
+`),
+    );
     const r = await doctor(cfg);
     const c011 = r.checks.find((c) => c.id === "C011");
     expect(c011?.status).toBe("fail");
@@ -182,7 +193,8 @@ agent_api:
   });
 
   test("ok: send-only scope on command runner is fine", async () => {
-    const cfg = writeConfig(baseYaml(`
+    const cfg = writeConfig(
+      baseYaml(`
 agent_api:
   enabled: true
   tokens:
@@ -190,7 +202,8 @@ agent_api:
       secret_ref: "super-secret-token-value-abcdefghij"
       bot_ids: ["alpha"]
       scopes: ["send"]
-`));
+`),
+    );
     const r = await doctor(cfg);
     const c011 = r.checks.find((c) => c.id === "C011");
     expect(c011?.status).toBe("ok");
@@ -213,6 +226,7 @@ bots:
     runner:
       type: claude-code
       cli_path: bun
+      acknowledge_dangerous: true
 agent_api:
   enabled: true
   tokens:
@@ -229,7 +243,8 @@ agent_api:
 
 describe("doctor — C013 TTL invariants (defence-in-depth)", () => {
   test("ok when TTL invariants hold", async () => {
-    const cfg = writeConfig(baseYaml(`
+    const cfg = writeConfig(
+      baseYaml(`
 agent_api:
   enabled: true
   tokens:
@@ -242,7 +257,8 @@ agent_api:
     hard_ttl_ms: 86400000
     max_per_bot: 4
     max_global: 8
-`));
+`),
+    );
     const r = await doctor(cfg);
     const c013 = r.checks.find((c) => c.id === "C013");
     expect(c013?.status).toBe("ok");
@@ -251,7 +267,8 @@ agent_api:
 
 describe("doctor — C014 deployment notice", () => {
   test("warn when enabled with tokens, reminding about network controls", async () => {
-    const cfg = writeConfig(baseYaml(`
+    const cfg = writeConfig(
+      baseYaml(`
 agent_api:
   enabled: true
   tokens:
@@ -259,7 +276,8 @@ agent_api:
       secret_ref: "super-secret-token-value-abcdefghij"
       bot_ids: ["alpha"]
       scopes: ["send"]
-`));
+`),
+    );
     const r = await doctor(cfg);
     const c014 = r.checks.find((c) => c.id === "C014");
     expect(c014?.status).toBe("warn");
@@ -280,7 +298,11 @@ describe("remote doctor — R001..R003", () => {
         return new Response(
           JSON.stringify({
             bots: [
-              { bot_id: "alpha", runner_type: "claude-code", supports_side_sessions: true },
+              {
+                bot_id: "alpha",
+                runner_type: "claude-code",
+                supports_side_sessions: true,
+              },
             ],
           }),
           { status: 200 },
@@ -303,7 +325,8 @@ describe("remote doctor — R001..R003", () => {
   test("R001 fail when /v1/health returns 503", async () => {
     const fetchImpl = (async (url: string | URL) => {
       const u = typeof url === "string" ? url : url.toString();
-      if (u.endsWith("/v1/health")) return new Response("nope", { status: 503 });
+      if (u.endsWith("/v1/health"))
+        return new Response("nope", { status: 503 });
       return new Response("[]", { status: 200 });
     }) as unknown as typeof fetch;
     const r = await runRemoteDoctor({
@@ -323,7 +346,9 @@ describe("remote doctor — R001..R003", () => {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
       if (u.endsWith("/v1/bots")) {
-        return new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 });
+        return new Response(JSON.stringify({ error: "invalid_token" }), {
+          status: 401,
+        });
       }
       return new Response("", { status: 404 });
     }) as unknown as typeof fetch;
@@ -360,7 +385,9 @@ describe("remote doctor — R001..R003", () => {
 
   test("R003 ok on https:// when TLS handshake succeeds", async () => {
     const fetchImpl = (async () =>
-      new Response(JSON.stringify({ ok: true, bots: [] }), { status: 200 })) as unknown as typeof fetch;
+      new Response(JSON.stringify({ ok: true, bots: [] }), {
+        status: 200,
+      })) as unknown as typeof fetch;
     const r = await runRemoteDoctor({
       server: "https://gateway.invalid",
       token: "tok",
@@ -399,9 +426,12 @@ describe("remote doctor — R001..R003", () => {
     const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
       return new Promise<Response>((_resolve, reject) => {
         // Hang until aborted
-        (init?.signal as AbortSignal | undefined)?.addEventListener("abort", () => {
-          reject(new Error("aborted"));
-        });
+        (init?.signal as AbortSignal | undefined)?.addEventListener(
+          "abort",
+          () => {
+            reject(new Error("aborted"));
+          },
+        );
       });
     }) as unknown as typeof fetch;
     const r = await runRemoteDoctor({
@@ -453,10 +483,14 @@ describe("subprocess: torana doctor --server URL --token TOK", () => {
       fetch(req) {
         const u = new URL(req.url);
         if (u.pathname === "/v1/health") {
-          return typeof opts.health === "function" ? opts.health() : opts.health.clone();
+          return typeof opts.health === "function"
+            ? opts.health()
+            : opts.health.clone();
         }
         if (u.pathname === "/v1/bots") {
-          return typeof opts.bots === "function" ? opts.bots(req) : opts.bots.clone();
+          return typeof opts.bots === "function"
+            ? opts.bots(req)
+            : opts.bots.clone();
         }
         return new Response("not found", { status: 404 });
       },
@@ -470,12 +504,23 @@ describe("subprocess: torana doctor --server URL --token TOK", () => {
   test("happy path: both R001 and R002 succeed; exit 0; text output", async () => {
     const gw = await mockGateway({
       health: new Response(
-        JSON.stringify({ ok: true, version: "test", agent_api_enabled: true, uptime_secs: 1 }),
+        JSON.stringify({
+          ok: true,
+          version: "test",
+          agent_api_enabled: true,
+          uptime_secs: 1,
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
       bots: new Response(
         JSON.stringify({
-          bots: [{ bot_id: "alpha", runner_type: "claude-code", supports_side_sessions: true }],
+          bots: [
+            {
+              bot_id: "alpha",
+              runner_type: "claude-code",
+              supports_side_sessions: true,
+            },
+          ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -525,7 +570,9 @@ describe("subprocess: torana doctor --server URL --token TOK", () => {
   test("env vars TORANA_SERVER + TORANA_TOKEN stand in for flags", async () => {
     const gw = await mockGateway({
       health: new Response(JSON.stringify({ ok: true }), { status: 200 }),
-      bots: new Response(JSON.stringify({ bots: [{ bot_id: "x" }] }), { status: 200 }),
+      bots: new Response(JSON.stringify({ bots: [{ bot_id: "x" }] }), {
+        status: 200,
+      }),
     });
     try {
       const { stdout, exitCode } = await runCli(["doctor"], {
@@ -543,7 +590,9 @@ describe("subprocess: torana doctor --server URL --token TOK", () => {
   test("--format json emits a parseable JSON body with all three R-check ids", async () => {
     const gw = await mockGateway({
       health: new Response(JSON.stringify({ ok: true }), { status: 200 }),
-      bots: new Response(JSON.stringify({ bots: [{ bot_id: "x" }] }), { status: 200 }),
+      bots: new Response(JSON.stringify({ bots: [{ bot_id: "x" }] }), {
+        status: 200,
+      }),
     });
     try {
       const { stdout, exitCode } = await runCli([
@@ -569,7 +618,9 @@ describe("subprocess: torana doctor --server URL --token TOK", () => {
   test("R002 received 401: token rejection is visible in stderr output", async () => {
     const gw = await mockGateway({
       health: new Response(JSON.stringify({ ok: true }), { status: 200 }),
-      bots: new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 }),
+      bots: new Response(JSON.stringify({ error: "invalid_token" }), {
+        status: 401,
+      }),
     });
     try {
       const { stdout, exitCode } = await runCli([

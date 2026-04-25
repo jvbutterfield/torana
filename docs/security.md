@@ -1,5 +1,38 @@
 # Security
 
+## Runner isolation
+
+**torana does not sandbox runner subprocesses.** Each runner — `claude-code`, `codex`, or `command` — inherits the gateway process's filesystem and network access, running with the same UID/GID and the same environment. The only OS-level constraint is the runner's configured `cwd`, which the runner itself is free to ignore (it can write outside `cwd`, fork further subprocesses, open arbitrary network connections, etc.).
+
+The `bots[].runner.acknowledge_dangerous: true` flag and the equivalent codex-`yolo` gate are **documentation gates, not enforcement**. They cause the loader to refuse to start until you have explicitly attested that you understand the runner runs unsandboxed; they do not change any runtime behavior. The operator owns the isolation boundary.
+
+### Concrete isolation patterns
+
+Choose based on your threat model and operational complexity tolerance:
+
+- **Docker / Podman container** — the most common path. Run torana in a container with `--cap-drop=ALL`, `--read-only` root, a tmpfs over `/tmp`, and a bind mount of the runner's working tree marked `:ro` where possible. Use `--network=bridge` (not `host`) and an egress allowlist via your container runtime or a service mesh. This is what most production deployments use.
+- **Dedicated unprivileged UID + chroot** — the classic UNIX approach. Create a `torana` user with no shell login, chown the gateway's `data_dir` to it, run torana via `setuid` / systemd `User=torana`, and chroot into a directory containing only the binaries the runner needs.
+- **firejail** (Linux) — lightweight syscall + filesystem sandbox. Write a `.profile` restricting `cwd`, `/tmp`, and network. Lower overhead than a container; no network policy unless layered with `iptables`.
+- **gVisor / Kata Containers** — syscall-level isolation, useful when you don't fully trust the runner with the host kernel. Higher overhead; appropriate for multi-tenant or untrusted-runner deployments.
+- **macOS `sandbox-exec`** — bundled with macOS. Write a `.sb` profile to scope filesystem and network access. Useful for development hosts; not the right choice for production.
+
+In every case, the isolation is **between the runner and the rest of the host**, not between the runner and torana — a compromised runner inside any of these sandboxes can still send arbitrary text into Telegram chats torana owns.
+
+### Runner sandbox posture comparison
+
+| Runner                            | Posture                             | torana boundary above it |
+| --------------------------------- | ----------------------------------- | ------------------------ |
+| `claude-code`                     | Host access (CLI sandbox bypassed)  | None                     |
+| `codex` `approval_mode: yolo`     | Host access (codex approvals off)   | None                     |
+| `codex` `full-auto`               | Codex-level approvals on, no jail   | None                     |
+| `codex` `workspace-write`         | Codex-level write jail at `cwd`     | None                     |
+| `codex` `read-only` / `untrusted` | Codex-level read jail               | None                     |
+| `command`                         | Whatever the operator's binary does | None                     |
+
+In every row, torana itself adds zero isolation.
+
+---
+
 ## Threat model
 
 ### In scope
@@ -16,6 +49,7 @@ torana's v1 threat surface covers:
 ### Out of scope
 
 - **Downstream runner vulnerabilities** — report to the runner vendor (e.g. Anthropic for Claude Code).
+- **Runner sandboxing at the OS / kernel level** — torana does not sandbox runner subprocesses. The operator owns the isolation boundary; see [Runner isolation](#runner-isolation) above for concrete patterns.
 - **Telegram platform issues** — report directly to Telegram.
 - **Denial-of-service from an allowlisted user** — the trust model assumes allowlist members are trustworthy.
 - **Env-var exposure of bot tokens via `ps auxe`** — platform-level concern, documented here but not solved in v1. Use file-based secrets in multi-tenant hosts.
@@ -79,7 +113,7 @@ of the main ACL / secret story above. Full protocol in
   "token invalid" — callers can't probe for bot existence.
 - **Per-scope gating.** `ask` and `send` are distinct scopes; a token
   scoped `["send"]` cannot call `/v1/bots/:id/ask` (403).
-- **Send ACL re-check.** Agent-API tokens authorize *bots*, not *users*.
+- **Send ACL re-check.** Agent-API tokens authorize _bots_, not _users_.
   The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.
 - **No enumeration.** Turn lookups return a single `turn_not_found` code

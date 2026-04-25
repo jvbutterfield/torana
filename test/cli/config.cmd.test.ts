@@ -62,13 +62,41 @@ describe("torana config add-profile", () => {
 
   test("second profile keeps existing default unless --default", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "a", "--server", "s1", "--token", "t1", "--config-path", p]);
-    runConfig(["add-profile", "b", "--server", "s2", "--token", "t2", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "a",
+      "--server",
+      "s1",
+      "--token",
+      "t1",
+      "--config-path",
+      p,
+    ]);
+    runConfig([
+      "add-profile",
+      "b",
+      "--server",
+      "s2",
+      "--token",
+      "t2",
+      "--config-path",
+      p,
+    ]);
     const list = runConfig(["list-profiles", "--json", "--config-path", p]);
     const body = JSON.parse(list.stdout.join("\n")) as { default: string };
     expect(body.default).toBe("a");
 
-    runConfig(["add-profile", "b", "--server", "s2", "--token", "t2", "--default", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "b",
+      "--server",
+      "s2",
+      "--token",
+      "t2",
+      "--default",
+      "--config-path",
+      p,
+    ]);
     const list2 = runConfig(["list-profiles", "--json", "--config-path", p]);
     const body2 = JSON.parse(list2.stdout.join("\n")) as { default: string };
     expect(body2.default).toBe("b");
@@ -76,9 +104,23 @@ describe("torana config add-profile", () => {
 
   test("rejects missing --server / --token", () => {
     const p = tmpPath();
-    const r1 = runConfig(["add-profile", "x", "--token", "t", "--config-path", p]);
+    const r1 = runConfig([
+      "add-profile",
+      "x",
+      "--token",
+      "t",
+      "--config-path",
+      p,
+    ]);
     expect(r1.exitCode).toBe(2);
-    const r2 = runConfig(["add-profile", "x", "--server", "s", "--config-path", p]);
+    const r2 = runConfig([
+      "add-profile",
+      "x",
+      "--server",
+      "s",
+      "--config-path",
+      p,
+    ]);
     expect(r2.exitCode).toBe(2);
   });
 
@@ -115,15 +157,56 @@ describe("torana config add-profile", () => {
 
   test("update of existing profile preserves other profiles", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "a", "--server", "s1", "--token", "t1", "--config-path", p]);
-    runConfig(["add-profile", "b", "--server", "s2", "--token", "t2", "--config-path", p]);
-    runConfig(["add-profile", "a", "--server", "s1-v2", "--token", "t1-v2", "--config-path", p]);
-    const show = runConfig(["show", "--json", "--reveal-token", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "a",
+      "--server",
+      "s1",
+      "--token",
+      "t1",
+      "--config-path",
+      p,
+    ]);
+    runConfig([
+      "add-profile",
+      "b",
+      "--server",
+      "s2",
+      "--token",
+      "t2",
+      "--config-path",
+      p,
+    ]);
+    runConfig([
+      "add-profile",
+      "a",
+      "--server",
+      "s1-v2",
+      "--token",
+      "t1-v2",
+      "--config-path",
+      p,
+    ]);
+    const show = runConfig([
+      "show",
+      "--json",
+      "--reveal-token",
+      "--config-path",
+      p,
+    ]);
     const body = JSON.parse(show.stdout.join("\n")) as {
       profiles: Record<string, { server: string; token: string }>;
     };
-    expect(body.profiles.a).toEqual({ server: "s1-v2", token: "t1-v2", default: true } as never);
-    expect(body.profiles.b).toEqual({ server: "s2", token: "t2", default: false } as never);
+    expect(body.profiles.a).toEqual({
+      server: "s1-v2",
+      token: "t1-v2",
+      default: true,
+    } as never);
+    expect(body.profiles.b).toEqual({
+      server: "s2",
+      token: "t2",
+      default: false,
+    } as never);
   });
 });
 
@@ -138,8 +221,26 @@ describe("torana config list-profiles", () => {
 
   test("human output uses a * to mark default", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "a", "--server", "s1", "--token", "t1", "--config-path", p]);
-    runConfig(["add-profile", "b", "--server", "s2", "--token", "t2", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "a",
+      "--server",
+      "s1",
+      "--token",
+      "t1",
+      "--config-path",
+      p,
+    ]);
+    runConfig([
+      "add-profile",
+      "b",
+      "--server",
+      "s2",
+      "--token",
+      "t2",
+      "--config-path",
+      p,
+    ]);
     const r = runConfig(["list-profiles", "--config-path", p]);
     const text = r.stdout.join("\n");
     expect(text).toMatch(/a \*/);
@@ -159,8 +260,26 @@ describe("torana config remove-profile", () => {
 
   test("removing the default promotes the next profile", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "beta", "--server", "s", "--token", "t", "--config-path", p]);
-    runConfig(["add-profile", "alpha", "--server", "s", "--token", "t", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "beta",
+      "--server",
+      "s",
+      "--token",
+      "t",
+      "--config-path",
+      p,
+    ]);
+    runConfig([
+      "add-profile",
+      "alpha",
+      "--server",
+      "s",
+      "--token",
+      "t",
+      "--config-path",
+      p,
+    ]);
     const r = runConfig(["remove-profile", "beta", "--config-path", p]);
     expect(r.exitCode).toBe(0);
     expect(r.stdout[0]).toContain("new default: alpha");
@@ -168,7 +287,16 @@ describe("torana config remove-profile", () => {
 
   test("removing the sole profile clears default", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "only", "--server", "s", "--token", "t", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "only",
+      "--server",
+      "s",
+      "--token",
+      "t",
+      "--config-path",
+      p,
+    ]);
     const r = runConfig(["remove-profile", "only", "--config-path", p]);
     expect(r.exitCode).toBe(0);
     expect(r.stdout[0]).toContain("no default remaining");
@@ -178,7 +306,16 @@ describe("torana config remove-profile", () => {
 describe("torana config show", () => {
   test("redacts tokens by default", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "a", "--server", "s1", "--token", "tok-abcdef", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "a",
+      "--server",
+      "s1",
+      "--token",
+      "tok-abcdef",
+      "--config-path",
+      p,
+    ]);
     const r = runConfig(["show", "a", "--config-path", p]);
     expect(r.exitCode).toBe(0);
     const text = r.stdout.join("\n");
@@ -188,7 +325,16 @@ describe("torana config show", () => {
 
   test("--reveal-token prints the raw secret", () => {
     const p = tmpPath();
-    runConfig(["add-profile", "a", "--server", "s1", "--token", "tok-abcdef", "--config-path", p]);
+    runConfig([
+      "add-profile",
+      "a",
+      "--server",
+      "s1",
+      "--token",
+      "tok-abcdef",
+      "--config-path",
+      p,
+    ]);
     const r = runConfig(["show", "a", "--reveal-token", "--config-path", p]);
     expect(r.exitCode).toBe(0);
     expect(r.stdout.join("\n")).toContain("tok-abcdef");
@@ -213,6 +359,8 @@ describe("torana config dispatcher", () => {
   test("no subcommand prints help and exits 0", () => {
     const r = runConfig([]);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout.join("\n")).toContain("Manage the torana CLI profile store");
+    expect(r.stdout.join("\n")).toContain(
+      "Manage the torana CLI profile store",
+    );
   });
 });

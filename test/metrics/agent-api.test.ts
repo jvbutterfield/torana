@@ -219,12 +219,16 @@ describe("Metrics — agent-api renderPrometheus", () => {
       'torana_agent_api_send_idempotent_replays_total{bot_id="alpha"} 3',
     );
 
-    expect(body).toContain("# HELP torana_agent_api_side_sessions_started_total");
+    expect(body).toContain(
+      "# HELP torana_agent_api_side_sessions_started_total",
+    );
     expect(body).toContain(
       'torana_agent_api_side_sessions_started_total{bot_id="alpha"} 4',
     );
 
-    expect(body).toContain("# HELP torana_agent_api_side_session_evictions_total");
+    expect(body).toContain(
+      "# HELP torana_agent_api_side_session_evictions_total",
+    );
     expect(body).toContain(
       'torana_agent_api_side_session_evictions_total{bot_id="alpha",reason="idle"} 1',
     );
@@ -246,8 +250,12 @@ describe("Metrics — agent-api renderPrometheus", () => {
     m.incAgentApi("alpha", "ask_orphan_resolutions_error", 1);
     m.incAgentApi("alpha", "ask_orphan_resolutions_backstop", 1);
     const body2 = m.renderPrometheus({ alpha: 2, beta: 2 });
-    expect(body2).toContain("# HELP torana_agent_api_ask_orphan_resolutions_total");
-    expect(body2).toContain("# TYPE torana_agent_api_ask_orphan_resolutions_total counter");
+    expect(body2).toContain(
+      "# HELP torana_agent_api_ask_orphan_resolutions_total",
+    );
+    expect(body2).toContain(
+      "# TYPE torana_agent_api_ask_orphan_resolutions_total counter",
+    );
     expect(body2).toContain(
       'torana_agent_api_ask_orphan_resolutions_total{bot_id="alpha",outcome="done"} 3',
     );
@@ -271,7 +279,9 @@ describe("Metrics — agent-api renderPrometheus", () => {
     );
 
     expect(body).toContain("# HELP torana_agent_api_request_duration_ms");
-    expect(body).toContain("# TYPE torana_agent_api_request_duration_ms histogram");
+    expect(body).toContain(
+      "# TYPE torana_agent_api_request_duration_ms histogram",
+    );
     expect(body).toContain(
       "# HELP torana_agent_api_side_session_acquire_duration_ms",
     );

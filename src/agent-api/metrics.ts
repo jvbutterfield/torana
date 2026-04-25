@@ -17,7 +17,7 @@ import type {
 
 export type AskOutcome =
   | { status: 200; durationMs: number }
-  | { status: 202; durationMs: number }    // timeout → orphan handoff
+  | { status: 202; durationMs: number } // timeout → orphan handoff
   | { status: 400 | 401 | 403 | 404; durationMs: number }
   | { status: 429 | 500 | 501 | 503; durationMs: number };
 
@@ -48,7 +48,11 @@ export function recordAsk(
   } else {
     metrics.incAgentApi(botId, "ask_requests_5xx");
   }
-  metrics.observeAgentApiRequestDuration(botId, "ask" as AskRoute, outcome.durationMs);
+  metrics.observeAgentApiRequestDuration(
+    botId,
+    "ask" as AskRoute,
+    outcome.durationMs,
+  );
 }
 
 /**
@@ -73,7 +77,11 @@ export function recordSend(
   } else {
     metrics.incAgentApi(botId, "send_requests_5xx");
   }
-  metrics.observeAgentApiRequestDuration(botId, "send" as AskRoute, outcome.durationMs);
+  metrics.observeAgentApiRequestDuration(
+    botId,
+    "send" as AskRoute,
+    outcome.durationMs,
+  );
 }
 
 /** Record a pool acquire — outcome + observed duration. */

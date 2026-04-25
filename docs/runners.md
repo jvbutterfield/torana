@@ -30,14 +30,67 @@ bots:
       args: ["--agent", "cato"]
       cwd: /data/content
       pass_continue_flag: true
+      acknowledge_dangerous: true # REQUIRED — see below
       env:
         CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
         CLAUDE_CONFIG_DIR: /data/state/claude-config/cato
 ```
 
+### `acknowledge_dangerous` is required
+
+The runner always passes `--dangerously-skip-permissions` to the Claude CLI
+(the CLI's interactive permission prompt cannot be answered over the NDJSON
+protocol torana speaks, so it has to be turned off). That means **every
+turn runs unsandboxed** and inherits host-level file + command access in the
+runner's `cwd`: a leaked Agent API token, a malicious tool output, or a
+prompt injection reaching the runner is equivalent to letting that actor
+shell into the container.
+
+Set `acknowledge_dangerous: true` to confirm you have understood this and
+that the bot is running inside a container, VM, or otherwise hardened
+environment where the blast radius is acceptable. The config loader
+refuses to start a claude-code bot without this flag.
+
+**`acknowledge_dangerous: true` does not enable any sandboxing or runtime
+check.** It is purely an operator attestation — the loader's only job is to
+refuse to start before you have read this section. The isolation boundary
+is yours to provide; the flag does not change any runtime behavior.
+
+Matches the Codex `approval_mode: yolo` acknowledgement pattern.
+
+### Concrete isolation patterns
+
+Pick one based on your threat model and ops complexity tolerance. None of
+these is provided by torana — they're what you wrap torana in:
+
+- **Docker / Podman container** — most common path. Run torana with
+  `--cap-drop=ALL`, `--read-only` root, a tmpfs over `/tmp`, and a bind
+  mount of the runner's working tree marked `:ro` where you can. Use
+  `--network=bridge` (not `host`) and an egress allowlist via your
+  container runtime or service mesh.
+- **Dedicated unprivileged UID + chroot** — classic UNIX. Create a
+  `torana` user with no shell login, chown the gateway's `data_dir` to
+  it, run torana via systemd `User=torana`, chroot into a directory
+  containing only the binaries the runner needs.
+- **firejail** (Linux) — lightweight syscall + filesystem sandbox. Ship
+  a `.profile` restricting `cwd`, `/tmp`, and network. Lower overhead
+  than a container; layer with `iptables` if you need network policy.
+- **gVisor / Kata Containers** — syscall-level isolation. Higher
+  overhead; appropriate when you don't fully trust the runner with
+  the host kernel (multi-tenant or hostile-runner deployments).
+- **macOS `sandbox-exec`** — bundled with macOS. Write a `.sb` profile
+  scoping filesystem and network. Good for development hosts; not
+  the right choice for production.
+
+In every case the isolation is **between the runner and the rest of the
+host**, not between the runner and torana — a compromised runner inside
+any of these sandboxes can still send arbitrary text into Telegram chats
+torana owns. See [docs/security.md#runner-isolation](security.md#runner-isolation)
+for the full posture summary.
+
 ### What `pass_continue_flag` does
 
-When true (default), torana appends `--continue` to `args` on every spawn *except* the first-after-`reset()` — including the first spawn after a gateway restart, so the on-disk Claude session resumes seamlessly across reboots. Disable (`false`) for one-shot runners that should start fresh every turn.
+When true (default), torana appends `--continue` to `args` on every spawn _except_ the first-after-`reset()` — including the first spawn after a gateway restart, so the on-disk Claude session resumes seamlessly across reboots. Disable (`false`) for one-shot runners that should start fresh every turn.
 
 ### Setting up Claude Code
 
@@ -61,7 +114,7 @@ bots:
     runner:
       type: codex
       cli_path: codex
-      args: ["--profile", "torana"]      # optional user extras (e.g. --profile, -c key=value)
+      args: ["--profile", "torana"] # optional user extras (e.g. --profile, -c key=value)
       cwd: /data/projects/cody
       pass_resume_flag: true
       approval_mode: full-auto
@@ -82,13 +135,13 @@ When true (default), the runner captures the `thread_id` from each turn's `threa
 
 ### Approval mode and sandbox
 
-| `approval_mode` | Maps to | Behavior |
-| --- | --- | --- |
-| `full-auto` (default) | `--full-auto` | On-request approvals + workspace-write sandbox. Recommended for unattended bots. |
-| `untrusted` | `-c approval_policy=untrusted` | Approval required for untrusted commands. |
-| `on-request` | `-c approval_policy=on-request` | Codex asks before potentially-impactful actions. |
-| `never` | `-c approval_policy=never` | Codex never asks (still respects sandbox). |
-| `yolo` | `--dangerously-bypass-approvals-and-sandbox` | **Bypasses everything.** Requires `acknowledge_dangerous: true` in config and emits a startup warning. Only use inside an externally hardened environment (container, isolated VM). |
+| `approval_mode`       | Maps to                                      | Behavior                                                                                                                                                                            |
+| --------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `full-auto` (default) | `--full-auto`                                | On-request approvals + workspace-write sandbox. Recommended for unattended bots.                                                                                                    |
+| `untrusted`           | `-c approval_policy=untrusted`               | Approval required for untrusted commands.                                                                                                                                           |
+| `on-request`          | `-c approval_policy=on-request`              | Codex asks before potentially-impactful actions.                                                                                                                                    |
+| `never`               | `-c approval_policy=never`                   | Codex never asks (still respects sandbox).                                                                                                                                          |
+| `yolo`                | `--dangerously-bypass-approvals-and-sandbox` | **Bypasses everything.** Requires `acknowledge_dangerous: true` in config and emits a startup warning. Only use inside an externally hardened environment (container, isolated VM). |
 
 `sandbox` maps to `--sandbox` and accepts `read-only`, `workspace-write` (default), or `danger-full-access`. Skipped when `approval_mode: yolo` or on resume turns (the original session's sandbox is inherited; `codex exec resume` doesn't accept `--sandbox`).
 
@@ -107,7 +160,7 @@ Codex's `--image` flag accepts only image files. Non-image attachments (document
 1. Install: `npm install -g @openai/codex`.
 2. Authenticate one of two ways:
    - **API key (simplest):** set `OPENAI_API_KEY` in `runner.env`. Works without `HOME`.
-   - **OAuth:** `codex login` (browser flow), persists in `~/.codex/`. **You must pass `HOME` (or `CODEX_HOME` pointing at the auth dir) in `runner.env`** — `runner.env` is the *complete* environment for the subprocess, so without `HOME` codex can't find its auth files even though they exist on disk. Use a per-bot `CODEX_HOME` if you run multiple Codex bots so OAuth state doesn't collide.
+   - **OAuth:** `codex login` (browser flow), persists in `~/.codex/`. **You must pass `HOME` (or `CODEX_HOME` pointing at the auth dir) in `runner.env`** — `runner.env` is the _complete_ environment for the subprocess, so without `HOME` codex can't find its auth files even though they exist on disk. Use a per-bot `CODEX_HOME` if you run multiple Codex bots so OAuth state doesn't collide.
 3. (Optional) Configure profiles in `~/.codex/config.toml` and reference them with `args: ["--profile", "<name>"]`.
 
 ## command
@@ -119,12 +172,14 @@ For anything that isn't Claude Code. Choose a wire protocol:
 One JSON line per turn in/out. No session resumption semantics; reset via stdin envelope.
 
 **stdin (torana → runner):**
+
 ```json
 {"type":"turn","turn_id":"1","text":"hello","attachments":[]}
 {"type":"reset"}
 ```
 
 **stdout (runner → torana):**
+
 ```json
 {"type":"ready"}
 {"type":"text","turn_id":"1","text":"streaming chunk"}
@@ -142,7 +197,7 @@ runner:
   protocol: jsonl-text
   cmd: ["bun", "my-runner.ts"]
   cwd: ./my-runner
-  on_reset: signal       # send {"type":"reset"} on stdin
+  on_reset: signal # send {"type":"reset"} on stdin
   env:
     MY_API_KEY: ${MY_API_KEY}
 ```
@@ -158,6 +213,25 @@ If your CLI speaks the same stream-json NDJSON format as Claude Code, set `proto
 If your wrapper subprocess emits Codex-style state-change events (`thread.started`, `turn.started`, `item.started`, `item.completed`, `turn.completed`, `turn.failed`, `error`), set `protocol: codex-jsonl`. Stdin envelopes use the same shape as `jsonl-text` (the Codex CLI itself doesn't take stdin envelopes — wrappers multiplex turns themselves).
 
 Long-lived `codex-jsonl` wrappers can emit a synthetic `{"type":"ready"}` line on startup so torana promotes the runner to ready before the first turn.
+
+## Inlined secrets: `runner.secrets`
+
+`runner.env` values are **not** auto-redacted — they land in `torana validate` output and any log line that echoes resolved config in cleartext. Two ways to keep secrets out of those:
+
+1. **Preferred:** keep secrets out of YAML entirely with `${VAR}` indirection. The literal value lives only in your secret store / process env.
+
+2. **Fallback:** when env-var indirection isn't feasible (committed config, CI), use the sibling `runner.secrets` map. Same shape as `runner.env` (string→string, merged into the spawn env on top of `env`), but every value is registered with the log redactor at config load and printed as `<redacted:N chars>` in `torana validate`.
+
+```yaml
+runner:
+  type: claude-code
+  env:
+    CLAUDE_CONFIG_DIR: /data/state/claude-config/cato # not sensitive
+  secrets:
+    ANTHROPIC_API_KEY: sk-ant-XXXXXXXXXXXXXXXXXXXXX # masked in logs + validate
+```
+
+Setting the same key in both `env` and `secrets` is rejected at load time — pick one. Values shorter than 6 characters are not added to the redactor (they would cause pathological substring matches in unrelated log text); use `${VAR}` indirection in `env` for short tokens that absolutely must be redacted.
 
 ## Hybrid configurations
 

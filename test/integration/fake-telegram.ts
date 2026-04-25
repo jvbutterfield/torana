@@ -71,7 +71,10 @@ export class FakeTelegram {
   }
 
   /** Simulate Telegram POSTing an update to the gateway's webhook URL. */
-  async deliverWebhookUpdate(botId: string, update: TelegramUpdate): Promise<Response> {
+  async deliverWebhookUpdate(
+    botId: string,
+    update: TelegramUpdate,
+  ): Promise<Response> {
     const info = this.webhooks.get(botId);
     if (!info) {
       throw new Error(`no webhook registered for bot '${botId}'`);
@@ -163,7 +166,9 @@ export class FakeTelegram {
       if (!entry) return new Response("not found", { status: 404 });
       return new Response(entry.bytes as unknown as BodyInit, {
         status: 200,
-        headers: { "Content-Type": entry.mimeType ?? "application/octet-stream" },
+        headers: {
+          "Content-Type": entry.mimeType ?? "application/octet-stream",
+        },
       });
     }
 
@@ -179,7 +184,12 @@ export class FakeTelegram {
       case "getMe":
         return Response.json({
           ok: true,
-          result: { id: 1000, is_bot: true, first_name: botId, username: `${botId}_bot` },
+          result: {
+            id: 1000,
+            is_bot: true,
+            first_name: botId,
+            username: `${botId}_bot`,
+          },
         });
       case "setWebhook": {
         const webhookUrl = String(body.url);
@@ -207,7 +217,9 @@ export class FakeTelegram {
         const limit = typeof body.limit === "number" ? body.limit : 100;
         const available = queue.filter((u) => u.update_id >= offset);
         if (available.length === 0) {
-          await new Promise((r) => setTimeout(r, this.opts.emptyPollDelayMs ?? 100));
+          await new Promise((r) =>
+            setTimeout(r, this.opts.emptyPollDelayMs ?? 100),
+          );
           return Response.json({ ok: true, result: [] });
         }
         return Response.json({ ok: true, result: available.slice(0, limit) });
@@ -262,7 +274,11 @@ export class FakeTelegram {
 
 /** Find a free port by letting Bun pick one, then shutting down. */
 export async function findFreePort(): Promise<number> {
-  const s = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("x") });
+  const s = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response("x"),
+  });
   const port = typeof s.port === "number" ? s.port : 3000;
   s.stop(true);
   return port;

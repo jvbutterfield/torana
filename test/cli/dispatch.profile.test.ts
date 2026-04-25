@@ -17,7 +17,13 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,7 +58,9 @@ let runner: ClaudeCodeRunner | null = null;
 let pool: SideSessionPool | null = null;
 let orphans: OrphanListenerManager | null = null;
 
-async function setupGateway(tokens: ResolvedAgentApiToken[]): Promise<{ base: string }> {
+async function setupGateway(
+  tokens: ResolvedAgentApiToken[],
+): Promise<{ base: string }> {
   gwDir = mkdtempSync(join(tmpdir(), "torana-profile-gw-"));
   const dbPath = join(gwDir, "gateway.db");
   applyMigrations(dbPath);
@@ -65,6 +73,7 @@ async function setupGateway(tokens: ResolvedAgentApiToken[]): Promise<{ base: st
       args: ["run", MOCK, "normal"],
       env: {},
       pass_continue_flag: false,
+      acknowledge_dangerous: true,
     },
   });
   const config = makeTestConfig([bot]);
@@ -113,7 +122,10 @@ async function setupGateway(tokens: ResolvedAgentApiToken[]): Promise<{ base: st
   return { base: `http://127.0.0.1:${server.port}` };
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -141,7 +153,10 @@ async function runCli(
   return { stdout, stderr, exitCode: exitCode ?? 0 };
 }
 
-function writeProfileFile(defaultName: string, profiles: Record<string, { server: string; token: string }>): string {
+function writeProfileFile(
+  defaultName: string,
+  profiles: Record<string, { server: string; token: string }>,
+): string {
   xdgDir = mkdtempSync(join(tmpdir(), "torana-profile-xdg-"));
   mkdirSync(join(xdgDir, "torana"), { recursive: true });
   const path = join(xdgDir, "torana", "config.toml");
@@ -301,10 +316,9 @@ describe("torana config — subprocess round-trip", () => {
         { XDG_CONFIG_HOME: xdgDir },
       );
       expect(add.exitCode).toBe(0);
-      const list = await runCli(
-        ["config", "list-profiles", "--json"],
-        { XDG_CONFIG_HOME: xdgDir },
-      );
+      const list = await runCli(["config", "list-profiles", "--json"], {
+        XDG_CONFIG_HOME: xdgDir,
+      });
       expect(list.exitCode).toBe(0);
       const parsed = JSON.parse(list.stdout) as {
         default: string;
@@ -317,7 +331,7 @@ describe("torana config — subprocess round-trip", () => {
       // File is 0600 on disk.
       const filePath = join(xdgDir, "torana", "config.toml");
       const raw = readFileSync(filePath, "utf-8");
-      expect(raw).toContain('[profile.alpha]');
+      expect(raw).toContain("[profile.alpha]");
       expect(raw).toContain('server = "http://localhost:8080"');
     } finally {
       rmSync(xdgDir, { recursive: true, force: true });

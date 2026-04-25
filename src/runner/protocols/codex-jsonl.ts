@@ -34,6 +34,16 @@ export interface CodexJsonlParseOptions {
 
 export type CodexJsonlParser = LineBufferedParser;
 
+// Captured thread_ids are persisted to the DB and replayed as an argv element
+// (`exec resume <thread_id>`) on the next turn. Bun's `spawn` separates argv
+// elements so flag-boundary injection isn't possible, but a control-char-
+// bearing id (newline, NUL, escape sequence) still lands on disk and in
+// `ps`/log output. Real codex thread_ids are UUID v7 (lowercase hex +
+// hyphens); mock fixtures use `tid-...` form. Both are covered by this
+// alphanumeric/`_`/`-` charset, capped well below any realistic length so a
+// pathological subprocess can't flood worker_state.
+const THREAD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
 export function createCodexJsonlParser(
   opts: CodexJsonlParseOptions,
 ): CodexJsonlParser {
@@ -47,6 +57,13 @@ export function createCodexJsonlParser(
 
     if (type === "thread.started") {
       const threadId = typeof ev.thread_id === "string" ? ev.thread_id : null;
+      if (threadId !== null && !THREAD_ID_RE.test(threadId)) {
+        log.warn(
+          "codex thread.started rejected — thread_id failed validation",
+          { length: threadId.length },
+        );
+        return;
+      }
       if (threadId && opts.onThreadStarted) opts.onThreadStarted(threadId);
       // No RunnerEvent emitted: readiness is signaled by the runner once the
       // subprocess is spawned, not per-turn by the protocol.

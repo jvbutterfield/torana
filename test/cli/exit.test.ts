@@ -101,10 +101,14 @@ describe("exitCodeFor — internal axis", () => {
 
 describe("exitCodeFor — status fallback for unknown code", () => {
   test("401 → authFailed", () => {
-    expect(exitCodeFor("X_unknown_code" as never, 401)).toBe(ExitCode.authFailed);
+    expect(exitCodeFor("X_unknown_code" as never, 401)).toBe(
+      ExitCode.authFailed,
+    );
   });
   test("403 → authFailed", () => {
-    expect(exitCodeFor("X_unknown_code" as never, 403)).toBe(ExitCode.authFailed);
+    expect(exitCodeFor("X_unknown_code" as never, 403)).toBe(
+      ExitCode.authFailed,
+    );
   });
   test("404 → notFound", () => {
     expect(exitCodeFor("X_unknown_code" as never, 404)).toBe(ExitCode.notFound);
@@ -113,7 +117,9 @@ describe("exitCodeFor — status fallback for unknown code", () => {
     expect(exitCodeFor("X_unknown_code" as never, 429)).toBe(ExitCode.capacity);
   });
   test("500 → serverError", () => {
-    expect(exitCodeFor("X_unknown_code" as never, 500)).toBe(ExitCode.serverError);
+    expect(exitCodeFor("X_unknown_code" as never, 500)).toBe(
+      ExitCode.serverError,
+    );
   });
   test("400 → badUsage", () => {
     expect(exitCodeFor("X_unknown_code" as never, 400)).toBe(ExitCode.badUsage);

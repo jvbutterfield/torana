@@ -43,12 +43,15 @@ describe("§12.5.1 auth.case-mutation", () => {
 
   const schemeCases = ["Bearer", "bearer", "BEARER", "BeArEr"];
 
-  test.each(schemeCases)("Bearer scheme case %p is accepted", async (scheme) => {
-    h = startHarness({ tokens: [token] });
-    const r = await fetch(`${h.base}/v1/bots`, {
-      method: "GET",
-      headers: { Authorization: `${scheme} ${secret}` },
-    });
-    expect(r.status).toBe(200);
-  });
+  test.each(schemeCases)(
+    "Bearer scheme case %p is accepted",
+    async (scheme) => {
+      h = startHarness({ tokens: [token] });
+      const r = await fetch(`${h.base}/v1/bots`, {
+        method: "GET",
+        headers: { Authorization: `${scheme} ${secret}` },
+      });
+      expect(r.status).toBe(200);
+    },
+  );
 });

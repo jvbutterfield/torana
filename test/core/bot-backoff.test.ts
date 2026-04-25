@@ -97,18 +97,26 @@ class StubRunner implements AgentRunner {
     throw new Error("not supported");
   }
 
-  simulateFatal(code: "auth" | "exit" | "spawn" | "protocol", message: string): void {
+  simulateFatal(
+    code: "auth" | "exit" | "spawn" | "protocol",
+    message: string,
+  ): void {
     this._isReady = false;
     this.emitter.emit({ kind: "fatal", code, message });
   }
 }
 
 /** Build a Bot whose runner is the StubRunner (bypass instantiateRunner). */
-function buildBotWithStubRunner(db: GatewayDB, tmpDir: string, overrides: { maxFailures?: number; baseMs?: number; capMs?: number } = {}) {
+function buildBotWithStubRunner(
+  db: GatewayDB,
+  tmpDir: string,
+  overrides: { maxFailures?: number; baseMs?: number; capMs?: number } = {},
+) {
   const botConfig = makeTestBotConfig("alpha");
   const config = makeTestConfig([botConfig], {
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -159,7 +167,9 @@ afterEach(() => {
 
 describe("Bot crash-loop backoff", () => {
   test("non-auth fatal increments consecutive_failures and schedules restart", async () => {
-    const { stub, db: bdb } = buildBotWithStubRunner(db, tmpDir, { baseMs: 30 });
+    const { stub, db: bdb } = buildBotWithStubRunner(db, tmpDir, {
+      baseMs: 30,
+    });
     bdb.initWorkerState("alpha");
 
     await stub.start();
@@ -235,7 +245,11 @@ describe("Bot crash-loop backoff", () => {
   });
 
   test("stop() clears pending restart timer", async () => {
-    const { bot, stub, db: bdb } = buildBotWithStubRunner(db, tmpDir, { baseMs: 100 });
+    const {
+      bot,
+      stub,
+      db: bdb,
+    } = buildBotWithStubRunner(db, tmpDir, { baseMs: 100 });
     bdb.initWorkerState("alpha");
     await stub.start();
 

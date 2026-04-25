@@ -7,7 +7,12 @@ export type TurnId = string;
 
 export type Unsubscribe = () => void;
 
-export type RunnerStatus = "stopped" | "starting" | "ready" | "busy" | "stopping";
+export type RunnerStatus =
+  | "stopped"
+  | "starting"
+  | "ready"
+  | "busy"
+  | "stopping";
 
 export type RunnerEventKind =
   | "ready"
@@ -63,7 +68,11 @@ export interface AgentRunner {
    */
   stop(graceMs?: number): Promise<void>;
 
-  sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult;
+  sendTurn(
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult;
 
   reset(): Promise<void>;
   supportsReset(): boolean;
@@ -137,7 +146,9 @@ export function runnerSupportsSideSessions(
     case "codex":
       return true;
     case "command":
-      return runner.protocol === "claude-ndjson" || runner.protocol === "codex-jsonl";
+      return (
+        runner.protocol === "claude-ndjson" || runner.protocol === "codex-jsonl"
+      );
     default:
       return false;
   }
@@ -174,7 +185,9 @@ export class SideSessionNotFound extends Error {
 export class InvalidSideSessionId extends Error {
   readonly code = "invalid_session_id";
   constructor(sessionId: string) {
-    super(`invalid session id: '${sessionId}' (must match [A-Za-z0-9_-]{1,64})`);
+    super(
+      `invalid session id: '${sessionId}' (must match [A-Za-z0-9_-]{1,64})`,
+    );
     this.name = "InvalidSideSessionId";
   }
 }
@@ -197,7 +210,10 @@ export function validateSideSessionId(sessionId: string): void {
 
 /** Simple typed event emitter — shared by runner implementations. */
 export class RunnerEventEmitter {
-  private handlers = new Map<RunnerEventKind, Set<(event: RunnerEvent) => void>>();
+  private handlers = new Map<
+    RunnerEventKind,
+    Set<(event: RunnerEvent) => void>
+  >();
 
   on<E extends RunnerEventKind>(
     event: E,

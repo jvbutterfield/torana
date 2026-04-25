@@ -75,7 +75,9 @@ export interface SendCliInput {
 
 export interface SendRunDeps {
   client: AgentApiClient;
-  readFile?: (path: string) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
+  readFile?: (
+    path: string,
+  ) => Promise<{ data: Uint8Array; mime: string; filename: string }>;
   /** Override key generator for tests. */
   generateKey?: () => string;
 }
@@ -112,15 +114,15 @@ export async function runSend(
     throw new CliUsageError("either --user-id or --chat-id is required");
   }
   if (userId && chatIdRaw) {
-    throw new CliUsageError(
-      "pass only one of --user-id / --chat-id, not both",
-    );
+    throw new CliUsageError("pass only one of --user-id / --chat-id, not both");
   }
   let chatId: number | undefined;
   if (chatIdRaw !== undefined) {
     const n = Number(chatIdRaw);
     if (!Number.isFinite(n) || !Number.isInteger(n)) {
-      throw new CliUsageError(`--chat-id must be an integer (got '${chatIdRaw}')`);
+      throw new CliUsageError(
+        `--chat-id must be an integer (got '${chatIdRaw}')`,
+      );
     }
     chatId = n;
   }

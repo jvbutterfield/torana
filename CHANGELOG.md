@@ -6,6 +6,445 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.7] - 2026-04-25
+
+### Security
+
+Thirty-five security and reliability fixes landed together ahead of
+the 1.0.0 cut, in three batches: thirteen items from the original
+rc.7 review (two P0, six P1, and the five P1/P2/P3 hardening items
+already in flight when the deep review kicked off), nine P2 from the
+follow-up deep review, and thirteen more from a targeted post-review
+pass (sanitization gaps in two more handlers, outbox crash-window
+narrowing, alerts redaction, and the Telegram rate-limit / polling
+reliability stack). Three items are hard-breaking config changes and
+eleven more are softer behavior shifts — see **Upgrade notes** below
+before deploying.
+
+#### P0 fixes
+
+- **Dashboard proxy hardening.** The dashboard was forwarding every
+  request header verbatim to `proxy_target` (Authorization, cookies,
+  Idempotency-Key, X-Telegram-Bot-Api-Secret-Token), had no auth on the
+  mount, and followed backend redirects. A caller reaching the gateway
+  port could use it as an open credential-exfil + SSRF gadget. Now:
+  sensitive headers are stripped before forwarding; `redirect: "manual"`
+  disables redirect-following; the new `dashboard.allow_non_loopback_proxy_target`
+  flag refuses non-loopback `proxy_target` by default.
+
+- **Webhook body size cap.** The Telegram webhook handler called
+  `req.json()` after the secret check with no size limit. Anyone who
+  obtained the shared webhook secret could force the gateway to buffer
+  arbitrarily-large chunked bodies into memory. Capped at 1 MiB via a
+  Content-Length precheck + streaming reader with abort-on-overflow; 413
+  on both paths.
+
+#### P1 fixes
+
+- **Marker-injection rejected in send text.** `wrapSystemMessage` produces
+  `[system-message from "<source>"]\n\n<text>` as the framing the runner
+  uses to distinguish operator-initiated turns from user-initiated ones.
+  Caller-supplied `text` that contained a second line-starting
+  `[system-message from "forged"]\n\n…` could spoof a second envelope
+  attributing subsequent content to any source label the caller chose.
+  `SendBodySchema` now rejects any text matching the marker-injection
+  regex (anchored on line boundaries so inline prose mentioning the
+  syntax is still allowed); `wrapSystemMessage` re-asserts.
+
+- **Multipart magic-byte MIME validation.** Agent-API multipart and
+  Telegram document uploads trusted the caller's declared Content-Type.
+  A caller could upload arbitrary bytes with a declared allowlisted MIME
+  and the gateway would write them as `<uuid>.png` (or .pdf, etc.) and
+  hand the on-disk path to a runner. Now every attachment's actual bytes
+  are sniffed (PNG/JPEG/WEBP/GIF/PDF magic) and must match the declared
+  MIME; mismatches return `attachment_mime_not_allowed`.
+
+- **Migration serialization.** Two concurrently-started torana processes
+  that both saw `user_version < TARGET` could race each other's migration
+  apply. Added an OS file lock (`<dbPath>.migrate.lock`) with PID +
+  timestamp; stale locks older than 10 minutes are stolen, fresh locks
+  cause the second process to fail with a clear error.
+
+- **Crash recovery skips Telegram notify for agent-API turns.**
+  `runCrashRecovery` was sending a "⚠️ Gateway restarted …" message into
+  the user's DM for any interrupted running turn. For Agent-API
+  `ask`/`send` turns that no end user had initiated, this leaked the
+  existence of a backend job into the user's chat. Now Agent-API turns
+  are interrupted silently; external callers see the outcome via
+  `GET /v1/turns/:id` as before.
+
+- **DB file permissions locked to 0600.** `gateway.db` + its WAL / SHM
+  sidecars contain every bot token, every inbound Telegram payload
+  (text + PII), and every agent-API turn row. They inherited the process
+  umask (typically 0644). Now chmod'd to 0600 on every open (best-effort
+  — logs and carries on under non-POSIX filesystems). New doctor check
+  **C015** warns on pre-existing group/world-readable DB files so
+  operators on upgrade notice any deployment that was created before this
+  release.
+
+- **Runner stdout/stderr redacted in per-bot log files.** The structured
+  logger applied secret redaction; the per-bot log file (written via
+  `logStream.write(chunk)`) bypassed it. A runner that leaked an API key
+  on stderr — or a user that asked a runner to echo a secret back on
+  stdout — ended up with the raw value in plaintext on disk. All 12
+  subprocess-output write sites across the three runners now go through
+  `redactString()`.
+
+#### rc.7 initial fixes (the five that landed earlier in this branch)
+
+- **(P1) claude-code runner now requires `acknowledge_dangerous: true`.**
+  The runner has always passed `--dangerously-skip-permissions` to the
+  Claude CLI (required for torana's NDJSON protocol to work) — every turn
+  has therefore run unsandboxed with host-level access in `cwd`. That was
+  implicit; it is now explicit. The config loader rejects any claude-code
+  bot without `acknowledge_dangerous: true`, with a message pointing at
+  the container/VM isolation guidance in
+  [docs/runners.md](docs/runners.md). Mirrors the existing Codex
+  `approval_mode: yolo` acknowledgement pattern.
+
+- **(P2) Agent API auth ordering is now enumeration-resistant.** `/v1/bots/:id/*`
+  previously checked `registry.bot(botId)` BEFORE authenticating the bearer
+  token, so an unauthenticated caller could distinguish valid bot ids
+  (`401`) from invalid ones (`404 unknown_bot`). The wrapper now runs
+  authenticate → authorize (token→bot+scope) → registry lookup in that
+  order. An unauthenticated caller gets the same `401` whether or not the
+  bot exists; a token-for-A probing bot B gets `403 bot_not_permitted`
+  with no signal about bot B's existence. `404 unknown_bot` is reachable
+  only when the caller's own token is legitimately authorized for that id
+  — a misconfiguration indicator, not an enumeration primitive.
+
+- **(P2) Webhook and Agent API secrets must be at least 32 characters.**
+  `transport.webhook.secret` and `agent_api.tokens[].secret_ref` previously
+  accepted any non-empty string; they now fail schema validation at load
+  time if shorter than 32 chars. At 32 chars a random base64/hex value
+  provides ~192 bits of entropy — overwhelmingly above any realistic
+  brute-force threshold. The redaction collector in `src/log.ts` /
+  `collectSecrets` also loses its old `length >= 6` filter: every
+  configured secret is redacted regardless of length, so operators cannot
+  accidentally bypass redaction.
+
+- **(P2) Request bodies on `/v1/*` writes now get a streaming size cap.**
+  Both ask and send previously called `req.json()` / `req.formData()`
+  directly, trusting Content-Length when present. A caller with a valid
+  token could send a chunked (no Content-Length) or lying Content-Length
+  body and force memory buffering before any cap fired. Added
+  `agent_api.send.max_body_bytes` to match `agent_api.ask.max_body_bytes`;
+  both handlers now:
+  - precheck Content-Length against the applicable cap and return
+    `413 body_too_large` before reading the body, and
+  - stream `req.body` chunk-by-chunk when no (or a missing) Content-Length
+    is present, aborting the reader the moment accumulated bytes exceed
+    the cap.
+
+  Multipart aggregate accounting now also includes the UTF-8 byte sizes
+  of every string field (including `text`). A text-only multipart payload
+  is bound by the same cap as a file payload — you cannot bypass
+  `max_body_bytes` by sending 100 MB of `text=` with zero files.
+
+- **(P3) Gateway now binds to `127.0.0.1` by default.** New
+  `gateway.bind_host` setting (default `127.0.0.1`). `/health`, `/metrics`,
+  `/dashboard`, and the Agent API are no longer exposed on non-loopback
+  interfaces unless the operator opts in. Container and PaaS deployments
+  that need external reachability must explicitly set
+  `bind_host: "0.0.0.0"` (or a specific interface IP).
+
+#### P2 fixes (deep-review backlog folded in pre-cut)
+
+Nine items the deep review surfaced as exploitable only by an authenticated
+bearer (or strictly internal foot-guns) were originally deferred to rc.8.
+They are now in rc.7 to land the full review on a single tag. None requires
+config changes beyond the optional new fields below.
+
+- **Telegram attachment write hardened against overwrite + symlink races
+  (P2).** `src/core/attachments.ts` now opens the destination with
+  `O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW`. On `EEXIST` (rare
+  `update_id` collision across restarts/replays, or anything staged by
+  a less-trusted process), the write retries under
+  `<update_id>-<index>-<uuid><ext>` for up to 3 attempts. A symlink
+  staged at the destination is rejected with the new
+  `ATTACHMENT_SYMLINK_REJECTED` error and never followed.
+
+- **`/v1/turns/:turn_id` timing oracle closed (P2).** Both the
+  malformed-id branch and the valid-but-not-yours branch now go through
+  the DB lookup, so an authenticated probe can no longer distinguish
+  "id was malformed" from "id is valid but you don't own it" via
+  response timing. Both still return `404 turn_not_found`.
+
+- **`/v1/bots` no longer leaks `runner_type` by default (P2).** A
+  bearer-token holder used to learn each bot's runner backend
+  (`claude-code` / `codex` / `command`) — useful intel for an attacker
+  picking which side-channel (prompt-injection vs tool-use vs shell)
+  to probe. Set the new `agent_api.expose_runner_type: true` if your
+  callers depend on the field.
+
+- **Agent-API `invalid_body` / `internal_error` responses now use
+  canonical `detail` strings (P2).** Exception text from
+  `req.formData()`, `JSON.parse`, and `insertSendTurn` (raw multipart
+  parser internals, SQLite column / constraint detail, file-path
+  errnos) is logged server-side at warn / error level but never echoed
+  into the response body.
+
+- **Codex `thread_id` validated before persisting + replaying as argv
+  (P2).** The codex JSONL parser was forwarding `thread.started.thread_id`
+  verbatim. Bun's argv-element separation prevented shell-metacharacter
+  injection at the flag boundary, but a control-char-bearing id (newline
+  / NUL / ANSI escape) still landed in argv, on disk in `worker_state`,
+  and in `ps` output. The parser now rejects ids that fail an anchored
+  `^[A-Za-z0-9_-]{1,128}$` regex; the offending event is dropped (the
+  side-session is abandoned, which is the safe failure mode).
+
+- **`GatewayDB.query()` renamed to `_unsafeQuery()` (P2 footgun).** The
+  public method that returned a raw `prepare()` handle is now
+  underscore-prefixed and renamed in every callsite. The new name makes
+  the SQL-injection surface obvious so a future contributor cannot
+  reach for it innocently. Internal API only — no external-caller
+  impact.
+
+- **`GatewayDB.dynamicUpdate` enforces a runtime column allowlist
+  (P2).** The function built `UPDATE ${table} SET ${k} = ?` strings
+  from caller-supplied object keys; static `Partial<RowShape>` typing
+  was erased at runtime, so a future caller spreading untrusted JSON
+  into the patch could have allowed attacker-controlled keys to become
+  SQL identifiers. A static `UPDATABLE_COLUMNS` map per table now
+  rejects unknown keys before any query is built.
+
+- **`runner.secrets` map for inlined-secret redaction (P2).** Operators
+  who can't easily indirect via `${VAR}` (Docker secrets, sealed
+  configs, etc.) needed a way to mark inlined values as secret. A new
+  `bots[].runner.secrets: { KEY: VALUE }` map registers each value
+  with the log redactor at config-load time. `runner.env` and
+  `runner.secrets` cannot share keys (config-load fails with a clear
+  error). `${VAR}` indirection remains the recommended pattern; this
+  is the explicit fallback.
+
+- **Per-token Agent-API side-session cap (P2).** The pool already
+  enforced `max_per_bot` and `max_global`, but a token whose `bot_ids`
+  spanned many bots could hold `max_per_bot * len(bot_ids)`
+  concurrent side-sessions and starve other tokens that shared any of
+  those bots. Two new optional knobs close the gap:
+  `agent_api.tokens[].max_concurrent_side_sessions` (per-token
+  override) and `agent_api.side_sessions.max_per_token_default`
+  (default `8` — applies when the per-token override is unset). A
+  token at its cap returns 429 with the new `token_concurrency_limit`
+  code (distinct from `side_session_capacity`).
+
+#### Followup hardening from rc.7 review pass
+
+Found by a focused review after the initial nine-item P2 fold-in
+landed. Each is small individually; together they remove the self-DoS
+lever an attacker could induce by causing per-chat throttling, narrow
+the outbox crash-window dup risk, close two more agent-API
+sanitization gaps, and surface alerts hardening + polling reliability
+issues that the original deep review skipped.
+
+- **Two more agent-API error-detail leaks closed.** `body.ts:83`
+  (stream-reader exception text echoed in `invalid_body` detail) and
+  `ask.ts:247` (catch-all `internal_error` echoed exception text).
+  Both now log the raw cause server-side and return canonical detail
+  strings — same pattern as `send.ts` from the rc.7 P2 cherry-pick.
+- **Outbox `in_flight` marker narrows the crash-window dup risk.** A
+  crash between Telegram POST success and `markOutboxSent` previously
+  left the row in `pending`/`retrying` and re-sent on restart —
+  duplicate Telegram message with no operator visibility. The row is
+  now marked `in_flight` with a 60s grace window before the POST; on
+  restart the new `OutboxProcessor.recoverInFlight()` logs a warn per
+  affected row with explicit dup-risk caveat, and the grace window
+  auto-recovers via `getPendingOutbox`. Telegram has no message-history
+  readback so true zero-dup isn't reachable, but the window narrows
+  from "any crash" to "crash + restart inside 60s".
+- **Alert text now goes through the log redactor.** `webhookSetFailed`
+  forwards `err.message` from `setWebhook`, which can echo URL
+  fragments (and `getWebhookInfo` URLs include the bot token). The
+  `emit()` helper in `src/alerts.ts` now applies `redactString()`
+  before `sendMessage`, mirroring `c8dd3a9`'s rule for runner stdout/
+  stderr. Same fix also wires the dead catch path: `sendMessage`
+  swallows Telegram errors and returns `{ok:false,...}`, so a failed
+  alert was being logged as `"alert sent"` — now `result.ok` is
+  checked explicitly with a warn on false.
+- **`TelegramError` parses `Retry-After` (rc.7 review F2).** The HTTP
+  `Retry-After` header (RFC 9110, seconds) and the Telegram error
+  envelope's `parameters.retry_after` are now both parsed into
+  `TelegramError.retryAfterMs`. Header takes precedence — some
+  intermediaries override the envelope at the CDN edge.
+  `retry_after: 0` is treated as missing so we don't skip natural
+  backoff on flaky 5xx. `SendResult` and `EditResult` surface
+  `retryAfterMs` to callers.
+- **Telegram requests have a 30s default timeout (rc.7 review F4).**
+  `api()` now passes `AbortSignal.timeout(30_000)` to every fetch.
+  `getUpdates` uses a long-poll-aware timeout (`timeout_secs * 1000 +
+5s buffer`) composed via `AbortSignal.any()` with the caller's
+  shutdown signal. Closes the wedge where a stuck TCP connection
+  could pin the entire dispatcher.
+- **Polling honors Retry-After (rc.7 review F6).** `BotPoller.loop`
+  now sleeps `max(backoff, retryAfterMs)` when a TelegramError
+  carries a server-asked cooldown. Hammering before the cooldown
+  expires extends the throttle.
+- **Webhook setup classifies transient vs permanent (rc.7 review F7).**
+  `setWebhook` failures at startup were previously persistent —
+  any failure marked the bot disabled until manual re-enable. Now
+  429 / 5xx / network errors are logged as transient and the bot
+  stays enabled (the next gateway start retries). 401 / 403 / other
+  4xx still disable the bot for operator attention.
+- **Polling offset advances only on success (rc.7 review C-1).**
+  Previously the offset bumped to `max(update_id)` even when handlers
+  threw — silently losing updates because the dedup ledger never
+  wrote a row. Now the loop stops processing on the first throw and
+  holds the offset; Telegram redelivers from the failing id on the
+  next poll, so a transient cause (sqlite-locked, disk-full, etc.)
+  gets a real retry. **See upgrade note 14** — this is a behavior
+  change for any deployment that was relying on the lossy semantics.
+- **Polling failureCount is capped (rc.7 review C-2).** Previously
+  the counter ticked up forever on cyclic failures (every Nth poll
+  throws). Cap at 16 — well past the saturation point of
+  `nextBackoffMs` — so it stays informative in logs and metrics.
+- **Outbox shards per-bot (rc.7 review F1).** The previous global
+  mutex serialized all rows across all bots; a 429 on chat A blocked
+  every later row regardless of bot. Now `processPending` groups
+  rows by `bot_id` and runs the per-bot loops via `Promise.all`,
+  while keeping each bot's queue serial (intra-chat ordering
+  preserved).
+- **Outbox respects Retry-After without burning the retry budget
+  (rc.7 review F5).** New `markOutboxRateLimited` schedules a retry
+  at the server-asked time without bumping `attempt_count`. A
+  cooperative attacker who keeps a chat throttled longer than
+  (max_attempts × backoff_cap) used to dead-letter legitimate
+  replies and trigger the `outboxFailures` operator alert; now the
+  retry budget is reserved for genuine deliverability failures.
+  Capped at 5 minutes against a malicious upstream.
+- **Streaming pauses edits during a 429 (rc.7 review F3 + F9).**
+  `fireAndForgetEdit` now returns the `EditResult`. `StreamManager`
+  observes 429 + `Retry-After` and sets a per-bot
+  `rateLimitedUntil` timestamp; subsequent flushes during the
+  cooldown skip the `editMessageText` call (the buffer accumulates,
+  next non-rate-limited flush picks up the latest text). Typing
+  pings (`sendChatAction`) are also gated on the cooldown — they
+  count against per-bot 429 limits and produce no user-visible
+  benefit while edits are paused.
+- **Runner sandbox boundary documented explicitly.** `docs/security.md`
+  gains a `## Runner isolation` section stating plainly that torana
+  does not sandbox runners; `acknowledge_dangerous: true` is a
+  documentation gate, not enforcement; the operator owns the
+  isolation boundary. `docs/runners.md` gains a "Concrete isolation
+  patterns" subsection (Docker / firejail / unprivileged-UID + chroot
+  / gVisor / `sandbox-exec`). Loader error messages now link to the
+  patterns subsection.
+
+### Upgrade notes
+
+This release contains **three breaking config changes**. A pre-existing
+config that loaded on rc.6 may refuse to load on rc.7 if any of these
+apply:
+
+1. **`bots[].runner.acknowledge_dangerous` is required for every
+   claude-code bot.** Add `acknowledge_dangerous: true` under each
+   claude-code runner block. The loader will print a clear error telling
+   you which bot needs it. If you are running outside a container / VM,
+   re-read [docs/runners.md](docs/runners.md) before acknowledging.
+
+2. **`transport.webhook.secret` and `agent_api.tokens[].secret_ref` must
+   be ≥ 32 chars.** Rotate any shorter secret. Generate replacements with
+   `openssl rand -base64 32`. Telegram webhook secrets can be rotated
+   with `torana webhook set` on the next start (torana re-registers the
+   webhook with the new value automatically).
+
+3. **`gateway.bind_host` defaults to `127.0.0.1`.** If your deployment
+   reaches torana from outside the host (Docker bridge, LAN, a PaaS
+   health check on a non-loopback IP, a reverse proxy on a different
+   container), set `gateway.bind_host: "0.0.0.0"` explicitly — existing
+   deployments that relied on the old `0.0.0.0` behaviour will start
+   refusing remote connections otherwise. PaaS users in particular
+   should double-check: the existing Railway/Heroku/Fly/Render note in
+   [docs/configuration.md](docs/configuration.md) now covers this
+   alongside the `PORT` gotcha.
+
+4. **New field `agent_api.send.max_body_bytes`** (default 100 MiB). No
+   action required — existing configs pick up the default. Lower it if
+   you want a tighter cap on `/v1/bots/:id/send` requests.
+
+5. **Enumeration-resistant auth ordering.** Clients that relied on
+   `/v1/bots/:id/*` returning `404 unknown_bot` for typos against a bot
+   the caller's token does not cover will now see `403 bot_not_permitted`
+   instead. `404 unknown_bot` still fires, but only when the caller's
+   token lists the unknown id in its `bot_ids` — i.e., the misconfigured
+   deployment case.
+
+6. **`dashboard.proxy_target` is now loopback-only by default.** If you
+   proxy the dashboard to an upstream on a non-loopback IP, add
+   `dashboard.allow_non_loopback_proxy_target: true` alongside
+   `proxy_target`. The gateway will otherwise refuse to start. The
+   proxy also now strips Authorization / Cookie / Idempotency-Key /
+   X-Telegram-Bot-Api-Secret-Token / Host / Proxy-Authorization before
+   forwarding, and sets `redirect: "manual"` — no config change needed
+   for those.
+
+7. **DB file permissions tighten to 0600 on open.** Pre-existing
+   deployments with a group/world-readable `gateway.db` (default umask
+   on many Linux hosts creates these as 0644) will have their DB
+   chmod'd to 0600 the next time torana opens it. Run `torana doctor`
+   to confirm — the new C015 check reports the on-disk mode and fails
+   if it's still loose (e.g. on filesystems that don't support POSIX
+   perms).
+
+8. **Send callers: text containing a line-leading `[system-message from
+"…"]` will now be rejected with `400 invalid_body`.** Incidental
+   prose mentioning the marker syntax inline is still accepted. Only
+   line-anchored matches are refused. If you have legitimate tooling
+   that forwards other bots' log output verbatim, strip leading
+   whitespace + the marker prefix before sending.
+
+9. **Webhook body size is capped at 1 MiB.** Telegram updates are
+   typically < 64 KiB so this is a wide margin; no action needed
+   unless your integration routes unusually-large payloads through the
+   webhook endpoint.
+
+10. **Multipart attachments must match magic bytes for their declared
+    MIME.** A caller uploading a JPEG with `Content-Type: image/png` now
+    gets `attachment_mime_not_allowed`. Fix by sending the correct MIME.
+    The same check applies to Telegram documents (photos are always
+    JPEG by Telegram's API convention, so this only affects documents).
+
+11. **Per-token Agent-API side-session cap defaults to `8`.** Any
+    bearer token without an explicit `max_concurrent_side_sessions`
+    inherits `agent_api.side_sessions.max_per_token_default` (default
+    `8`). Tokens that were genuinely holding more than 8 concurrent
+    side-sessions in rc.6 will start receiving 429
+    `token_concurrency_limit` once the (8+1)th acquisition happens —
+    raise the per-token field, or raise the default, before deploying.
+    `max_per_bot` and `max_global` still apply; this is a third
+    dimension on top of them.
+
+12. **`/v1/bots` omits `runner_type` by default.** Callers that
+    consumed the `runner_type` field on bot listings (e.g., to render
+    runner-specific UI, to skip codex-only features against a
+    claude-code bot, etc.) need to set
+    `agent_api.expose_runner_type: true` to restore the field.
+    `torana bots list` and the in-tree CLI no longer rely on it; only
+    custom integrations are affected.
+
+13. **Agent-API error response `detail` strings are now canonical.**
+    Clients that string-matched the previous exception-derived
+    `detail` text (e.g., looking for `"Failed to parse FormData"` to
+    distinguish parser errors from other 400s) will now see fixed
+    canonical strings like `"malformed multipart body"` and
+    `"internal error"`. Match on the `error` code field instead — the
+    set of codes is stable.
+
+14. **Polling: a thrown update handler now holds the offset.** A
+    handler that throws on update N causes the polling loop to stop
+    processing that batch (updates N+1..M in the same batch are NOT
+    processed) AND skip the offset bump — Telegram will redeliver
+    from N on the next poll. Pre-fix: the loop continued to process
+    later updates and bumped the offset to `max(update_id)`,
+    silently losing the failing update because `inbound_updates`
+    never recorded its row. The new semantic is a strict improvement
+    for transient failures (sqlite-locked, disk-full) but means a
+    persistently-failing update will now block subsequent updates
+    until the underlying cause is fixed. If a handler is throwing
+    for non-transient reasons (a malformed payload your code can't
+    parse, an unrecoverable schema error, etc.), `torana doctor` and
+    the per-bot log file will surface it immediately — investigate
+    the throw rather than relying on the old lossy fast-forward.
+
 ## [1.0.0-rc.6] - 2026-04-21
 
 ### Changed
@@ -88,11 +527,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `TORANA_TOKEN` env, and named profiles (see below). Stable exit codes
   (0/1/2/3/4/5/6/7) for scripting. See [docs/cli.md](docs/cli.md).
 - **CLI profile store.** `torana config init | add-profile | list-profiles |
-  remove-profile | show` manages a TOML file at
+remove-profile | show` manages a TOML file at
   `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600). Every agent-api
   subcommand resolves credentials with the precedence
   `flag > env > --profile NAME > default profile`. `torana doctor
-  --profile NAME` runs the R001..R003 remote probes against the resolved
+--profile NAME` runs the R001..R003 remote probes against the resolved
   server.
 - **`--file @-` on `torana ask` / `torana inject`.** Reads attachment bytes
   from stdin with magic-byte MIME detection (PNG, JPEG, GIF, WebP, PDF;
@@ -100,7 +539,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a second `@-` on the same call is a usage error.
 - **Skills + Codex plugin.** `skills/torana-ask/SKILL.md` and
   `skills/torana-inject/SKILL.md` ship with the package. `torana skills
-  install --host=claude|codex` copies them into
+install --host=claude|codex` copies them into
   `$CLAUDE_CONFIG_DIR/skills` / `$XDG_DATA_HOME/agents/skills` (default
   refuses on divergence; `--force` overwrites). `codex-plugin/` contains
   a manifest + marketplace.json entry for one-line Codex install; a

@@ -64,15 +64,16 @@ async function main(): Promise<void> {
       // Shape matches the claude-ndjson inline convention so tests reading
       // either protocol see the same "[Attached file: …]" tag.
       const attachTag = env.attachments?.length
-        ? env.attachments
-            .map((a) => `[Attached file: ${a.path}]`)
-            .join(" ")
+        ? env.attachments.map((a) => `[Attached file: ${a.path}]`).join(" ")
         : "";
       const reply = attachTag
         ? `echo[${sessionId}]: ${text} ${attachTag}`
         : `echo[${sessionId}]: ${text}`;
 
-      emit({ type: "thread.started", thread_id: `tid-${sessionId}-${turnCount}` });
+      emit({
+        type: "thread.started",
+        thread_id: `tid-${sessionId}-${turnCount}`,
+      });
       emit({ type: "turn.started" });
       emit({
         type: "item.completed",

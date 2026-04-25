@@ -78,7 +78,10 @@ export function extractChain(argv: string[]): {
 export function parseFlags(
   argv: string[],
   spec: Record<string, FlagSpec>,
-): { positional: string[]; flags: Record<string, string | string[] | boolean> } {
+): {
+  positional: string[];
+  flags: Record<string, string | string[] | boolean>;
+} {
   const flags: Record<string, string | string[] | boolean> = {};
   const positional: string[] = [];
 
@@ -202,9 +205,7 @@ export interface ResolvedCredentials {
  * Trace entries annotate *which* layer each came from so
  * `TORANA_DEBUG=1` can print them.
  */
-export function resolveCredentials(
-  src: CredentialSource,
-): ResolvedCredentials {
+export function resolveCredentials(src: CredentialSource): ResolvedCredentials {
   const env = src.env ?? process.env;
   const trace: string[] = [];
 
@@ -215,7 +216,8 @@ export function resolveCredentials(
     if (src.profileName !== undefined) {
       const p = profiles.profiles[src.profileName];
       if (!p) {
-        const known = Object.keys(profiles.profiles).sort().join(", ") || "(none)";
+        const known =
+          Object.keys(profiles.profiles).sort().join(", ") || "(none)";
         throw new CliUsageError(
           `profile '${src.profileName}' not found (known: ${known})`,
         );
@@ -315,6 +317,9 @@ export const COMMON_FLAGS: Record<string, FlagSpec> = {
     kind: "bool",
     describe: "Print credential resolution trace to stderr",
   },
-  json: { kind: "bool", describe: "Emit JSON instead of human-formatted output" },
+  json: {
+    kind: "bool",
+    describe: "Emit JSON instead of human-formatted output",
+  },
   help: { kind: "bool", short: "h", describe: "Show help for this subcommand" },
 };

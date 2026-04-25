@@ -17,9 +17,23 @@ afterEach(async () => {
 });
 
 const PNG_BYTES = new Uint8Array([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, // PNG signature
+  0x89,
+  0x50,
+  0x4e,
+  0x47,
+  0x0d,
+  0x0a,
+  0x1a,
+  0x0a, // PNG signature
   // A minimal PNG; enough bytes that the handler can take it.
-  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00,
+  0x00,
+  0x00,
+  0x0d,
+  0x49,
+  0x48,
+  0x44,
+  0x52,
 ]);
 
 describe("§12.5.3 input.path-traversal", () => {
@@ -56,7 +70,11 @@ describe("§12.5.3 input.path-traversal", () => {
       // so the handler path may return runner_error — any file that
       // WAS written must land in the attachments dir with a
       // gateway-controlled name.
-      const attachDir = resolve(h.config.gateway.data_dir, "attachments", "bot1");
+      const attachDir = resolve(
+        h.config.gateway.data_dir,
+        "attachments",
+        "bot1",
+      );
       let entries: string[];
       try {
         entries = readdirSync(attachDir);

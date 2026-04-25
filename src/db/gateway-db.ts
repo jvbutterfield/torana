@@ -1,8 +1,38 @@
 import { Database, type Statement } from "bun:sqlite";
+import { chmodSync, existsSync } from "node:fs";
 import { logger } from "../log.js";
 import type { BotId } from "../config/schema.js";
 
 const log = logger("db");
+
+/**
+ * Lock down the DB file + its WAL / SHM siblings to 0600 (owner rw, nobody
+ * else). The DB contains every bot token (stored verbatim so we can call
+ * the Telegram API), every inbound Telegram payload (message text, user
+ * metadata, PII), every agent-API turn row (marker-wrapped prompts
+ * including text callers assumed stayed internal), and idempotency keys.
+ * Most of that is either a live credential or caller-controlled content we
+ * treated as sensitive at ingest time; leaving it world-readable on a
+ * multi-user host is the wrong default.
+ *
+ * Best-effort: chmod can fail on filesystems that don't support POSIX
+ * permissions (Windows NTFS, some FUSE mounts, network shares). Log and
+ * carry on; the operator can re-run `torana doctor` which also warns on
+ * overly-permissive DB files.
+ */
+function chmodDbFiles(dbPath: string): void {
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const p = dbPath + suffix;
+    try {
+      if (existsSync(p)) chmodSync(p, 0o600);
+    } catch (err) {
+      log.warn("could not chmod db file to 0600", {
+        path: p,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
 
 /** Wrapper around the SQLite state. Keyed on bot_id throughout (v1 schema). */
 export class GatewayDB {
@@ -25,10 +55,13 @@ export class GatewayDB {
     requeueTurn: Statement;
     cancelTurnOutbox: Statement;
     insertOutbox: Statement;
+    markOutboxInFlight: Statement;
     markOutboxSent: Statement;
     markOutboxFailed: Statement;
     markOutboxRetryOrFail: Statement;
+    markOutboxRateLimited: Statement;
     getPendingOutbox: Statement;
+    getInFlightOutbox: Statement;
     getOutboxRow: Statement;
     supersededEdit: Statement;
     initWorkerState: Statement;
@@ -53,7 +86,9 @@ export class GatewayDB {
     allocateSyntheticInbound: Statement;
     upsertUserChat: Statement;
     getLastChatForUser: Statement;
+    getUserIdForChat: Statement;
     listUserChatsByBot: Statement;
+    listTurnAttachmentRows: Statement;
     getIdempotencyTurn: Statement;
     insertIdempotency: Statement;
     sweepIdempotency: Statement;
@@ -75,6 +110,10 @@ export class GatewayDB {
     this._db.exec("PRAGMA busy_timeout=5000");
     this._db.exec("PRAGMA synchronous=NORMAL");
     this._db.exec("PRAGMA foreign_keys=ON");
+    // Run AFTER the WAL pragma has forced the -wal/-shm sidecars into
+    // existence so we lock them all down in one pass. Owner rw / group-
+    // world no-access (0600).
+    chmodDbFiles(dbPath);
     this.prepareStatements();
     log.info("database ready");
   }
@@ -84,8 +123,15 @@ export class GatewayDB {
     this._db.exec(sql);
   }
 
-  /** Prepare a raw statement — used by tests to assert DB state. */
-  query(sql: string): Statement {
+  /**
+   * Raw `prepare()` escape hatch. Tests use it to assert DB state and to
+   * backdate timestamps that no production helper would expose. Never call
+   * this from production code — add a typed helper above instead. The
+   * leading underscore + "unsafe" prefix is the warning at every call site:
+   * the SQL is unparameterized at the API boundary, so any caller that
+   * interpolates user-controlled data here introduces SQL injection.
+   */
+  _unsafeQuery(sql: string): Statement {
     return this._db.prepare(sql);
   }
 
@@ -100,7 +146,9 @@ export class GatewayDB {
       getUpdateStatus: d.prepare(
         "SELECT id, status FROM inbound_updates WHERE bot_id = ? AND telegram_update_id = ?",
       ),
-      setUpdateStatus: d.prepare("UPDATE inbound_updates SET status = ? WHERE id = ?"),
+      setUpdateStatus: d.prepare(
+        "UPDATE inbound_updates SET status = ? WHERE id = ?",
+      ),
       createTurn: d.prepare(
         "INSERT INTO turns (bot_id, chat_id, source_update_id, attachment_paths_json) VALUES (?, ?, ?, ?)",
       ),
@@ -120,7 +168,7 @@ export class GatewayDB {
         "UPDATE turns SET last_output_at = datetime('now') WHERE id = ?",
       ),
       getRunningTurns: d.prepare(
-        "SELECT id, bot_id, chat_id, source_update_id, first_output_at FROM turns WHERE status = 'running'",
+        "SELECT id, bot_id, chat_id, source_update_id, first_output_at, source FROM turns WHERE status = 'running'",
       ),
       getQueuedTurns: d.prepare(
         "SELECT id, chat_id, source_update_id FROM turns WHERE bot_id = ? AND status = 'queued' ORDER BY id ASC",
@@ -143,6 +191,13 @@ export class GatewayDB {
       insertOutbox: d.prepare(
         "INSERT INTO outbox (turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
       ),
+      // Mark a row as currently being delivered. Sets a future
+      // next_attempt_at so a concurrent processor (or a crash-affected
+      // restart) doesn't pick the row up again until the grace window
+      // expires — at which point the row auto-recovers via getPendingOutbox.
+      markOutboxInFlight: d.prepare(
+        "UPDATE outbox SET status = 'in_flight', next_attempt_at = datetime('now', '+' || ? || ' seconds') WHERE id = ? AND status IN ('pending', 'retrying')",
+      ),
       markOutboxSent: d.prepare(
         "UPDATE outbox SET status = 'sent', telegram_message_id = COALESCE(?, telegram_message_id) WHERE id = ?",
       ),
@@ -157,11 +212,36 @@ export class GatewayDB {
           last_error = ?
         WHERE id = ?
       `),
+      // Used when Telegram returned 429 with Retry-After. Schedules the
+      // retry at the server-asked time but does NOT bump attempt_count —
+      // a cooperative attacker who keeps a chat throttled longer than
+      // (max_attempts × backoff_cap) would otherwise dead-letter
+      // legitimate replies, and the operator alert would fire on a
+      // permanent failure that wasn't actually torana's fault.
+      markOutboxRateLimited: d.prepare(`
+        UPDATE outbox SET
+          status = 'retrying',
+          next_attempt_at = ?,
+          last_error = ?
+        WHERE id = ?
+      `),
+      // 'in_flight' is included so a crash-affected row auto-recovers once
+      // its grace-window next_attempt_at expires. Same-process re-entry is
+      // already prevented by the OutboxProcessor.processing mutex; this
+      // filter handles the cross-restart case.
       getPendingOutbox: d.prepare(`
         SELECT id, turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json, status, attempt_count
         FROM outbox
-        WHERE status IN ('pending', 'retrying')
+        WHERE status IN ('pending', 'retrying', 'in_flight')
           AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+        ORDER BY id ASC
+      `),
+      // Used at startup for operator-visible warnings about crash-affected
+      // rows. Returns rows still labelled 'in_flight' regardless of grace.
+      getInFlightOutbox: d.prepare(`
+        SELECT id, turn_id, bot_id, chat_id, kind, attempt_count, next_attempt_at
+        FROM outbox
+        WHERE status = 'in_flight'
         ORDER BY id ASC
       `),
       getOutboxRow: d.prepare(
@@ -177,7 +257,9 @@ export class GatewayDB {
       incWorkerGen: d.prepare(
         "UPDATE worker_state SET generation = generation + 1 WHERE bot_id = ?",
       ),
-      getWorkerGen: d.prepare("SELECT generation FROM worker_state WHERE bot_id = ?"),
+      getWorkerGen: d.prepare(
+        "SELECT generation FROM worker_state WHERE bot_id = ?",
+      ),
       resetAllWorkers: d.prepare(
         "UPDATE worker_state SET status = 'starting', pid = NULL",
       ),
@@ -249,8 +331,14 @@ export class GatewayDB {
       getLastChatForUser: d.prepare(
         "SELECT chat_id FROM user_chats WHERE bot_id = ? AND telegram_user_id = ?",
       ),
+      getUserIdForChat: d.prepare(
+        "SELECT telegram_user_id FROM user_chats WHERE bot_id = ? AND chat_id = ? LIMIT 1",
+      ),
       listUserChatsByBot: d.prepare(
         "SELECT chat_id FROM user_chats WHERE bot_id = ?",
+      ),
+      listTurnAttachmentRows: d.prepare(
+        "SELECT attachment_paths_json FROM turns WHERE attachment_paths_json IS NOT NULL",
       ),
 
       getIdempotencyTurn: d.prepare(
@@ -347,9 +435,10 @@ export class GatewayDB {
     botId: BotId,
     telegramUpdateId: number,
   ): { id: number; status: string } | null {
-    return this.stmts.getUpdateStatus.get(botId, telegramUpdateId) as
-      | { id: number; status: string }
-      | null;
+    return this.stmts.getUpdateStatus.get(botId, telegramUpdateId) as {
+      id: number;
+      status: string;
+    } | null;
   }
 
   insertUpdate(
@@ -425,6 +514,7 @@ export class GatewayDB {
     chat_id: number;
     source_update_id: number;
     first_output_at: string | null;
+    source: string | null;
   }> {
     return this.stmts.getRunningTurns.all() as Array<{
       id: number;
@@ -432,6 +522,7 @@ export class GatewayDB {
       chat_id: number;
       source_update_id: number;
       first_output_at: string | null;
+      source: string | null;
     }>;
   }
 
@@ -446,7 +537,9 @@ export class GatewayDB {
   }
 
   getTurnText(turnId: number): string | null {
-    const row = this.stmts.getTurnText.get(turnId) as { payload_json: string } | null;
+    const row = this.stmts.getTurnText.get(turnId) as {
+      payload_json: string;
+    } | null;
     if (!row) return null;
     try {
       const payload = JSON.parse(row.payload_json);
@@ -463,9 +556,9 @@ export class GatewayDB {
   }
 
   getTurnAttachments(turnId: number): string[] {
-    const row = this.stmts.getTurnAttachments.get(turnId) as
-      | { attachment_paths_json: string | null }
-      | null;
+    const row = this.stmts.getTurnAttachments.get(turnId) as {
+      attachment_paths_json: string | null;
+    } | null;
     if (!row?.attachment_paths_json) return [];
     try {
       return JSON.parse(row.attachment_paths_json) as string[];
@@ -475,9 +568,9 @@ export class GatewayDB {
   }
 
   getTurnSourceUpdateId(turnId: number): number | null {
-    const row = this.stmts.getTurnSourceUpdateId.get(turnId) as
-      | { source_update_id: number }
-      | null;
+    const row = this.stmts.getTurnSourceUpdateId.get(turnId) as {
+      source_update_id: number;
+    } | null;
     return row?.source_update_id ?? null;
   }
 
@@ -511,12 +604,59 @@ export class GatewayDB {
     return Number(result.lastInsertRowid);
   }
 
+  /**
+   * Mark a pending/retrying outbox row as currently being delivered.
+   * `graceSecs` defines how long until the row auto-recovers if a crash
+   * leaves it stuck in `in_flight` — see getPendingOutbox.
+   */
+  markOutboxInFlight(id: number, graceSecs: number): void {
+    this.stmts.markOutboxInFlight.run(graceSecs, id);
+  }
+
   markOutboxSent(id: number, telegramMessageId?: number): void {
     this.stmts.markOutboxSent.run(telegramMessageId ?? null, id);
   }
 
+  /**
+   * Returns rows still in `in_flight` state (a crash left them mid-send).
+   * Called at gateway startup so the operator sees a warning per affected
+   * row before the grace window auto-recovers them.
+   */
+  getInFlightOutbox(): Array<{
+    id: number;
+    turn_id: number;
+    bot_id: BotId;
+    chat_id: number;
+    kind: string;
+    attempt_count: number;
+    next_attempt_at: string | null;
+  }> {
+    return this.stmts.getInFlightOutbox.all() as Array<{
+      id: number;
+      turn_id: number;
+      bot_id: BotId;
+      chat_id: number;
+      kind: string;
+      attempt_count: number;
+      next_attempt_at: string | null;
+    }>;
+  }
+
   markOutboxFailed(id: number, error: string): void {
     this.stmts.markOutboxFailed.run(error, id);
+  }
+
+  /**
+   * Schedule a Retry-After-respecting retry. Does NOT bump attempt_count —
+   * a server-asked cooldown should not consume the retry budget that
+   * exists for genuine deliverability failures (network, 5xx, etc.).
+   */
+  markOutboxRateLimited(
+    id: number,
+    error: string,
+    nextAttemptAt: string,
+  ): void {
+    this.stmts.markOutboxRateLimited.run(nextAttemptAt, error, id);
   }
 
   markOutboxRetrying(
@@ -561,12 +701,16 @@ export class GatewayDB {
   getOutboxRow(
     id: number,
   ): { telegram_message_id: number | null; status: string } | null {
-    return this.stmts.getOutboxRow.get(id) as
-      | { telegram_message_id: number | null; status: string }
-      | null;
+    return this.stmts.getOutboxRow.get(id) as {
+      telegram_message_id: number | null;
+      status: string;
+    } | null;
   }
 
-  hasSupersedingEdit(telegramMessageId: number | null, afterId: number): boolean {
+  hasSupersedingEdit(
+    telegramMessageId: number | null,
+    afterId: number,
+  ): boolean {
     if (!telegramMessageId) return false;
     return !!this.stmts.supersededEdit.get(telegramMessageId, afterId);
   }
@@ -577,19 +721,59 @@ export class GatewayDB {
     this.stmts.initWorkerState.run(botId);
   }
 
+  // Runtime allowlist of columns each dynamicUpdate-capable table accepts.
+  // SQLite identifiers are not bind targets, so column names below are
+  // interpolated into the UPDATE string. Static types are erased at runtime —
+  // without this allowlist, an attacker-controlled key reaching this path
+  // could become arbitrary SQL.
+  private static readonly UPDATABLE_COLUMNS: Record<
+    string,
+    ReadonlySet<string>
+  > = {
+    worker_state: new Set([
+      "pid",
+      "generation",
+      "status",
+      "started_at",
+      "last_event_at",
+      "last_ready_at",
+      "consecutive_failures",
+      "last_error",
+    ]),
+    stream_state: new Set([
+      "active_telegram_message_id",
+      "buffer_text",
+      "last_flushed_at",
+      "segment_index",
+    ]),
+  };
+
   private dynamicUpdate(
     table: string,
     whereCol: string,
     whereVal: string | number,
     updates: Record<string, string | number | null>,
   ): void {
+    const allowed = GatewayDB.UPDATABLE_COLUMNS[table];
+    if (!allowed) {
+      throw new Error(
+        `dynamicUpdate: no allowlist registered for table ${table}`,
+      );
+    }
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
     for (const [k, v] of Object.entries(updates)) {
+      if (!allowed.has(k)) {
+        throw new Error(
+          `dynamicUpdate: column ${JSON.stringify(k)} is not updatable on ${table}`,
+        );
+      }
       sets.push(`${k} = ?`);
       vals.push(v);
     }
-    if (sets.length === 0) return;
+    if (sets.length === 0) {
+      throw new Error(`dynamicUpdate: empty update for table ${table}`);
+    }
     vals.push(whereVal);
     this._db
       .prepare(`UPDATE ${table} SET ${sets.join(", ")} WHERE ${whereCol} = ?`)
@@ -655,9 +839,9 @@ export class GatewayDB {
    * `codex exec resume <id>` on the first turn after a gateway restart.
    */
   getCodexThreadId(botId: BotId): string | null {
-    const row = this.stmts.getCodexThreadId.get(botId) as
-      | { codex_thread_id: string | null }
-      | null;
+    const row = this.stmts.getCodexThreadId.get(botId) as {
+      codex_thread_id: string | null;
+    } | null;
     return row?.codex_thread_id ?? null;
   }
 
@@ -750,9 +934,9 @@ export class GatewayDB {
   }
 
   getLastTurnAt(botId: BotId): string | null {
-    const row = this.stmts.lastTurnAt.get(botId) as
-      | { completed_at: string }
-      | null;
+    const row = this.stmts.lastTurnAt.get(botId) as {
+      completed_at: string;
+    } | null;
     return row?.completed_at ?? null;
   }
 
@@ -789,19 +973,46 @@ export class GatewayDB {
     botId: BotId,
     telegramUserId: string,
   ): { chat_id: number } | null {
-    return this.stmts.getLastChatForUser.get(botId, telegramUserId) as
-      | { chat_id: number }
-      | null;
+    return this.stmts.getLastChatForUser.get(botId, telegramUserId) as {
+      chat_id: number;
+    } | null;
+  }
+
+  /**
+   * Inverse of {@link getLastChatForUser}: given a (bot_id, chat_id),
+   * return the most-recently-seen telegram_user_id for that chat. Used by
+   * the agent-API `send` ACL re-check when the caller passed chat_id only.
+   */
+  getUserIdForChat(botId: BotId, chatId: number): string | null {
+    const row = this.stmts.getUserIdForChat.get(botId, chatId) as {
+      telegram_user_id: string;
+    } | null;
+    return row?.telegram_user_id ?? null;
   }
 
   listUserChatsByBot(botId: BotId): Array<{ chat_id: number }> {
-    return this.stmts.listUserChatsByBot.all(botId) as Array<{ chat_id: number }>;
+    return this.stmts.listUserChatsByBot.all(botId) as Array<{
+      chat_id: number;
+    }>;
+  }
+
+  /**
+   * Every turn that still has a non-null attachment_paths_json blob.
+   * Used by the agent-API attachment GC to compute the live-set of
+   * referenced files before sweeping orphans. Returns the raw JSON; the
+   * caller does the parse + flatten so a malformed row doesn't poison
+   * the whole sweep.
+   */
+  listTurnAttachmentRows(): Array<{ attachment_paths_json: string }> {
+    return this.stmts.listTurnAttachmentRows.all() as Array<{
+      attachment_paths_json: string;
+    }>;
   }
 
   getIdempotencyTurn(botId: BotId, key: string): number | null {
-    const row = this.stmts.getIdempotencyTurn.get(botId, key) as
-      | { turn_id: number }
-      | null;
+    const row = this.stmts.getIdempotencyTurn.get(botId, key) as {
+      turn_id: number;
+    } | null;
     return row?.turn_id ?? null;
   }
 
@@ -893,7 +1104,9 @@ export class GatewayDB {
       const row = this.stmts.insertAskTurnRow.get(
         args.botId,
         inboundId,
-        args.attachmentPaths.length ? JSON.stringify(args.attachmentPaths) : null,
+        args.attachmentPaths.length
+          ? JSON.stringify(args.attachmentPaths)
+          : null,
         args.tokenName,
       ) as { id: number };
       return row.id;
@@ -937,7 +1150,9 @@ export class GatewayDB {
         args.botId,
         args.chatId,
         inboundId,
-        args.attachmentPaths.length ? JSON.stringify(args.attachmentPaths) : null,
+        args.attachmentPaths.length
+          ? JSON.stringify(args.attachmentPaths)
+          : null,
         args.tokenName,
         args.sourceLabel,
         args.idempotencyKey,

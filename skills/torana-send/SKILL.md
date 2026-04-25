@@ -98,14 +98,14 @@ the marker block without quoting it verbatim.
 
 Exit codes:
 
-| Code | Meaning |
-|---:|---|
-| 0 | Queued — `turn_id` on stdout. Poll with `torana turns get`. |
-| 2 | Bad usage (missing flag, bad source label). **Do not retry.** |
-| 3 | Auth or authz failed (token, bot, chat, user). **Do not retry.** |
-| 4 | Not found (bot). **Do not retry.** |
-| 5 | Server error. Retry with backoff + same idempotency key. |
-| 7 | Capacity / busy. Retry after 1–10 s. |
+| Code | Meaning                                                          |
+| ---: | ---------------------------------------------------------------- |
+|    0 | Queued — `turn_id` on stdout. Poll with `torana turns get`.      |
+|    2 | Bad usage (missing flag, bad source label). **Do not retry.**    |
+|    3 | Auth or authz failed (token, bot, chat, user). **Do not retry.** |
+|    4 | Not found (bot). **Do not retry.**                               |
+|    5 | Server error. Retry with backoff + same idempotency key.         |
+|    7 | Capacity / busy. Retry after 1–10 s.                             |
 
 ## Security
 

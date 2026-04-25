@@ -44,7 +44,10 @@ describe("gateway-db: user_chats", () => {
     db.upsertUserChat("bot1", "42", 111);
     db.upsertUserChat("bot1", "43", 222);
     db.upsertUserChat("bot2", "44", 333);
-    const list = db.listUserChatsByBot("bot1").map((r) => r.chat_id).sort();
+    const list = db
+      .listUserChatsByBot("bot1")
+      .map((r) => r.chat_id)
+      .sort();
     expect(list).toEqual([111, 222]);
   });
 });
@@ -94,7 +97,10 @@ describe("gateway-db: side_sessions", () => {
       state: "busy",
     });
     db.markAllSideSessionsStopped();
-    const states = db.listSideSessions("bot1").map((r) => r.state).sort();
+    const states = db
+      .listSideSessions("bot1")
+      .map((r) => r.state)
+      .sort();
     expect(states).toEqual(["stopped", "stopped"]);
   });
 });
@@ -164,7 +170,9 @@ describe("gateway-db: insertSendTurn + idempotency", () => {
     expect(turn.agent_api_source_label).toBe("cron");
 
     // Prompt is recovered via extended getTurnText.
-    expect(db.getTurnText(out.turnId)).toBe('[system-message from "cron"]\n\nhello');
+    expect(db.getTurnText(out.turnId)).toBe(
+      '[system-message from "cron"]\n\nhello',
+    );
   });
 
   test("duplicate idempotency key returns replay with same turn id", () => {
@@ -172,7 +180,7 @@ describe("gateway-db: insertSendTurn + idempotency", () => {
       botId: "bot1",
       tokenName: "cal",
       chatId: 555,
-      markerWrappedText: 'first',
+      markerWrappedText: "first",
       idempotencyKey: "samekeysamekey12",
       sourceLabel: "cron",
       attachmentPaths: [],
@@ -181,7 +189,7 @@ describe("gateway-db: insertSendTurn + idempotency", () => {
       botId: "bot1",
       tokenName: "cal",
       chatId: 555,
-      markerWrappedText: 'second — should be ignored',
+      markerWrappedText: "second — should be ignored",
       idempotencyKey: "samekeysamekey12",
       sourceLabel: "cron",
       attachmentPaths: [],
@@ -203,7 +211,12 @@ describe("gateway-db: setTurnFinalText + sweepIdempotency", () => {
       textPreview: "hi",
       attachmentPaths: [],
     });
-    db.setTurnFinalText(id, "the answer", JSON.stringify({ input_tokens: 5 }), 1234);
+    db.setTurnFinalText(
+      id,
+      "the answer",
+      JSON.stringify({ input_tokens: 5 }),
+      1234,
+    );
     const t = db.getTurnExtended(id)!;
     expect(t.status).toBe("completed");
     expect(t.final_text).toBe("the answer");
@@ -237,9 +250,13 @@ describe("gateway-db: getTurnText telegram-parity", () => {
       `INSERT INTO inbound_updates (bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
        VALUES ('bot1', 42, 100, 1, '99', '{"message":{"text":"hello world"}}', 'enqueued')`,
     );
-    const inboundId = (db
-      .query("SELECT id FROM inbound_updates WHERE telegram_update_id = 42")
-      .get() as { id: number }).id;
+    const inboundId = (
+      db
+        ._unsafeQuery(
+          "SELECT id FROM inbound_updates WHERE telegram_update_id = 42",
+        )
+        .get() as { id: number }
+    ).id;
     const turnId = db.createTurn("bot1", 100, inboundId, []);
     expect(db.getTurnText(turnId)).toBe("hello world");
   });

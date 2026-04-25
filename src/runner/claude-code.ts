@@ -8,7 +8,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { BotId, ClaudeCodeRunnerConfig } from "../config/schema.js";
-import { logger, type Logger } from "../log.js";
+import { logger, redactString, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
   InvalidSideSessionId,
@@ -116,7 +116,10 @@ export class ClaudeCodeRunner implements AgentRunner {
     this.protocolFlags = opts.protocolFlags ?? ClaudeCodeRunner.PROTOCOL_FLAGS;
   }
 
-  on<E extends RunnerEventKind>(event: E, handler: RunnerEventHandler<E>): Unsubscribe {
+  on<E extends RunnerEventKind>(
+    event: E,
+    handler: RunnerEventHandler<E>,
+  ): Unsubscribe {
     return this.emitter.on(event, handler);
   }
 
@@ -390,7 +393,7 @@ export class ClaudeCodeRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        entry.logStream?.write(chunk);
+        entry.logStream?.write(redactString(chunk));
         parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
       }
       parser.flush((ev) => this.dispatchSide(entry, ev));
@@ -414,7 +417,7 @@ export class ClaudeCodeRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        entry.logStream?.write(`[stderr] ${text}`);
+        entry.logStream?.write(`[stderr] ${redactString(text)}`);
       }
     } catch {
       /* expected on exit */
@@ -445,7 +448,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     entry.activeTurn = null;
     if (entry.resolveReady) {
       entry.rejectReady?.(
-        new Error(`claude side-session subprocess exited before ready (code=${code})`),
+        new Error(
+          `claude side-session subprocess exited before ready (code=${code})`,
+        ),
       );
       entry.resolveReady = null;
       entry.rejectReady = null;
@@ -475,7 +480,11 @@ export class ClaudeCodeRunner implements AgentRunner {
     entry.emitter.emit(ev);
   }
 
-  sendTurn(turnId: TurnId, text: string, attachments: Attachment[]): SendTurnResult {
+  sendTurn(
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult {
     // Order matters: a runner mid-turn has status "busy", and the caller
     // needs to distinguish that from "hasn't finished starting yet".
     if (this.activeTurn !== null) {
@@ -578,7 +587,11 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   private buildArgs(freshSession: boolean): string[] {
     const base = [...this.protocolFlags, ...this.config.args];
-    if (this.config.pass_continue_flag && !freshSession && !base.includes("--continue")) {
+    if (
+      this.config.pass_continue_flag &&
+      !freshSession &&
+      !base.includes("--continue")
+    ) {
       base.push("--continue");
     }
     return base;
@@ -586,7 +599,12 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   private buildEnv(): Record<string, string> {
     // runner.env is the complete env except PATH, which inherits by default.
-    const env: Record<string, string> = { ...this.config.env };
+    // runner.secrets merges on top — same shape, registered with the log
+    // redactor at load time. Schema rejects key collisions between the two.
+    const env: Record<string, string> = {
+      ...this.config.env,
+      ...(this.config.secrets ?? {}),
+    };
     if (!("PATH" in env)) {
       env.PATH = process.env.PATH ?? "";
     } else if (env.PATH === "") {
@@ -595,7 +613,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     return env;
   }
 
-  private async readStdout(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async readStdout(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const parser = createClaudeNdjsonParser({
@@ -607,7 +627,7 @@ export class ClaudeCodeRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        this.logStream?.write(chunk);
+        this.logStream?.write(redactString(chunk));
         parser.feed(chunk, (ev) => this.dispatchEvent(ev));
       }
       parser.flush((ev) => this.dispatchEvent(ev));
@@ -618,7 +638,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
   }
 
-  private async readStderr(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async readStderr(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
 
@@ -627,7 +649,7 @@ export class ClaudeCodeRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        this.logStream?.write(`[stderr] ${text}`);
+        this.logStream?.write(`[stderr] ${redactString(text)}`);
         for (const line of text.split("\n")) {
           if (line.trim()) {
             this.stderrBuffer.push(line.trim());
@@ -640,7 +662,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
   }
 
-  private async watchExit(proc: Subprocess<"pipe", "pipe", "pipe">): Promise<void> {
+  private async watchExit(
+    proc: Subprocess<"pipe", "pipe", "pipe">,
+  ): Promise<void> {
     const exitCode = await proc.exited;
     if (this.proc !== proc) return; // stale
 
@@ -650,7 +674,10 @@ export class ClaudeCodeRunner implements AgentRunner {
 
     if (this.stopping) return;
 
-    this.log.warn("subprocess exited", { code: exitCode, hadTurn: this.activeTurn !== null });
+    this.log.warn("subprocess exited", {
+      code: exitCode,
+      hadTurn: this.activeTurn !== null,
+    });
 
     // Fresh-session respawn always wins over fatal — it's a requested restart.
     if (this.pendingFreshSession) {
@@ -664,7 +691,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     // layer into persisted state that a redactor can't know about (upstream
     // API keys in a stack trace, etc.). The full stderr is already captured
     // to the per-bot log file for operator debugging.
-    const fatalCode: "auth" | "exit" = this.looksLikeAuthFailure() ? "auth" : "exit";
+    const fatalCode: "auth" | "exit" = this.looksLikeAuthFailure()
+      ? "auth"
+      : "exit";
     this.emitter.emit({
       kind: "fatal",
       code: fatalCode,

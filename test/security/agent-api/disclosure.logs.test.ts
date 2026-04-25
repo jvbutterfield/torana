@@ -114,7 +114,9 @@ describe("§12.5.6 disclosure.logs", () => {
     // regardless of whether the token is in setSecrets().
     const { logger } = await import("../../../src/log.js");
     const log = logger("sec-test");
-    log.info(`calling https://api.telegram.org/bot${BOT_TELEGRAM_TOKEN}/sendMessage`);
+    log.info(
+      `calling https://api.telegram.org/bot${BOT_TELEGRAM_TOKEN}/sendMessage`,
+    );
 
     const joined = cap.lines.join("\n");
     expect(joined).not.toContain(BOT_TELEGRAM_TOKEN);

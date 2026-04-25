@@ -20,12 +20,24 @@ async function getFreePort(): Promise<number> {
 describe("server/router", () => {
   test("exact routes win over path-param routes", async () => {
     server = createServer({ port: await getFreePort() });
-    server.router.route("GET", "/webhook/:botId", async () => new Response("param"));
-    server.router.route("GET", "/webhook/special", async () => new Response("exact"));
+    server.router.route(
+      "GET",
+      "/webhook/:botId",
+      async () => new Response("param"),
+    );
+    server.router.route(
+      "GET",
+      "/webhook/special",
+      async () => new Response("exact"),
+    );
 
-    const resp1 = await fetch(`http://127.0.0.1:${server.port}/webhook/special`);
+    const resp1 = await fetch(
+      `http://127.0.0.1:${server.port}/webhook/special`,
+    );
     expect(await resp1.text()).toBe("exact");
-    const resp2 = await fetch(`http://127.0.0.1:${server.port}/webhook/anything`);
+    const resp2 = await fetch(
+      `http://127.0.0.1:${server.port}/webhook/anything`,
+    );
     expect(await resp2.text()).toBe("param");
   });
 
@@ -34,7 +46,9 @@ describe("server/router", () => {
     server.router.route("POST", "/webhook/:botId", async (_req, params) => {
       return new Response(params.botId ?? "");
     });
-    const resp = await fetch(`http://127.0.0.1:${server.port}/webhook/alpha`, { method: "POST" });
+    const resp = await fetch(`http://127.0.0.1:${server.port}/webhook/alpha`, {
+      method: "POST",
+    });
     expect(await resp.text()).toBe("alpha");
   });
 
@@ -56,6 +70,8 @@ describe("server/router", () => {
   test("double registration of exact route throws", async () => {
     server = createServer({ port: await getFreePort() });
     server.router.route("GET", "/x", async () => new Response("1"));
-    expect(() => server!.router.route("GET", "/x", async () => new Response("2"))).toThrow();
+    expect(() =>
+      server!.router.route("GET", "/x", async () => new Response("2")),
+    ).toThrow();
   });
 });

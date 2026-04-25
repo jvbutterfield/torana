@@ -7,7 +7,18 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, existsSync, readdirSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  statSync,
+  existsSync,
+  readdirSync,
+  symlinkSync,
+  lstatSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,6 +73,7 @@ beforeEach(() => {
   config = makeTestConfig([makeTestBotConfig("alpha")], {
     gateway: {
       port: 3000,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -81,23 +93,50 @@ afterEach(() => {
 
 describe("downloadAttachments", () => {
   test("photo: saves highest-res with jpg extension derived from mime (not file_path)", async () => {
-    const bytes = new Uint8Array([0xFF, 0xD8, 0xFF]); // JPEG magic
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]); // JPEG magic
     // Deliberately evil file_path on Telegram's side — attachments.ts should ignore it.
     const client = makeFakeClient([
-      { fileId: "fid-lo", filePath: "photos/evil.sh", bytes: new Uint8Array(10) },
-      { fileId: "fid-hi", filePath: "photos/../../etc/passwd", bytes, fileSize: bytes.length },
+      {
+        fileId: "fid-lo",
+        filePath: "photos/evil.sh",
+        bytes: new Uint8Array(10),
+      },
+      {
+        fileId: "fid-hi",
+        filePath: "photos/../../etc/passwd",
+        bytes,
+        fileSize: bytes.length,
+      },
     ]);
     const message: TelegramMessage = {
       message_id: 1,
       date: 1,
       chat: { id: 111, type: "private" },
       photo: [
-        { file_id: "fid-lo", file_unique_id: "u1", width: 10, height: 10, file_size: 10 },
-        { file_id: "fid-hi", file_unique_id: "u2", width: 100, height: 100, file_size: bytes.length },
+        {
+          file_id: "fid-lo",
+          file_unique_id: "u1",
+          width: 10,
+          height: 10,
+          file_size: 10,
+        },
+        {
+          file_id: "fid-hi",
+          file_unique_id: "u2",
+          width: 100,
+          height: 100,
+          file_size: bytes.length,
+        },
       ],
     };
 
-    const result = await downloadAttachments(config, "alpha", 42, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      42,
+      message,
+      client,
+    );
     expect(result.errors).toHaveLength(0);
     expect(result.attachments).toHaveLength(1);
 
@@ -114,9 +153,15 @@ describe("downloadAttachments", () => {
   });
 
   test("document: extension is derived from mime type, allowlist only", async () => {
-    const bytes = new Uint8Array([1, 2, 3]);
+    // Valid PDF magic bytes — matches mime_type: application/pdf below.
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
     const client = makeFakeClient([
-      { fileId: "doc1", filePath: "docs/whatever.xyz", bytes, fileSize: bytes.length },
+      {
+        fileId: "doc1",
+        filePath: "docs/whatever.xyz",
+        bytes,
+        fileSize: bytes.length,
+      },
     ]);
     const message: TelegramMessage = {
       message_id: 1,
@@ -130,7 +175,13 @@ describe("downloadAttachments", () => {
         file_size: bytes.length,
       },
     };
-    const result = await downloadAttachments(config, "alpha", 99, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      99,
+      message,
+      client,
+    );
     expect(result.errors).toHaveLength(0);
     expect(result.attachments).toHaveLength(1);
     const a = result.attachments[0];
@@ -154,23 +205,46 @@ describe("downloadAttachments", () => {
         file_size: bytes.length,
       },
     };
-    const result = await downloadAttachments(config, "alpha", 7, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      7,
+      message,
+      client,
+    );
     expect(result.attachments[0].path).toMatch(/7-0\.bin$/);
   });
 
   test("photo: file_size > max_bytes is rejected pre-download", async () => {
     const client = makeFakeClient([
-      { fileId: "fid", filePath: "p", bytes: new Uint8Array(5000), fileSize: 5000 },
+      {
+        fileId: "fid",
+        filePath: "p",
+        bytes: new Uint8Array(5000),
+        fileSize: 5000,
+      },
     ]);
     const message: TelegramMessage = {
       message_id: 1,
       date: 1,
       chat: { id: 111, type: "private" },
       photo: [
-        { file_id: "fid", file_unique_id: "u", width: 100, height: 100, file_size: 5000 },
+        {
+          file_id: "fid",
+          file_unique_id: "u",
+          width: 100,
+          height: 100,
+          file_size: 5000,
+        },
       ],
     };
-    const result = await downloadAttachments(config, "alpha", 1, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      1,
+      message,
+      client,
+    );
     expect(result.attachments).toHaveLength(0);
     expect(result.errors.some((e) => e.includes("too large"))).toBe(true);
   });
@@ -186,10 +260,22 @@ describe("downloadAttachments", () => {
       date: 1,
       chat: { id: 111, type: "private" },
       photo: [
-        { file_id: "fid", file_unique_id: "u", width: 100, height: 100, file_size: 10 },
+        {
+          file_id: "fid",
+          file_unique_id: "u",
+          width: 100,
+          height: 100,
+          file_size: 10,
+        },
       ],
     };
-    const result = await downloadAttachments(config, "alpha", 1, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      1,
+      message,
+      client,
+    );
     expect(result.attachments).toHaveLength(0);
     expect(result.errors.some((e) => e.includes("exceeded"))).toBe(true);
   });
@@ -208,9 +294,17 @@ describe("downloadAttachments", () => {
         file_size: 10,
       },
     };
-    const result = await downloadAttachments(config, "alpha", 1, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      1,
+      message,
+      client,
+    );
     expect(result.attachments).toHaveLength(0);
-    expect(result.errors.some((e) => e.includes("getFile") || e.includes("resolve"))).toBe(true);
+    expect(
+      result.errors.some((e) => e.includes("getFile") || e.includes("resolve")),
+    ).toBe(true);
   });
 
   test("downloadFile returns null → error recorded", async () => {
@@ -234,7 +328,13 @@ describe("downloadAttachments", () => {
         file_size: 10,
       },
     };
-    const result = await downloadAttachments(config, "alpha", 1, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      1,
+      message,
+      client,
+    );
     expect(result.attachments).toHaveLength(0);
     expect(result.errors.some((e) => e.includes("download"))).toBe(true);
   });
@@ -247,10 +347,113 @@ describe("downloadAttachments", () => {
       chat: { id: 111, type: "private" },
       text: "just text",
     };
-    const result = await downloadAttachments(config, "alpha", 1, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      1,
+      message,
+      client,
+    );
     expect(result.attachments).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
   });
+
+  // O_EXCL: pre-existing file at the destination path must NOT be
+  // overwritten. We retry with a UUID-suffixed filename instead.
+  test("EEXIST collision: regenerates filename with UUID and retries", async () => {
+    const dir = join(tmpDir, "attachments", "alpha");
+    mkdirSync(dir, { recursive: true });
+    const collidePath = join(dir, "55-0.jpg");
+    writeFileSync(collidePath, "preexisting");
+
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]); // JPEG magic
+    const client = makeFakeClient([
+      { fileId: "fid", filePath: "p", bytes, fileSize: bytes.length },
+    ]);
+    const message: TelegramMessage = {
+      message_id: 1,
+      date: 1,
+      chat: { id: 111, type: "private" },
+      photo: [
+        {
+          file_id: "fid",
+          file_unique_id: "u",
+          width: 100,
+          height: 100,
+          file_size: bytes.length,
+        },
+      ],
+    };
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      55,
+      message,
+      client,
+    );
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.attachments).toHaveLength(1);
+    // Pre-existing file is untouched (no overwrite).
+    expect(readFileSync(collidePath, "utf8")).toBe("preexisting");
+    // Written path differs from the colliding one and carries a UUID suffix.
+    const written = result.attachments[0].path;
+    expect(written).not.toBe(collidePath);
+    expect(written).toMatch(
+      /55-0-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/,
+    );
+    // Bytes were actually written.
+    expect(readFileSync(written)).toEqual(Buffer.from(bytes));
+  });
+
+  // O_NOFOLLOW: a symlink staged at the destination path must be rejected
+  // outright — we do not follow it (which would let an attacker who can
+  // write into the attachments dir redirect our writes outside it).
+  test.if(process.platform !== "win32")(
+    "symlink at target: refuses to follow (O_NOFOLLOW)",
+    async () => {
+      const dir = join(tmpDir, "attachments", "alpha");
+      mkdirSync(dir, { recursive: true });
+      const decoy = join(tmpDir, "outside-decoy.txt");
+      writeFileSync(decoy, "should-not-be-overwritten");
+      const symlinkPath = join(dir, "77-0.jpg");
+      symlinkSync(decoy, symlinkPath);
+
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+      const client = makeFakeClient([
+        { fileId: "fid", filePath: "p", bytes, fileSize: bytes.length },
+      ]);
+      const message: TelegramMessage = {
+        message_id: 1,
+        date: 1,
+        chat: { id: 111, type: "private" },
+        photo: [
+          {
+            file_id: "fid",
+            file_unique_id: "u",
+            width: 100,
+            height: 100,
+            file_size: bytes.length,
+          },
+        ],
+      };
+      const result = await downloadAttachments(
+        config,
+        "alpha",
+        77,
+        message,
+        client,
+      );
+
+      // No attachment recorded; a symlink-specific error is reported.
+      expect(result.attachments).toHaveLength(0);
+      expect(result.errors.some((e) => e.includes("symlink"))).toBe(true);
+      // Decoy target is untouched — the write didn't follow the symlink.
+      expect(readFileSync(decoy, "utf8")).toBe("should-not-be-overwritten");
+      // The symlink itself is left in place for ops to inspect.
+      expect(lstatSync(symlinkPath).isSymbolicLink()).toBe(true);
+    },
+  );
 });
 
 describe("computeAttachmentsDiskUsage", () => {
@@ -349,7 +552,7 @@ describe("sweepExpiredAttachments", () => {
     );
     const turnId = db.createTurn("alpha", 1, inboundId!, attachmentPaths);
     // Mark completed with a backdated timestamp.
-    db.query(
+    db._unsafeQuery(
       `UPDATE turns SET status='completed',
                        completed_at=datetime('now', '-' || ? || ' seconds')
        WHERE id = ?`,
@@ -381,13 +584,13 @@ describe("sweepExpiredAttachments", () => {
     expect(existsSync(attKeep)).toBe(true);
 
     // attachment_paths_json is cleared only for the old turn.
-    const oldRow = db.query("SELECT attachment_paths_json FROM turns WHERE id=?").get(oldTurn) as
-      | { attachment_paths_json: string | null }
-      | null;
+    const oldRow = db
+      ._unsafeQuery("SELECT attachment_paths_json FROM turns WHERE id=?")
+      .get(oldTurn) as { attachment_paths_json: string | null } | null;
     expect(oldRow?.attachment_paths_json).toBeNull();
-    const recentRow = db.query("SELECT attachment_paths_json FROM turns WHERE id=?").get(recentTurn) as
-      | { attachment_paths_json: string | null }
-      | null;
+    const recentRow = db
+      ._unsafeQuery("SELECT attachment_paths_json FROM turns WHERE id=?")
+      .get(recentTurn) as { attachment_paths_json: string | null } | null;
     expect(recentRow?.attachment_paths_json).not.toBeNull();
   });
 
@@ -413,7 +616,7 @@ describe("sweepExpiredAttachments", () => {
 
     const inboundId = db.insertUpdate("alpha", 1, 1, 1, "42", "{}", "enqueued");
     const turnId = db.createTurn("alpha", 1, inboundId!, [p]);
-    db.query("UPDATE turns SET status='running' WHERE id=?").run(turnId);
+    db._unsafeQuery("UPDATE turns SET status='running' WHERE id=?").run(turnId);
     // No completed_at — must not be swept.
 
     const result = await sweepExpiredAttachments(db, tmpDir, 100);
@@ -424,7 +627,7 @@ describe("sweepExpiredAttachments", () => {
   test("tolerates malformed attachment_paths_json without throwing (and still clears it)", async () => {
     const inboundId = db.insertUpdate("alpha", 1, 1, 1, "42", "{}", "enqueued");
     const turnId = db.createTurn("alpha", 1, inboundId!, []);
-    db.query(
+    db._unsafeQuery(
       `UPDATE turns SET status='completed',
                        completed_at=datetime('now', '-200 seconds'),
                        attachment_paths_json='{not json'
@@ -434,9 +637,9 @@ describe("sweepExpiredAttachments", () => {
     const result = await sweepExpiredAttachments(db, tmpDir, 100);
     expect(result.turns).toBe(1);
     expect(result.files).toBe(0);
-    const row = db.query("SELECT attachment_paths_json FROM turns WHERE id=?").get(turnId) as
-      | { attachment_paths_json: string | null }
-      | null;
+    const row = db
+      ._unsafeQuery("SELECT attachment_paths_json FROM turns WHERE id=?")
+      .get(turnId) as { attachment_paths_json: string | null } | null;
     expect(row?.attachment_paths_json).toBeNull();
   });
 
@@ -455,7 +658,7 @@ describe("sweepExpiredAttachments", () => {
           "enqueued",
         );
         const turnId = db.createTurn("alpha", 1, inboundId!, ["dummy"]);
-        db.query(
+        db._unsafeQuery(
           `UPDATE turns SET status='completed',
                            completed_at=datetime('now', '-500 seconds')
            WHERE id=?`,
@@ -487,24 +690,56 @@ describe("downloadAttachments - max_per_turn enforcement", () => {
     // (Photos and documents are mutually exclusive in the current codepath, but
     //  we can test by configuring max_per_turn=1.)
     config.attachments.max_per_turn = 1;
-    const bytes = new Uint8Array(3);
+    // JPEG magic bytes (minimum 3 bytes: FF D8 FF). The photo path now
+    // requires the downloaded bytes to match image/jpeg magic — supplying
+    // valid JPEG here exercises the max_per_turn path rather than being
+    // rejected up-front on MIME mismatch.
+    const photoBytes = new Uint8Array([0xff, 0xd8, 0xff]);
+    // PNG magic for the document — needs to match declared image/png.
+    const docBytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
     const client = makeFakeClient([
-      { fileId: "p1", filePath: "x1", bytes, fileSize: bytes.length },
-      { fileId: "d1", filePath: "x2", bytes, fileSize: bytes.length },
+      {
+        fileId: "p1",
+        filePath: "x1",
+        bytes: photoBytes,
+        fileSize: photoBytes.length,
+      },
+      {
+        fileId: "d1",
+        filePath: "x2",
+        bytes: docBytes,
+        fileSize: docBytes.length,
+      },
     ]);
     const message: TelegramMessage = {
       message_id: 1,
       date: 1,
       chat: { id: 111, type: "private" },
-      photo: [{ file_id: "p1", file_unique_id: "u", width: 1, height: 1, file_size: bytes.length }],
+      photo: [
+        {
+          file_id: "p1",
+          file_unique_id: "u",
+          width: 1,
+          height: 1,
+          file_size: photoBytes.length,
+        },
+      ],
       document: {
         file_id: "d1",
         file_unique_id: "u",
         mime_type: "image/png",
-        file_size: bytes.length,
+        file_size: docBytes.length,
       },
     };
-    const result = await downloadAttachments(config, "alpha", 1, message, client);
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      1,
+      message,
+      client,
+    );
     expect(result.attachments).toHaveLength(1); // photo accepted
     expect(result.errors.some((e) => e.includes("too many"))).toBe(true);
   });

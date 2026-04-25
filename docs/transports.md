@@ -4,13 +4,13 @@ torana ships two transports out of the box. Either can be chosen globally via `t
 
 ## When to use what
 
-| | Webhook | Polling |
-|---|---|---|
-| Needs public HTTPS | **Yes** | No |
-| Latency | Lowest | ~25s long-poll |
-| Ideal for | Production behind a TLS-terminating proxy | Dev, MacBook, firewalled environments |
-| NAT/firewall friendly | No | Yes |
-| Scales with bot count | Linear on webhook calls | Linear on poll loops |
+|                       | Webhook                                   | Polling                               |
+| --------------------- | ----------------------------------------- | ------------------------------------- |
+| Needs public HTTPS    | **Yes**                                   | No                                    |
+| Latency               | Lowest                                    | ~25s long-poll                        |
+| Ideal for             | Production behind a TLS-terminating proxy | Dev, MacBook, firewalled environments |
+| NAT/firewall friendly | No                                        | Yes                                   |
+| Scales with bot count | Linear on webhook calls                   | Linear on poll loops                  |
 
 ## Webhook setup
 
@@ -19,13 +19,14 @@ Your `transport.webhook.base_url` must be reachable from Telegram's servers (pub
 ```yaml
 transport:
   default_mode: webhook
-  allowed_updates: [message]             # applies to both webhook and polling
+  allowed_updates: [message] # applies to both webhook and polling
   webhook:
     base_url: https://bots.example.com
-    secret: ${TELEGRAM_WEBHOOK_SECRET}   # random long string
+    secret: ${TELEGRAM_WEBHOOK_SECRET} # random long string
 ```
 
 **Secret rotation (zero-downtime):**
+
 1. Update `TELEGRAM_WEBHOOK_SECRET` in your secret store.
 2. Restart the gateway — it re-registers webhooks with the new secret.
 3. The old secret stops working as soon as Telegram's delivery pipeline catches up.
@@ -40,7 +41,7 @@ No public URL needed — outbound only. torana calls `deleteWebhook` at startup,
 transport:
   default_mode: polling
   polling:
-    timeout_secs: 25        # long-poll window
+    timeout_secs: 25 # long-poll window
     backoff_base_ms: 1000
     backoff_cap_ms: 30000
     max_updates_per_batch: 100
@@ -48,9 +49,10 @@ transport:
 
 ## Dev vs prod bot tokens
 
-**Telegram delivers each update to exactly one consumer.** Running a dev gateway on your laptop *and* a prod gateway on a server with the **same token** will race — whichever polls/webhooks first gets the update; the other sees nothing.
+**Telegram delivers each update to exactly one consumer.** Running a dev gateway on your laptop _and_ a prod gateway on a server with the **same token** will race — whichever polls/webhooks first gets the update; the other sees nothing.
 
 Solution: create a separate bot via `@BotFather` for dev:
+
 1. `/newbot` in a chat with `@BotFather`.
 2. Give it a dev name (e.g. `cato-dev-bot`).
 3. Copy the token into your local `.env`.

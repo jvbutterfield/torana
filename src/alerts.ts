@@ -2,7 +2,7 @@
 // subject bot (§3.9). If the `alerts` block is absent, alerts are logged at
 // warn level only.
 
-import { logger } from "./log.js";
+import { logger, redactString } from "./log.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { TelegramClient } from "./telegram/client.js";
 
@@ -23,14 +23,13 @@ export class AlertManager {
   private chatId: number | null;
   private deliveryClient: TelegramClient | null;
 
-  constructor(
-    config: Config,
-    clients: Map<BotId, TelegramClient>,
-  ) {
+  constructor(config: Config, clients: Map<BotId, TelegramClient>) {
     const alerts = config.alerts;
     this.cooldownMs = alerts?.cooldown_ms ?? 600_000;
     this.chatId = alerts?.chat_id ?? null;
-    this.deliveryClient = alerts?.via_bot ? clients.get(alerts.via_bot) ?? null : null;
+    this.deliveryClient = alerts?.via_bot
+      ? (clients.get(alerts.via_bot) ?? null)
+      : null;
   }
 
   private shouldAlert(key: string): boolean {
@@ -41,19 +40,49 @@ export class AlertManager {
     return true;
   }
 
-  private async emit(kind: AlertKind, botId: BotId | null, text: string): Promise<void> {
+  private async emit(
+    kind: AlertKind,
+    botId: BotId | null,
+    text: string,
+  ): Promise<void> {
     const key = `${kind}:${botId ?? "_"}`;
     if (!this.shouldAlert(key)) return;
 
+    // Redact secrets out of caller-supplied alert text. Most alert callers
+    // interpolate runner reasons or Telegram error descriptions (e.g.
+    // setWebhook failures echo URL fragments containing the bot token).
+    // Mirrors the rc.7 fix `c8dd3a9` for runner stdout/stderr — alerts
+    // were the gap that fix didn't cover.
+    const redacted = redactString(text);
+
     if (!this.deliveryClient || !this.chatId) {
-      log.warn(`alert: ${text}`, { alert_kind: kind, bot_id: botId });
+      log.warn(`alert: ${redacted}`, { alert_kind: kind, bot_id: botId });
       return;
     }
     try {
-      await this.deliveryClient.sendMessage(this.chatId, text);
-      log.info("alert sent", { alert_kind: kind, bot_id: botId });
+      const result = await this.deliveryClient.sendMessage(
+        this.chatId,
+        redacted,
+      );
+      // sendMessage swallows Telegram errors and returns {ok:false,...}.
+      // The catch block below would never fire on Telegram-side failures;
+      // check the result explicitly so a failed alert isn't silently
+      // logged as "alert sent".
+      if (result.ok) {
+        log.info("alert sent", { alert_kind: kind, bot_id: botId });
+      } else {
+        log.warn("alert send failed", {
+          alert_kind: kind,
+          bot_id: botId,
+          retriable: result.retriable,
+          description: result.description,
+        });
+      }
     } catch (err) {
-      log.error("alert send failed", {
+      // Reachable only if sendMessage itself throws — current impl
+      // catches internally, but keep this defensively in case that
+      // contract changes.
+      log.error("alert send threw", {
         alert_kind: kind,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -61,7 +90,11 @@ export class AlertManager {
   }
 
   async workerDegraded(botId: BotId, reason: string): Promise<void> {
-    await this.emit("workerDegraded", botId, `⚠️ bot ${botId} degraded: ${reason}`);
+    await this.emit(
+      "workerDegraded",
+      botId,
+      `⚠️ bot ${botId} degraded: ${reason}`,
+    );
   }
 
   async workerCrashLoop(botId: BotId, failures: number): Promise<void> {
@@ -73,7 +106,11 @@ export class AlertManager {
   }
 
   async tokenInvalid(botId: BotId): Promise<void> {
-    await this.emit("tokenInvalid", botId, `🚨 bot ${botId} token invalid (401). Disabled.`);
+    await this.emit(
+      "tokenInvalid",
+      botId,
+      `🚨 bot ${botId} token invalid (401). Disabled.`,
+    );
   }
 
   async mailboxBacklog(botId: BotId, depth: number): Promise<void> {

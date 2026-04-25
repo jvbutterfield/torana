@@ -49,6 +49,7 @@ function makeConfig(options: {
     version: 1,
     gateway: {
       port: options.port,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -86,8 +87,16 @@ function makeConfig(options: {
       message_length_safe_margin: 3800,
     },
     outbox: { max_attempts: 5, retry_base_ms: 2000 },
-    shutdown: { outbox_drain_secs: 10, runner_grace_secs: 5, hard_timeout_secs: 25 },
-    dashboard: { enabled: false, mount_path: "/dashboard" },
+    shutdown: {
+      outbox_drain_secs: 10,
+      runner_grace_secs: 5,
+      hard_timeout_secs: 25,
+    },
+    dashboard: {
+      enabled: false,
+      mount_path: "/dashboard",
+      allow_non_loopback_proxy_target: false,
+    },
     metrics: { enabled: false },
     attachments: {
       max_bytes: 20 * 1024 * 1024,
@@ -103,14 +112,19 @@ function makeConfig(options: {
         hard_ttl_ms: 86_400_000,
         max_per_bot: 8,
         max_global: 64,
+        max_per_token_default: 8,
       },
-      send: { idempotency_retention_ms: 86_400_000 },
+      send: {
+        max_body_bytes: 100 * 1024 * 1024,
+        idempotency_retention_ms: 86_400_000,
+      },
       ask: {
         default_timeout_ms: 60_000,
         max_timeout_ms: 300_000,
         max_body_bytes: 100 * 1024 * 1024,
         max_files_per_request: 10,
       },
+      expose_runner_type: false,
     },
     bots: options.bots.map((b) => ({
       id: b.id,
@@ -130,7 +144,11 @@ function makeConfig(options: {
 }
 
 /** True iff any sendMessage or editMessageText call for `botId` has text containing `needle`. */
-function telegramHasEchoOf(fake: FakeTelegram, botId: string, needle: string): boolean {
+function telegramHasEchoOf(
+  fake: FakeTelegram,
+  botId: string,
+  needle: string,
+): boolean {
   for (const method of ["sendMessage", "editMessageText"] as const) {
     for (const call of fake.callsFor(botId, method)) {
       const text = call.body.text;
@@ -167,7 +185,11 @@ describe("integration: round-trip", () => {
       bots: [{ id: "alpha", token }],
     });
 
-    gateway = await startGateway({ config, secrets: [token], autoMigrate: true });
+    gateway = await startGateway({
+      config,
+      secrets: [token],
+      autoMigrate: true,
+    });
 
     // Queue an inbound update; the polling loop should pick it up.
     fake.queuePollingUpdate("alpha", makeTextUpdate(1, "hello"));
@@ -176,10 +198,9 @@ describe("integration: round-trip", () => {
     // manager queues a placeholder send first; depending on timing the final
     // response arrives as either an edit of that placeholder or as a fresh
     // sendMessage. Accept either.
-    await fake.waitFor(
-      () => telegramHasEchoOf(fake!, "alpha", "echo: hello"),
-      { timeoutMs: 12_000 },
-    );
+    await fake.waitFor(() => telegramHasEchoOf(fake!, "alpha", "echo: hello"), {
+      timeoutMs: 12_000,
+    });
 
     // Reaction was applied too.
     expect(fake.callsFor("alpha", "setMessageReaction")).toHaveLength(1);
@@ -211,17 +232,23 @@ describe("integration: round-trip", () => {
       bots: [{ id: "beta", token }],
     });
 
-    gateway = await startGateway({ config, secrets: [token, webhookSecret], autoMigrate: true });
+    gateway = await startGateway({
+      config,
+      secrets: [token, webhookSecret],
+      autoMigrate: true,
+    });
 
     // The gateway registered its webhook at startup; the fake recorded it.
     // Simulate Telegram POSTing an update to the gateway.
-    const resp = await fake.deliverWebhookUpdate("beta", makeTextUpdate(1, "ping"));
+    const resp = await fake.deliverWebhookUpdate(
+      "beta",
+      makeTextUpdate(1, "ping"),
+    );
     expect(resp.status).toBe(200);
 
-    await fake.waitFor(
-      () => telegramHasEchoOf(fake!, "beta", "echo: ping"),
-      { timeoutMs: 12_000 },
-    );
+    await fake.waitFor(() => telegramHasEchoOf(fake!, "beta", "echo: ping"), {
+      timeoutMs: 12_000,
+    });
 
     expect(fake.callsFor("beta", "setWebhook")).toHaveLength(1);
     expect(fake.callsFor("beta", "setMessageReaction")).toHaveLength(1);
@@ -241,7 +268,11 @@ describe("integration: round-trip", () => {
       webhookSecret: "right-secret",
       bots: [{ id: "gamma", token }],
     });
-    gateway = await startGateway({ config, secrets: [token, "right-secret"], autoMigrate: true });
+    gateway = await startGateway({
+      config,
+      secrets: [token, "right-secret"],
+      autoMigrate: true,
+    });
 
     // Wait for setWebhook to complete so we know the route is registered.
     await fake.waitFor(() => fake!.callsFor("gamma", "setWebhook").length > 0, {
@@ -258,14 +289,17 @@ describe("integration: round-trip", () => {
       body: JSON.stringify(makeTextUpdate(1, "ping")),
     });
     // Unknown bot, wrong secret.
-    const unknownBot = await fetch(`http://127.0.0.1:${port}/webhook/does-not-exist`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Telegram-Bot-Api-Secret-Token": "wrong-secret",
+    const unknownBot = await fetch(
+      `http://127.0.0.1:${port}/webhook/does-not-exist`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Telegram-Bot-Api-Secret-Token": "wrong-secret",
+        },
+        body: JSON.stringify(makeTextUpdate(1, "ping")),
       },
-      body: JSON.stringify(makeTextUpdate(1, "ping")),
-    });
+    );
 
     // Both return 200 with the same body, so an unauthenticated requester
     // can't tell bot existence from response shape alone.
@@ -291,7 +325,11 @@ describe("integration: round-trip", () => {
       mode: "polling",
       bots: [{ id: "delta", token }],
     });
-    gateway = await startGateway({ config, secrets: [token], autoMigrate: true });
+    gateway = await startGateway({
+      config,
+      secrets: [token],
+      autoMigrate: true,
+    });
 
     // Allowlist is [ALLOWED_USER]; this one isn't.
     const update: TelegramUpdate = {

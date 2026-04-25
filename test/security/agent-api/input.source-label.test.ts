@@ -47,24 +47,27 @@ describe("§12.5.3 input.source-label", () => {
 
   const good = ["ok", "cos-brief-v1", "src_name_1", "a", "a".repeat(64)];
 
-  test.each(good)("source %p → not 400 on source validation", async (source) => {
-    h = startHarness({ tokens: [token] });
-    const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${secret}`,
-        "Idempotency-Key": "key-abcdefghijklmno",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ text: "hi", source, user_id: "123" }),
-    });
-    // Source label passes validation. Other send prerequisites (like
-    // user_not_opened_bot) may still fail — assert only that we don't
-    // get invalid_body. 409 (user_not_opened_bot) is the expected next
-    // gate.
-    if (r.status === 400) {
-      const body = await r.json();
-      expect(body.error).not.toBe("invalid_body");
-    }
-  });
+  test.each(good)(
+    "source %p → not 400 on source validation",
+    async (source) => {
+      h = startHarness({ tokens: [token] });
+      const r = await fetch(`${h.base}/v1/bots/bot1/send`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          "Idempotency-Key": "key-abcdefghijklmno",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ text: "hi", source, user_id: "123" }),
+      });
+      // Source label passes validation. Other send prerequisites (like
+      // user_not_opened_bot) may still fail — assert only that we don't
+      // get invalid_body. 409 (user_not_opened_bot) is the expected next
+      // gate.
+      if (r.status === 400) {
+        const body = await r.json();
+        expect(body.error).not.toBe("invalid_body");
+      }
+    },
+  );
 });

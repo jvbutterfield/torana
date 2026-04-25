@@ -26,7 +26,7 @@ import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import type { BotId, CodexRunnerConfig } from "../config/schema.js";
-import { logger, type Logger } from "../log.js";
+import { logger, redactString, type Logger } from "../log.js";
 import type { Attachment } from "../telegram/types.js";
 import {
   InvalidSideSessionId,
@@ -209,7 +209,10 @@ export class CodexRunner implements AgentRunner {
     queueMicrotask(() => {
       // The entry could have been stopped before the microtask fires; only
       // emit ready if it's still in "ready" state.
-      if (this.sideSessions.get(sessionId) === entry && entry.status === "ready") {
+      if (
+        this.sideSessions.get(sessionId) === entry &&
+        entry.status === "ready"
+      ) {
         entry.emitter.emit({ kind: "ready" });
       }
     });
@@ -428,7 +431,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        entry.logStream?.write(chunk);
+        entry.logStream?.write(redactString(chunk));
         parser.feed(chunk, (ev) => this.dispatchSide(entry, ev));
       }
       parser.flush((ev) => this.dispatchSide(entry, ev));
@@ -453,7 +456,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        entry.logStream?.write(`[stderr] ${text}`);
+        entry.logStream?.write(`[stderr] ${redactString(text)}`);
         for (const line of text.split("\n")) {
           if (line.trim()) {
             entry.stderrBuffer.push(line.trim());
@@ -737,7 +740,8 @@ export class CodexRunner implements AgentRunner {
     // sandbox policy is inherited from the original session), `--profile`,
     // `--output-schema`, `--cd`, etc. Verified against codex-cli 0.121.0.
     args.push("exec");
-    const resuming = this.config.pass_resume_flag && this.currentThreadId !== null;
+    const resuming =
+      this.config.pass_resume_flag && this.currentThreadId !== null;
     if (resuming) {
       args.push("resume", this.currentThreadId!);
     }
@@ -788,7 +792,12 @@ export class CodexRunner implements AgentRunner {
 
   private buildEnv(): Record<string, string> {
     // runner.env is the complete env except PATH, which inherits by default.
-    const env: Record<string, string> = { ...this.config.env };
+    // runner.secrets merges on top — same shape, registered with the log
+    // redactor at load time. Schema rejects key collisions between the two.
+    const env: Record<string, string> = {
+      ...this.config.env,
+      ...(this.config.secrets ?? {}),
+    };
     if (!("PATH" in env)) {
       env.PATH = process.env.PATH ?? "";
     } else if (env.PATH === "") {
@@ -815,7 +824,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
-        this.logStream?.write(chunk);
+        this.logStream?.write(redactString(chunk));
         parser.feed(chunk, onEvent);
       }
       parser.flush(onEvent);
@@ -836,7 +845,7 @@ export class CodexRunner implements AgentRunner {
         const { done, value } = await reader.read();
         if (done) break;
         const text = decoder.decode(value, { stream: true });
-        this.logStream?.write(`[stderr] ${text}`);
+        this.logStream?.write(`[stderr] ${redactString(text)}`);
         for (const line of text.split("\n")) {
           if (line.trim()) {
             this.stderrBuffer.push(line.trim());

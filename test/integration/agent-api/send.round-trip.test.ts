@@ -45,7 +45,10 @@ function hash(s: string): Uint8Array {
   return new Uint8Array(createHash("sha256").update(s, "utf8").digest());
 }
 
-function tokenFor(secret: string, scopes: ("ask" | "send")[]): ResolvedAgentApiToken {
+function tokenFor(
+  secret: string,
+  scopes: ("ask" | "send")[],
+): ResolvedAgentApiToken {
   return {
     name: "caller",
     secret,
@@ -65,6 +68,7 @@ function makeConfig(opts: {
     version: 1,
     gateway: {
       port: opts.port,
+      bind_host: "127.0.0.1",
       data_dir: tmpDir,
       db_path: join(tmpDir, "gateway.db"),
       log_level: "warn",
@@ -95,8 +99,16 @@ function makeConfig(opts: {
       message_length_safe_margin: 3800,
     },
     outbox: { max_attempts: 5, retry_base_ms: 2000 },
-    shutdown: { outbox_drain_secs: 10, runner_grace_secs: 5, hard_timeout_secs: 25 },
-    dashboard: { enabled: false, mount_path: "/dashboard" },
+    shutdown: {
+      outbox_drain_secs: 10,
+      runner_grace_secs: 5,
+      hard_timeout_secs: 25,
+    },
+    dashboard: {
+      enabled: false,
+      mount_path: "/dashboard",
+      allow_non_loopback_proxy_target: false,
+    },
     metrics: { enabled: false },
     attachments: {
       max_bytes: 20 * 1024 * 1024,
@@ -117,14 +129,19 @@ function makeConfig(opts: {
         hard_ttl_ms: 86_400_000,
         max_per_bot: 8,
         max_global: 64,
+        max_per_token_default: 8,
       },
-      send: { idempotency_retention_ms: 86_400_000 },
+      send: {
+        max_body_bytes: 100 * 1024 * 1024,
+        idempotency_retention_ms: 86_400_000,
+      },
       ask: {
         default_timeout_ms: 60_000,
         max_timeout_ms: 300_000,
         max_body_bytes: 100 * 1024 * 1024,
         max_files_per_request: 10,
       },
+      expose_runner_type: false,
     },
     bots: [
       {
@@ -144,7 +161,11 @@ function makeConfig(opts: {
   };
 }
 
-function makeTextUpdate(id: number, text: string, fromUserId = ALLOWED_USER): TelegramUpdate {
+function makeTextUpdate(
+  id: number,
+  text: string,
+  fromUserId = ALLOWED_USER,
+): TelegramUpdate {
   return {
     update_id: id,
     message: {
@@ -157,7 +178,11 @@ function makeTextUpdate(id: number, text: string, fromUserId = ALLOWED_USER): Te
   };
 }
 
-function telegramHasEchoOf(fake: FakeTelegram, botId: string, needle: string): boolean {
+function telegramHasEchoOf(
+  fake: FakeTelegram,
+  botId: string,
+  needle: string,
+): boolean {
   for (const method of ["sendMessage", "editMessageText"] as const) {
     for (const call of fake.callsFor(botId, method)) {
       const text = call.body.text;
@@ -277,7 +302,9 @@ describe("send e2e — HTTP path", () => {
 
     // Sanity: the inbound first-DM echo and the send echo are distinct
     // deliveries — at least two sendMessage calls landed.
-    expect(tg.callsFor("alpha", "sendMessage").length).toBeGreaterThanOrEqual(2);
+    expect(tg.callsFor("alpha", "sendMessage").length).toBeGreaterThanOrEqual(
+      2,
+    );
   }, 25_000);
 
   test("send by chat_id → resolves through user_chats and delivers", async () => {
@@ -304,8 +331,11 @@ describe("send e2e — HTTP path", () => {
 
     await tg.waitFor(
       () =>
-        telegramHasEchoOf(tg, "alpha", 'echo: [system-message from "monitor"]') &&
-        telegramHasEchoOf(tg, "alpha", "by chat id"),
+        telegramHasEchoOf(
+          tg,
+          "alpha",
+          'echo: [system-message from "monitor"]',
+        ) && telegramHasEchoOf(tg, "alpha", "by chat id"),
       { timeoutMs: 12_000 },
     );
   }, 25_000);
@@ -336,10 +366,9 @@ describe("send e2e — HTTP path", () => {
 
     // Wait for the first delivery to actually land before retrying — so
     // the second call truly sees the idempotency row and not a race.
-    await tg.waitFor(
-      () => telegramHasEchoOf(tg, "alpha", "only-once"),
-      { timeoutMs: 12_000 },
-    );
+    await tg.waitFor(() => telegramHasEchoOf(tg, "alpha", "only-once"), {
+      timeoutMs: 12_000,
+    });
     // Let any trailing placeholder→edit settle so our snapshot counts are
     // stable. 300ms is well above the streaming edit cadence (1500ms cap)
     // for our short payload, but the test-runner emits done immediately
@@ -375,7 +404,9 @@ describe("send e2e — HTTP path", () => {
     expect(tg.callsFor("alpha", "sendMessage").length).toBe(sendsBefore);
     expect(tg.callsFor("alpha", "editMessageText").length).toBe(editsBefore);
     // And the replay body must NEVER have reached the runner.
-    expect(telegramHasEchoOf(tg, "alpha", "this should be ignored")).toBe(false);
+    expect(telegramHasEchoOf(tg, "alpha", "this should be ignored")).toBe(
+      false,
+    );
   }, 30_000);
 
   test("ACL re-check: send for unauthorized user → 403, no delivery", async () => {
@@ -406,7 +437,9 @@ describe("send e2e — HTTP path", () => {
     // the status is one of the documented refusal codes.
     expect([403, 409]).toContain(r.status);
     const body = (await r.json()) as { error: string };
-    expect(["target_not_authorized", "user_not_opened_bot"]).toContain(body.error);
+    expect(["target_not_authorized", "user_not_opened_bot"]).toContain(
+      body.error,
+    );
 
     await new Promise((r) => setTimeout(r, 500));
     expect(telegramHasEchoOf(tg, "alpha", "should not deliver")).toBe(false);
@@ -485,8 +518,11 @@ describe("send e2e — CLI subprocess path", () => {
 
     await tg.waitFor(
       () =>
-        telegramHasEchoOf(tg, "alpha", 'echo: [system-message from "calendar"]') &&
-        telegramHasEchoOf(tg, "alpha", "from-cli"),
+        telegramHasEchoOf(
+          tg,
+          "alpha",
+          'echo: [system-message from "calendar"]',
+        ) && telegramHasEchoOf(tg, "alpha", "from-cli"),
       { timeoutMs: 15_000 },
     );
   }, 30_000);
