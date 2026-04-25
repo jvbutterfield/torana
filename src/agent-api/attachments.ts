@@ -119,7 +119,11 @@ export async function parseMultipartRequest(
 
   const contentType = req.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("multipart/form-data")) {
-    return { kind: "err", code: "invalid_body", detail: "expected multipart/form-data" };
+    return {
+      kind: "err",
+      code: "invalid_body",
+      detail: "expected multipart/form-data",
+    };
   }
 
   // Early aggregate check via Content-Length (stream-reading with hard abort
@@ -140,10 +144,18 @@ export async function parseMultipartRequest(
   try {
     form = await req.formData();
   } catch (err) {
+    // Log raw parser error server-side; respond with a canonical detail.
+    // Bun's multipart parser surfaces internal boundary/state info in
+    // its messages — not safe to echo into the client response body.
+    log.warn("multipart formData parse failed", {
+      bot_id: botId,
+      request_id: requestId,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "malformed multipart body",
     };
   }
 
@@ -258,15 +270,20 @@ export async function parseMultipartRequest(
         detail: err instanceof Error ? err.message : String(err),
       };
     }
+    // Unclassified failure (writeFile EACCES/ENOSPC/EFBIG, magic-byte
+    // mismatch, etc.). Log raw error server-side so ops can debug; respond
+    // with a canonical detail. Filesystem errors carry absolute paths and
+    // errno detail that must not surface to the client.
     log.error("multipart write failed", {
       bot_id: botId,
       request_id: requestId,
       error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
     });
     return {
       kind: "err",
       code: "invalid_body",
-      detail: err instanceof Error ? err.message : String(err),
+      detail: "attachment write failed",
     };
   }
 

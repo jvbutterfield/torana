@@ -41,7 +41,16 @@ export function handleSend(deps: SendDeps): AuthedHandler {
     const outcome: { replay: boolean } = { replay: false };
     const resp = await inner(req, params, outcome);
     recordSend(deps.metrics, params.botId, {
-      status: resp.status as 202 | 400 | 401 | 403 | 404 | 429 | 500 | 501 | 503,
+      status: resp.status as
+        | 202
+        | 400
+        | 401
+        | 403
+        | 404
+        | 429
+        | 500
+        | 501
+        | 503,
       replay: outcome.replay,
       durationMs: Date.now() - startMs,
     } as Parameters<typeof recordSend>[2]);
@@ -176,14 +185,16 @@ function handleSendInner(
       });
     } catch (err) {
       await cleanupFiles(attachmentPaths);
+      // Log raw error server-side; never echo the exception text into the
+      // response body. SQLite errors carry column names + constraint detail,
+      // and an authenticated low-privilege caller probing for schema/SQL
+      // info should not be able to learn it from a 500.
       deps.log.error("insertSendTurn failed", {
         bot_id: botId,
         error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
       });
-      return errorResponse(
-        "internal_error",
-        err instanceof Error ? err.message : String(err),
-      );
+      return errorResponse("internal_error");
     }
 
     if (insertResult.replay) {

@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Security
+
+- **Agent API: stop echoing raw exception text into 4xx/5xx response
+  bodies.** `POST /v1/bots/:id/send` and the multipart parser used by
+  both `/send` and `/ask` previously forwarded `err.message` from
+  `req.formData()`, `JSON.parse`, `insertSendTurn`, and `writeFile` into
+  the response `detail`/`message` field. The body is not a safe channel
+  for internal implementation detail: the SQLite layer surfaces column
+  names plus constraint text, the multipart parser surfaces internal
+  boundary state, and `writeFile` errors carry absolute paths and errno
+  detail. An authenticated low-privilege caller probing for
+  schema/SQL/path information could harvest it from a 4xx/5xx without
+  any further capability. Caught exceptions are now mapped to canonical
+  detail strings (`malformed multipart body`, `attachment write failed`,
+  default `internal error` for 500s); the raw `err.message` and stack
+  are logged server-side at warn/error level for ops debugging. No
+  client-visible behaviour change beyond the response body string.
+
 ## [1.0.0-rc.6] - 2026-04-21
 
 ### Changed
@@ -88,11 +106,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `TORANA_TOKEN` env, and named profiles (see below). Stable exit codes
   (0/1/2/3/4/5/6/7) for scripting. See [docs/cli.md](docs/cli.md).
 - **CLI profile store.** `torana config init | add-profile | list-profiles |
-  remove-profile | show` manages a TOML file at
+remove-profile | show` manages a TOML file at
   `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600). Every agent-api
   subcommand resolves credentials with the precedence
   `flag > env > --profile NAME > default profile`. `torana doctor
-  --profile NAME` runs the R001..R003 remote probes against the resolved
+--profile NAME` runs the R001..R003 remote probes against the resolved
   server.
 - **`--file @-` on `torana ask` / `torana inject`.** Reads attachment bytes
   from stdin with magic-byte MIME detection (PNG, JPEG, GIF, WebP, PDF;
@@ -100,7 +118,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a second `@-` on the same call is a usage error.
 - **Skills + Codex plugin.** `skills/torana-ask/SKILL.md` and
   `skills/torana-inject/SKILL.md` ship with the package. `torana skills
-  install --host=claude|codex` copies them into
+install --host=claude|codex` copies them into
   `$CLAUDE_CONFIG_DIR/skills` / `$XDG_DATA_HOME/agents/skills` (default
   refuses on divergence; `--force` overwrites). `codex-plugin/` contains
   a manifest + marketplace.json entry for one-line Codex install; a
