@@ -55,10 +55,12 @@ export class GatewayDB {
     requeueTurn: Statement;
     cancelTurnOutbox: Statement;
     insertOutbox: Statement;
+    markOutboxInFlight: Statement;
     markOutboxSent: Statement;
     markOutboxFailed: Statement;
     markOutboxRetryOrFail: Statement;
     getPendingOutbox: Statement;
+    getInFlightOutbox: Statement;
     getOutboxRow: Statement;
     supersededEdit: Statement;
     initWorkerState: Statement;
@@ -188,6 +190,13 @@ export class GatewayDB {
       insertOutbox: d.prepare(
         "INSERT INTO outbox (turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
       ),
+      // Mark a row as currently being delivered. Sets a future
+      // next_attempt_at so a concurrent processor (or a crash-affected
+      // restart) doesn't pick the row up again until the grace window
+      // expires — at which point the row auto-recovers via getPendingOutbox.
+      markOutboxInFlight: d.prepare(
+        "UPDATE outbox SET status = 'in_flight', next_attempt_at = datetime('now', '+' || ? || ' seconds') WHERE id = ? AND status IN ('pending', 'retrying')",
+      ),
       markOutboxSent: d.prepare(
         "UPDATE outbox SET status = 'sent', telegram_message_id = COALESCE(?, telegram_message_id) WHERE id = ?",
       ),
@@ -202,11 +211,23 @@ export class GatewayDB {
           last_error = ?
         WHERE id = ?
       `),
+      // 'in_flight' is included so a crash-affected row auto-recovers once
+      // its grace-window next_attempt_at expires. Same-process re-entry is
+      // already prevented by the OutboxProcessor.processing mutex; this
+      // filter handles the cross-restart case.
       getPendingOutbox: d.prepare(`
         SELECT id, turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json, status, attempt_count
         FROM outbox
-        WHERE status IN ('pending', 'retrying')
+        WHERE status IN ('pending', 'retrying', 'in_flight')
           AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
+        ORDER BY id ASC
+      `),
+      // Used at startup for operator-visible warnings about crash-affected
+      // rows. Returns rows still labelled 'in_flight' regardless of grace.
+      getInFlightOutbox: d.prepare(`
+        SELECT id, turn_id, bot_id, chat_id, kind, attempt_count, next_attempt_at
+        FROM outbox
+        WHERE status = 'in_flight'
         ORDER BY id ASC
       `),
       getOutboxRow: d.prepare(
@@ -569,8 +590,42 @@ export class GatewayDB {
     return Number(result.lastInsertRowid);
   }
 
+  /**
+   * Mark a pending/retrying outbox row as currently being delivered.
+   * `graceSecs` defines how long until the row auto-recovers if a crash
+   * leaves it stuck in `in_flight` — see getPendingOutbox.
+   */
+  markOutboxInFlight(id: number, graceSecs: number): void {
+    this.stmts.markOutboxInFlight.run(graceSecs, id);
+  }
+
   markOutboxSent(id: number, telegramMessageId?: number): void {
     this.stmts.markOutboxSent.run(telegramMessageId ?? null, id);
+  }
+
+  /**
+   * Returns rows still in `in_flight` state (a crash left them mid-send).
+   * Called at gateway startup so the operator sees a warning per affected
+   * row before the grace window auto-recovers them.
+   */
+  getInFlightOutbox(): Array<{
+    id: number;
+    turn_id: number;
+    bot_id: BotId;
+    chat_id: number;
+    kind: string;
+    attempt_count: number;
+    next_attempt_at: string | null;
+  }> {
+    return this.stmts.getInFlightOutbox.all() as Array<{
+      id: number;
+      turn_id: number;
+      bot_id: BotId;
+      chat_id: number;
+      kind: string;
+      attempt_count: number;
+      next_attempt_at: string | null;
+    }>;
   }
 
   markOutboxFailed(id: number, error: string): void {

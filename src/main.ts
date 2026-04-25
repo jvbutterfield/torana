@@ -222,6 +222,10 @@ export async function startGateway(
     ),
   );
 
+  // Surface any outbox rows left in `in_flight` by a previous process
+  // crash. These auto-retry via the grace window in getPendingOutbox; the
+  // log line just makes the dup-risk visible.
+  outbox.recoverInFlight();
   outbox.start();
   await registry.startAll();
 

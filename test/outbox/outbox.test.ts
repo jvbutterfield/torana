@@ -67,6 +67,7 @@ interface Harness {
     fetchImpl?: typeof fetch;
     max_attempts?: number;
     retry_base_ms?: number;
+    inFlightGraceSecs?: number;
   }) => {
     outbox: OutboxProcessor;
     metrics: Metrics;
@@ -153,7 +154,9 @@ beforeEach(() => {
       });
       const clients = new Map<string, TelegramClient>([["alpha", client]]);
       const metrics = new Metrics(config);
-      const outbox = new OutboxProcessor(config, db, clients, metrics);
+      const outbox = new OutboxProcessor(config, db, clients, metrics, null, {
+        inFlightGraceSecs: opts.inFlightGraceSecs,
+      });
       return { outbox, metrics, calls };
     },
   };
@@ -726,5 +729,106 @@ describe("OutboxProcessor.fireAndForgetEdit", () => {
   test("no-op for unregistered bot id", async () => {
     const { outbox } = harness.makeProcessor();
     await outbox.fireAndForgetEdit("unknown", 111, 1234, "hi");
+  });
+});
+
+describe("OutboxProcessor in-flight crash recovery", () => {
+  test("processOne marks the row 'in_flight' before the Telegram POST", async () => {
+    // Capture the row's status at the moment fetch is invoked. The mock
+    // fetch resolves only after we've snapshotted the DB state, so any
+    // concurrent observer (or a crash here) would see status='in_flight'
+    // — exactly the state the rc.7 fix introduces to make crash-affected
+    // rows recoverable instead of silently re-sending.
+    const observed: { status: string | null } = { status: null };
+    const fetchImpl = makeFetch((method) => {
+      if (method === "sendMessage") {
+        const row = harness.db.getOutboxRow(rowId);
+        observed.status = (row as { status: string } | null)?.status ?? null;
+        return Response.json({ ok: true, result: { message_id: 9001 } });
+      }
+      return Response.json({ ok: true, result: true });
+    });
+    const { outbox } = harness.makeProcessor({ fetchImpl });
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+
+    await outbox.drain(2000);
+
+    expect(observed.status).toBe("in_flight");
+    const finalRow = harness.db.getOutboxRow(rowId);
+    expect((finalRow as { status: string }).status).toBe("sent");
+  });
+
+  test("getPendingOutbox skips an in_flight row inside the grace window", async () => {
+    // Simulate a crash mid-send: row is in_flight with a future
+    // next_attempt_at. Until the grace expires, the row must NOT be
+    // returned by getPendingOutbox — otherwise a fast restart would
+    // double-send.
+    const { outbox } = harness.makeProcessor({ inFlightGraceSecs: 60 });
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    harness.db.markOutboxInFlight(rowId, 60);
+
+    const eligible = harness.db.getPendingOutbox();
+    expect(eligible.find((r) => r.id === rowId)).toBeUndefined();
+
+    const inFlight = harness.db.getInFlightOutbox();
+    expect(inFlight).toHaveLength(1);
+    expect(inFlight[0].id).toBe(rowId);
+  });
+
+  test("getPendingOutbox auto-recovers an in_flight row after the grace expires", async () => {
+    // A 0-second grace makes the row immediately eligible for retry —
+    // the same path a real crashed-then-restarted process would take
+    // once 60s have elapsed since the original markOutboxInFlight.
+    const { outbox, calls } = harness.makeProcessor({ inFlightGraceSecs: 0 });
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    harness.db.markOutboxInFlight(rowId, 0);
+
+    // Brief wait so 'now' advances past next_attempt_at = datetime('now', '+0 seconds').
+    await new Promise((r) => setTimeout(r, 1100));
+
+    await outbox.drain(2000);
+
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+    const finalRow = harness.db.getOutboxRow(rowId);
+    expect((finalRow as { status: string }).status).toBe("sent");
+  });
+
+  test("recoverInFlight() logs each crash-affected row but does not mutate state", async () => {
+    const { outbox } = harness.makeProcessor();
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    harness.db.markOutboxInFlight(rowId, 60);
+
+    const beforeRow = harness.db.getOutboxRow(rowId);
+    outbox.recoverInFlight();
+    const afterRow = harness.db.getOutboxRow(rowId);
+
+    // recoverInFlight() is a logging-only pass; state is untouched.
+    expect((afterRow as { status: string }).status).toBe(
+      (beforeRow as { status: string }).status,
+    );
+    expect((afterRow as { status: string }).status).toBe("in_flight");
+    expect(harness.db.getInFlightOutbox()).toHaveLength(1);
+  });
+
+  test("markOutboxInFlight is idempotent: a 'sent' row is not regressed back to in_flight", async () => {
+    // Defence against a stray re-mark from a buggy caller. The UPDATE is
+    // guarded by `status IN ('pending', 'retrying')`, so a row that
+    // already transitioned to 'sent' / 'failed' / 'dead' is left alone.
+    const { outbox } = harness.makeProcessor();
+    const turnId = harness.seedTurn("alpha");
+    const rowId = outbox.queueSend(turnId, "alpha", 111, "hi");
+    await outbox.drain(2000);
+    expect((harness.db.getOutboxRow(rowId) as { status: string }).status).toBe(
+      "sent",
+    );
+
+    harness.db.markOutboxInFlight(rowId, 60);
+    expect((harness.db.getOutboxRow(rowId) as { status: string }).status).toBe(
+      "sent",
+    );
   });
 });

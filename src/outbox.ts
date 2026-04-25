@@ -11,6 +11,18 @@ const log = logger("outbox");
 
 type SendCallback = (telegramMessageId: number) => void;
 
+/**
+ * How long an `in_flight` outbox row stays excluded from re-pickup before
+ * auto-recovering. Sized to comfortably exceed a normal Telegram POST
+ * (sub-second under healthy conditions, a few seconds under retry +
+ * Retry-After). A crashed row reappears for retry only after this grace
+ * elapses, narrowing the window in which a fast restart could double-send.
+ *
+ * 60s also matches the outbox handleFailure backoff cap, so a hung-but-
+ * not-crashed process can't accidentally race itself.
+ */
+const IN_FLIGHT_GRACE_SECS = 60;
+
 export class OutboxProcessor {
   private config: Config;
   private db: GatewayDB;
@@ -20,6 +32,7 @@ export class OutboxProcessor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private sendCallbacks = new Map<number, SendCallback>();
   private processing = false;
+  private inFlightGraceSecs: number;
 
   constructor(
     config: Config,
@@ -27,12 +40,40 @@ export class OutboxProcessor {
     clients: Map<BotId, TelegramClient>,
     metrics: Metrics,
     alerts: AlertManager | null = null,
+    opts: { inFlightGraceSecs?: number } = {},
   ) {
     this.config = config;
     this.db = db;
     this.clients = clients;
     this.metrics = metrics;
     this.alerts = alerts;
+    this.inFlightGraceSecs = opts.inFlightGraceSecs ?? IN_FLIGHT_GRACE_SECS;
+  }
+
+  /**
+   * Surface any outbox rows that a previous process left in `in_flight`
+   * state — these were mid-Telegram-POST when the previous process died.
+   * The grace window auto-retries them via getPendingOutbox; this just
+   * makes them visible to the operator (a duplicate Telegram message is
+   * possible if Telegram had already accepted the original send before
+   * we crashed). Call after migrations, before start().
+   */
+  recoverInFlight(): void {
+    const rows = this.db.getInFlightOutbox();
+    if (rows.length === 0) return;
+    for (const row of rows) {
+      log.warn("crash-affected outbox row will auto-retry", {
+        id: row.id,
+        turn_id: row.turn_id,
+        bot_id: row.bot_id,
+        chat_id: row.chat_id,
+        kind: row.kind,
+        attempt_count: row.attempt_count,
+        next_attempt_at: row.next_attempt_at,
+        caveat:
+          "Telegram may have already accepted the prior attempt; a duplicate is possible",
+      });
+    }
   }
 
   start(): void {
@@ -158,6 +199,13 @@ export class OutboxProcessor {
 
     const payload = JSON.parse(row.payload_json) as { text: string };
     const formatted = markdownToTelegramHtml(payload.text);
+
+    // Mark as in_flight before the Telegram POST. If we crash between the
+    // POST returning success and `markOutboxSent`, the row stays in
+    // `in_flight` until the grace window expires — at which point it
+    // auto-recovers via getPendingOutbox. The recoverInFlight() startup
+    // pass makes the dup risk visible to operators.
+    this.db.markOutboxInFlight(row.id, this.inFlightGraceSecs);
 
     try {
       if (row.kind === "send") {
