@@ -22,8 +22,7 @@ export const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{16,128}$/;
  * catches the leading-whitespace variant and the raw-newline / carriage-
  * return variants.
  */
-export const MARKER_INJECTION_RE =
-  /(^|\r?\n)[ \t]*\[system-message from "/i;
+export const MARKER_INJECTION_RE = /(^|\r?\n)[ \t]*\[system-message from "/i;
 
 export const AskBodySchema = z
   .object({
@@ -46,7 +45,7 @@ export const SendBodySchema = z
       .max(64 * 1024)
       .refine((s) => !MARKER_INJECTION_RE.test(s), {
         message:
-          "text must not contain a line starting with `[system-message from \"` — that framing is reserved for the gateway-generated marker and allowing it from callers would let a send caller spoof a second, differently-attributed marker to the runner",
+          'text must not contain a line starting with `[system-message from "` — that framing is reserved for the gateway-generated marker and allowing it from callers would let a send caller spoof a second, differently-attributed marker to the runner',
       }),
     source: z.string().regex(SOURCE_LABEL_RE),
     user_id: z

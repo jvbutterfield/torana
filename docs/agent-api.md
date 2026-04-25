@@ -39,7 +39,7 @@ agent_api:
     max_timeout_ms: 300_000
     max_body_bytes: 104_857_600 # 100 MiB — applies to JSON and multipart
     max_files_per_request: 10
-  expose_runner_type: false         # opt-in: include `runner_type` in /v1/bots
+  expose_runner_type: false # opt-in: include `runner_type` in /v1/bots
 ```
 
 All fields have defaults. Minimally you need `enabled: true` and at least one
@@ -280,8 +280,16 @@ deployment shape (see [Security model](#security-model)). Set
 ```json
 {
   "bots": [
-    {"bot_id": "reviewer", "runner_type": "claude-code", "supports_side_sessions": true},
-    {"bot_id": "drafter",  "runner_type": "codex",       "supports_side_sessions": true}
+    {
+      "bot_id": "reviewer",
+      "runner_type": "claude-code",
+      "supports_side_sessions": true
+    },
+    {
+      "bot_id": "drafter",
+      "runner_type": "codex",
+      "supports_side_sessions": true
+    }
   ]
 }
 ```

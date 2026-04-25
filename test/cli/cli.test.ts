@@ -201,7 +201,11 @@ describe("CLI validate", () => {
         DB_PASSWORD: ${FAKE_DB_PW}
 `;
     const cfg = writeConfig("torana.yaml", cfgBody);
-    const { stdout, stderr, exitCode } = await runCli(["validate", "--config", cfg]);
+    const { stdout, stderr, exitCode } = await runCli([
+      "validate",
+      "--config",
+      cfg,
+    ]);
     expect(exitCode).toBe(0);
     expect(stdout).not.toContain(FAKE_API_KEY);
     expect(stdout).not.toContain(FAKE_DB_PW);

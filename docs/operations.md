@@ -120,6 +120,7 @@ sqlite3 /data/gateway/gateway.db "SELECT id, bot_id, kind, attempt_count, last_e
 ```
 sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET last_update_id=NULL WHERE bot_id='cato'"
 ```
+
 (Dedup will still suppress any updates you've already processed.)
 
 ### Disable a bot temporarily
@@ -127,4 +128,5 @@ sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET last_update_id=NULL WHERE
 ```
 sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET disabled=1, disabled_reason='manual' WHERE bot_id='cato'"
 ```
+
 (Pollers exit the next loop iteration; webhook endpoints still 200-ack.)

@@ -706,9 +706,9 @@ async function runSoak(): Promise<Report> {
   // Shutdown sequence with orphan-row snapshot in between.
   await h.gateway.shutdown("soak-teardown");
   const orphanRows = (
-    h.db
-      ._unsafeQuery("SELECT COUNT(*) AS n FROM side_sessions")
-      .get() as { n: number }
+    h.db._unsafeQuery("SELECT COUNT(*) AS n FROM side_sessions").get() as {
+      n: number;
+    }
   ).n;
   h.db.close();
   await h.fake.stop();

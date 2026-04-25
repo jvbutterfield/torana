@@ -531,7 +531,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
     // Capture next_attempt_at after attempt 1 (rolls to retrying w/ +10s).
     await outbox.drain(100);
     const r1 = harness.db
-      ._unsafeQuery("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?",
+      )
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r1.attempt_count).toBe(1);
     const t1 = new Date(r1.next_attempt_at + "Z").getTime();
@@ -544,7 +546,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
       .run(id);
     await outbox.drain(100);
     const r2 = harness.db
-      ._unsafeQuery("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?",
+      )
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r2.attempt_count).toBe(2);
     // Attempt 2: backoff = 10s * 2^1 = 20s. Should be ~10s further than attempt 1.
@@ -559,7 +563,9 @@ describe("OutboxProcessor.processPending - retries and dead-lettering", () => {
       .run(id);
     await outbox.drain(100);
     const r3 = harness.db
-      ._unsafeQuery("SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?")
+      ._unsafeQuery(
+        "SELECT attempt_count, next_attempt_at FROM outbox WHERE id=?",
+      )
       .get(id) as { attempt_count: number; next_attempt_at: string };
     expect(r3.attempt_count).toBe(3);
     const t3 = new Date(r3.next_attempt_at + "Z").getTime();

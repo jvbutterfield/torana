@@ -8,10 +8,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Security
 
-Fifteen security fixes landed together ahead of the 1.0.0 cut, covering
-two P0 and thirteen P1/other-level issues surfaced by a follow-up deep
-review. Three items are breaking config changes — see **Upgrade notes**
-below before deploying.
+Twenty-four security fixes landed together ahead of the 1.0.0 cut,
+covering two P0, thirteen P1/other-level, and nine P2 issues from a
+follow-up deep review. Three items are hard-breaking config changes
+and ten more are softer behavior shifts — see **Upgrade notes** below
+before deploying.
 
 #### P0 fixes
 
@@ -140,6 +141,86 @@ below before deploying.
   that need external reachability must explicitly set
   `bind_host: "0.0.0.0"` (or a specific interface IP).
 
+#### P2 fixes (deep-review backlog folded in pre-cut)
+
+Nine items the deep review surfaced as exploitable only by an authenticated
+bearer (or strictly internal foot-guns) were originally deferred to rc.8.
+They are now in rc.7 to land the full review on a single tag. None requires
+config changes beyond the optional new fields below.
+
+- **Telegram attachment write hardened against overwrite + symlink races
+  (P2).** `src/core/attachments.ts` now opens the destination with
+  `O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW`. On `EEXIST` (rare
+  `update_id` collision across restarts/replays, or anything staged by
+  a less-trusted process), the write retries under
+  `<update_id>-<index>-<uuid><ext>` for up to 3 attempts. A symlink
+  staged at the destination is rejected with the new
+  `ATTACHMENT_SYMLINK_REJECTED` error and never followed.
+
+- **`/v1/turns/:turn_id` timing oracle closed (P2).** Both the
+  malformed-id branch and the valid-but-not-yours branch now go through
+  the DB lookup, so an authenticated probe can no longer distinguish
+  "id was malformed" from "id is valid but you don't own it" via
+  response timing. Both still return `404 turn_not_found`.
+
+- **`/v1/bots` no longer leaks `runner_type` by default (P2).** A
+  bearer-token holder used to learn each bot's runner backend
+  (`claude-code` / `codex` / `command`) — useful intel for an attacker
+  picking which side-channel (prompt-injection vs tool-use vs shell)
+  to probe. Set the new `agent_api.expose_runner_type: true` if your
+  callers depend on the field.
+
+- **Agent-API `invalid_body` / `internal_error` responses now use
+  canonical `detail` strings (P2).** Exception text from
+  `req.formData()`, `JSON.parse`, and `insertSendTurn` (raw multipart
+  parser internals, SQLite column / constraint detail, file-path
+  errnos) is logged server-side at warn / error level but never echoed
+  into the response body.
+
+- **Codex `thread_id` validated before persisting + replaying as argv
+  (P2).** The codex JSONL parser was forwarding `thread.started.thread_id`
+  verbatim. Bun's argv-element separation prevented shell-metacharacter
+  injection at the flag boundary, but a control-char-bearing id (newline
+  / NUL / ANSI escape) still landed in argv, on disk in `worker_state`,
+  and in `ps` output. The parser now rejects ids that fail an anchored
+  `^[A-Za-z0-9_-]{1,128}$` regex; the offending event is dropped (the
+  side-session is abandoned, which is the safe failure mode).
+
+- **`GatewayDB.query()` renamed to `_unsafeQuery()` (P2 footgun).** The
+  public method that returned a raw `prepare()` handle is now
+  underscore-prefixed and renamed in every callsite. The new name makes
+  the SQL-injection surface obvious so a future contributor cannot
+  reach for it innocently. Internal API only — no external-caller
+  impact.
+
+- **`GatewayDB.dynamicUpdate` enforces a runtime column allowlist
+  (P2).** The function built `UPDATE ${table} SET ${k} = ?` strings
+  from caller-supplied object keys; static `Partial<RowShape>` typing
+  was erased at runtime, so a future caller spreading untrusted JSON
+  into the patch could have allowed attacker-controlled keys to become
+  SQL identifiers. A static `UPDATABLE_COLUMNS` map per table now
+  rejects unknown keys before any query is built.
+
+- **`runner.secrets` map for inlined-secret redaction (P2).** Operators
+  who can't easily indirect via `${VAR}` (Docker secrets, sealed
+  configs, etc.) needed a way to mark inlined values as secret. A new
+  `bots[].runner.secrets: { KEY: VALUE }` map registers each value
+  with the log redactor at config-load time. `runner.env` and
+  `runner.secrets` cannot share keys (config-load fails with a clear
+  error). `${VAR}` indirection remains the recommended pattern; this
+  is the explicit fallback.
+
+- **Per-token Agent-API side-session cap (P2).** The pool already
+  enforced `max_per_bot` and `max_global`, but a token whose `bot_ids`
+  spanned many bots could hold `max_per_bot * len(bot_ids)`
+  concurrent side-sessions and starve other tokens that shared any of
+  those bots. Two new optional knobs close the gap:
+  `agent_api.tokens[].max_concurrent_side_sessions` (per-token
+  override) and `agent_api.side_sessions.max_per_token_default`
+  (default `8` — applies when the per-token override is unset). A
+  token at its cap returns 429 with the new `token_concurrency_limit`
+  code (distinct from `side_session_capacity`).
+
 ### Upgrade notes
 
 This release contains **three breaking config changes**. A pre-existing
@@ -213,6 +294,32 @@ apply:
     gets `attachment_mime_not_allowed`. Fix by sending the correct MIME.
     The same check applies to Telegram documents (photos are always
     JPEG by Telegram's API convention, so this only affects documents).
+
+11. **Per-token Agent-API side-session cap defaults to `8`.** Any
+    bearer token without an explicit `max_concurrent_side_sessions`
+    inherits `agent_api.side_sessions.max_per_token_default` (default
+    `8`). Tokens that were genuinely holding more than 8 concurrent
+    side-sessions in rc.6 will start receiving 429
+    `token_concurrency_limit` once the (8+1)th acquisition happens —
+    raise the per-token field, or raise the default, before deploying.
+    `max_per_bot` and `max_global` still apply; this is a third
+    dimension on top of them.
+
+12. **`/v1/bots` omits `runner_type` by default.** Callers that
+    consumed the `runner_type` field on bot listings (e.g., to render
+    runner-specific UI, to skip codex-only features against a
+    claude-code bot, etc.) need to set
+    `agent_api.expose_runner_type: true` to restore the field.
+    `torana bots list` and the in-tree CLI no longer rely on it; only
+    custom integrations are affected.
+
+13. **Agent-API error response `detail` strings are now canonical.**
+    Clients that string-matched the previous exception-derived
+    `detail` text (e.g., looking for `"Failed to parse FormData"` to
+    distinguish parser errors from other 400s) will now see fixed
+    canonical strings like `"malformed multipart body"` and
+    `"internal error"`. Match on the `error` code field instead — the
+    set of codes is stable.
 
 ## [1.0.0-rc.6] - 2026-04-21
 

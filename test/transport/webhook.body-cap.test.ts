@@ -26,7 +26,9 @@ beforeEach(() => {
   applyMigrations(join(tmpDir, "gateway.db"));
   db = new GatewayDB(join(tmpDir, "gateway.db"));
 
-  const bot = makeTestBotConfig("bot1", { transport_override: { mode: "webhook" } });
+  const bot = makeTestBotConfig("bot1", {
+    transport_override: { mode: "webhook" },
+  });
   const config = makeTestConfig([bot], {
     transport: {
       default_mode: "webhook",

@@ -30,7 +30,7 @@ export function wrapSystemMessage(text: string, source: string): string {
   }
   if (MARKER_INJECTION_RE.test(text)) {
     throw new Error(
-      "wrapSystemMessage: text contains a line-starting `[system-message from \"` sequence and would spoof the gateway marker",
+      'wrapSystemMessage: text contains a line-starting `[system-message from "` sequence and would spoof the gateway marker',
     );
   }
   return `[system-message from "${source}"]\n\n${text}`;

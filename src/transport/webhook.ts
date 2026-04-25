@@ -213,7 +213,10 @@ class BodyTooLargeError extends Error {
  * with different error-result shape. Duplicating the ~20 lines keeps the
  * transport module standalone (no cross-module dep on agent-api internals).
  */
-async function readCappedJson(req: Request, maxBytes: number): Promise<unknown> {
+async function readCappedJson(
+  req: Request,
+  maxBytes: number,
+): Promise<unknown> {
   const body = req.body;
   if (!body) return await req.json();
   const reader = body.getReader();

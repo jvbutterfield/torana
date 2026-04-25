@@ -11,7 +11,7 @@ Drop a YAML config, point it at Claude Code, Codex, or any subprocess — get a 
 [![Bun ≥ 1.3](https://img.shields.io/badge/bun-%E2%89%A5%201.3-black)](https://bun.sh)
 [![Tests: 1142](https://img.shields.io/badge/tests-1142%20passing-brightgreen)](#testing)
 
-**torana** (Sanskrit: तोरण, *ceremonial gateway*) — the doorway between Telegram and your agents.
+**torana** (Sanskrit: तोरण, _ceremonial gateway_) — the doorway between Telegram and your agents.
 
 </div>
 
@@ -87,11 +87,11 @@ Once echo works, swap the `runner:` block for `claude-code` or `codex` and you'r
 
 Three runners ship built-in. Pick per bot.
 
-| Runner | Wraps | Use it when |
-| --- | --- | --- |
-| **`claude-code`** | The `claude` CLI. | You want Anthropic's Claude with its full agentic tool-use, file edits, subagents. Best for code. |
-| **`codex`** | The OpenAI `codex` CLI (`codex exec --json`). | You want OpenAI's Codex with its sandbox/approval model. Best for writing and mixed tasks. |
-| **`command`** | Any subprocess speaking a simple line protocol (`jsonl-text`, `claude-ndjson`, or `codex-jsonl`). | You're running your own model, a local Ollama setup, or a custom agent. |
+| Runner            | Wraps                                                                                             | Use it when                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **`claude-code`** | The `claude` CLI.                                                                                 | You want Anthropic's Claude with its full agentic tool-use, file edits, subagents. Best for code. |
+| **`codex`**       | The OpenAI `codex` CLI (`codex exec --json`).                                                     | You want OpenAI's Codex with its sandbox/approval model. Best for writing and mixed tasks.        |
+| **`command`**     | Any subprocess speaking a simple line protocol (`jsonl-text`, `claude-ndjson`, or `codex-jsonl`). | You're running your own model, a local Ollama setup, or a custom agent.                           |
 
 Session continuity works everywhere: `--continue` for Claude Code, `codex exec resume <id>` for Codex, protocol-defined reset for `command`.
 
@@ -101,7 +101,7 @@ Full details: [`docs/runners.md`](docs/runners.md).
 
 ## Agent API (opt-in)
 
-torana ships a bearer-authenticated HTTP surface that lets *other* processes — other agents, scripts, cron jobs, CI — drive the bots that torana owns. Two modes:
+torana ships a bearer-authenticated HTTP surface that lets _other_ processes — other agents, scripts, cron jobs, CI — drive the bots that torana owns. Two modes:
 
 - **`ask`** — synchronous request/response against a bot's runner in a **side-session** (an isolated subprocess with its own conversation context, separate from Telegram traffic). The gateway pools side-sessions with idle + hard TTLs, per-bot + global caps, and automatic LRU eviction.
 - **`send`** — post a `[system-message from "<source>"]`-marker-wrapped message into an existing Telegram chat so the runner responds as if the user had typed it. Idempotent, ACL-re-checked.
@@ -169,23 +169,28 @@ One process. One SQLite database. Per-bot isolated runners. Crashes in one bot d
 ## Operational guarantees
 
 **Delivery.**
+
 - Inbound `update_id` deduplicated in SQLite — safe to replay a webhook or resume polling after a crash.
 - Outbound sends go through a **dead-letter outbox** with exponential backoff. A flaky Telegram response doesn't lose a reply.
 
 **Crash recovery.**
+
 - Runner state is a durable state machine in SQLite. A hard crash mid-turn resumes correctly on next start — no orphan "thinking..." messages, no double-sends.
 - `torana doctor` runs pre-flight checks (C001–C008) so you find configuration problems before starting, not during your first real message.
 
 **Streaming.**
+
 - Runner output is streamed into Telegram message edits at a configurable cadence (default 1.5s), respecting Telegram's edit-rate ceiling and the 4096-char limit (with safe margin).
 - Long replies auto-split across messages. No lost content.
 
 **Safety defaults.**
+
 - Default-deny ACL. An empty `allowed_user_ids` list rejects all traffic and logs a loud warning so you notice.
 - Secret redaction. Bot tokens and webhook secrets are redacted from logs automatically, including from `/bot<TOKEN>/` URL paths.
 - Attachment hardening. Mime-derived filename allowlist, disk cap, retention sweep. Files never escape the data directory.
 
 **Observability.**
+
 - Structured JSON logs, per-bot log files tailable at `<data_dir>/logs/<bot_id>.log`.
 - `GET /health` with per-bot readiness, mailbox depth, last turn time. When the Agent API is enabled, `GET /v1/health` is also available.
 - Optional Prometheus metrics. Agent-API counters, gauges, and request/acquire duration histograms are exported under `torana_agent_api_*` when `agent_api.enabled=true`.
@@ -238,28 +243,28 @@ The dispatcher routes each update to its bot's runner independently. No special 
 
 ## Commands
 
-| Command | What it does |
-| --- | --- |
-| `torana start` | Run the gateway |
-| `torana doctor` | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003) |
-| `torana validate` | Offline schema check — no Telegram, no DB |
-| `torana migrate` | Apply pending DB migrations (`--dry-run` to preview) |
-| `torana version` | Print package version + Bun runtime |
-| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md) |
-| `torana config` | Manage the CLI profile store (`init` / `add-profile` / `list-profiles` / `remove-profile` / `show`). Stored at `$XDG_CONFIG_HOME/torana/config.toml`, mode `0600` |
-| `torana skills install --host=claude\|codex` | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation |
+| Command                                                                | What it does                                                                                                                                                      |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `torana start`                                                         | Run the gateway                                                                                                                                                   |
+| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003)                           |
+| `torana validate`                                                      | Offline schema check — no Telegram, no DB                                                                                                                         |
+| `torana migrate`                                                       | Apply pending DB migrations (`--dry-run` to preview)                                                                                                              |
+| `torana version`                                                       | Print package version + Bun runtime                                                                                                                               |
+| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md)              |
+| `torana config`                                                        | Manage the CLI profile store (`init` / `add-profile` / `list-profiles` / `remove-profile` / `show`). Stored at `$XDG_CONFIG_HOME/torana/config.toml`, mode `0600` |
+| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation                                                                     |
 
 ---
 
 ## Environment inheritance
 
-`runner.env` is the **complete** environment handed to the subprocess. Parent-process env vars are *not* inherited by default (except `PATH`). To pass a variable, reference it via `${VAR}` interpolation:
+`runner.env` is the **complete** environment handed to the subprocess. Parent-process env vars are _not_ inherited by default (except `PATH`). To pass a variable, reference it via `${VAR}` interpolation:
 
 ```yaml
 env:
-  OPENAI_API_KEY: ${OPENAI_API_KEY}    # inherited from torana's env
-  HOME: ${HOME}                         # needed for OAuth-authenticated CLIs
-  CUSTOM: literal-value                 # static
+  OPENAI_API_KEY: ${OPENAI_API_KEY} # inherited from torana's env
+  HOME: ${HOME} # needed for OAuth-authenticated CLIs
+  CUSTOM: literal-value # static
 ```
 
 This is deliberate. It matches the explicit-env-passing ethos of reproducible deploys and avoids the classic "works locally, broken in prod" failure mode where the subprocess silently inherits a variable in one environment and not another.
@@ -283,6 +288,7 @@ If you need any of those, torana is the wrong tool and that's fine.
 **v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 1142+ tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
 
 Recent:
+
 - **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
 - **rc.4** — Codex runner (`runner.type: codex`), `codex-jsonl` protocol for `command` runners, README rewrite
 - **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI

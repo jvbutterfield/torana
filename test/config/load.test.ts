@@ -377,7 +377,9 @@ bots:
         "        SHARED_KEY: from-secrets",
       ].join("\n"),
     );
-    expect(() => loadConfigFromString(raw)).toThrow(/runner\.env and runner\.secrets/);
+    expect(() => loadConfigFromString(raw)).toThrow(
+      /runner\.env and runner\.secrets/,
+    );
   });
 
   test("command runner accepts new codex-jsonl protocol", () => {

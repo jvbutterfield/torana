@@ -38,16 +38,16 @@ This doc is exhaustive. For higher-level architecture see
 
 Stable across commands. Skill packages and monitoring scripts rely on them.
 
-| Code | Meaning | Typical cause |
-|---|---|---|
-| `0` | Success | 2xx response |
-| `1` | Unspecified / internal | Malformed server response, unknown failure |
-| `2` | Bad usage | 4xx other than auth/not-found/capacity; flag-parse error |
-| `3` | Authentication failed | 401, 403 (`invalid_token`, `bot_not_permitted`, `scope_not_permitted`, `target_not_authorized`) |
-| `4` | Not found | 404, 410 (`turn_not_found`, `session_not_found`, `turn_result_expired`) |
-| `5` | Server / runner error | 5xx, transport errors |
-| `6` | Timeout | Ask returned 202 — the `turn_id` is printed for polling |
-| `7` | Capacity / busy | 429 (`side_session_capacity`, `side_session_busy`) |
+| Code | Meaning                | Typical cause                                                                                   |
+| ---- | ---------------------- | ----------------------------------------------------------------------------------------------- |
+| `0`  | Success                | 2xx response                                                                                    |
+| `1`  | Unspecified / internal | Malformed server response, unknown failure                                                      |
+| `2`  | Bad usage              | 4xx other than auth/not-found/capacity; flag-parse error                                        |
+| `3`  | Authentication failed  | 401, 403 (`invalid_token`, `bot_not_permitted`, `scope_not_permitted`, `target_not_authorized`) |
+| `4`  | Not found              | 404, 410 (`turn_not_found`, `session_not_found`, `turn_result_expired`)                         |
+| `5`  | Server / runner error  | 5xx, transport errors                                                                           |
+| `6`  | Timeout                | Ask returned 202 — the `turn_id` is printed for polling                                         |
+| `7`  | Capacity / busy        | 429 (`side_session_capacity`, `side_session_busy`)                                              |
 
 ---
 
@@ -79,22 +79,22 @@ torana doctor [--config PATH] [--format text|json]
 
 Runs `C001..C014`:
 
-| ID | Severity | What |
-|---|---|---|
-| C001 | ok | Config schema validates |
-| C002 | fail | `gateway.data_dir` exists, is a directory |
-| C003 | fail | DB schema matches current version |
-| C004 | fail | Per-bot `getMe` against Telegram succeeds |
-| C005 | fail | Runner entry binary resolvable in `PATH` |
-| C006 | skip/fail | Webhook `base_url` reachable (HEAD, any non-5xx) — skipped if no bot uses webhook |
-| C007 | fail | Config file mode is not world-readable (POSIX only) |
-| C008 | fail | `alerts.via_bot` resolves to a configured bot |
-| C009 | warn | `agent_api.enabled=true` but `tokens: []` |
-| C010 | fail | Agent-API token references an unknown `bot_id` |
-| C011 | fail | Ask-scope token on a runner without side-session support |
-| C012 | fail | Agent-API token's `secret_ref` is empty after interpolation |
-| C013 | fail | `idle_ttl_ms > hard_ttl_ms`, `max_per_bot > max_global`, or `default_timeout_ms > max_timeout_ms` |
-| C014 | warn | Reminder about TLS / firewall / reverse-proxy posture when agent-api is enabled |
+| ID   | Severity  | What                                                                                              |
+| ---- | --------- | ------------------------------------------------------------------------------------------------- |
+| C001 | ok        | Config schema validates                                                                           |
+| C002 | fail      | `gateway.data_dir` exists, is a directory                                                         |
+| C003 | fail      | DB schema matches current version                                                                 |
+| C004 | fail      | Per-bot `getMe` against Telegram succeeds                                                         |
+| C005 | fail      | Runner entry binary resolvable in `PATH`                                                          |
+| C006 | skip/fail | Webhook `base_url` reachable (HEAD, any non-5xx) — skipped if no bot uses webhook                 |
+| C007 | fail      | Config file mode is not world-readable (POSIX only)                                               |
+| C008 | fail      | `alerts.via_bot` resolves to a configured bot                                                     |
+| C009 | warn      | `agent_api.enabled=true` but `tokens: []`                                                         |
+| C010 | fail      | Agent-API token references an unknown `bot_id`                                                    |
+| C011 | fail      | Ask-scope token on a runner without side-session support                                          |
+| C012 | fail      | Agent-API token's `secret_ref` is empty after interpolation                                       |
+| C013 | fail      | `idle_ttl_ms > hard_ttl_ms`, `max_per_bot > max_global`, or `default_timeout_ms > max_timeout_ms` |
+| C014 | warn      | Reminder about TLS / firewall / reverse-proxy posture when agent-api is enabled                   |
 
 **Remote mode.**
 
@@ -105,11 +105,11 @@ torana doctor --server URL --token TOK [--format text|json]
 
 Runs `R001..R003` against the remote gateway:
 
-| ID | Severity | What |
-|---|---|---|
-| R001 | fail | `GET /v1/health` returns 200 within 2s |
+| ID   | Severity  | What                                             |
+| ---- | --------- | ------------------------------------------------ |
+| R001 | fail      | `GET /v1/health` returns 200 within 2s           |
 | R002 | fail/warn | `GET /v1/bots` returns 200 with a non-empty list |
-| R003 | fail/skip | TLS chain validates (skipped on `http://`) |
+| R003 | fail/skip | TLS chain validates (skipped on `http://`)       |
 
 `--profile NAME` resolves the `(server, token)` pair from the CLI profile
 store (`$XDG_CONFIG_HOME/torana/config.toml`, mode `0600`) and runs the
@@ -164,16 +164,16 @@ torana ask [options] <bot_id> <text>
 
 Options:
 
-| Flag | Meaning |
-|---|---|
-| `--server URL` | Gateway URL. Env: `TORANA_SERVER`. |
-| `--token TOK` | Bearer token. Env: `TORANA_TOKEN`. |
-| `--session-id ID` | Reuse a keyed side-session (`^[A-Za-z0-9_-]{1,64}$`). Omit for ephemeral. |
-| `--timeout-ms N` | Clamp to `[1000, ask.max_timeout_ms]`. Default 60000. |
-| `--file PATH` | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call. |
-| `--profile NAME` | Resolve `--server` + `--token` from the profile store. |
-| `--json` | JSON output instead of human text. |
-| `-h, --help` | Print help. |
+| Flag              | Meaning                                                                                   |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `--server URL`    | Gateway URL. Env: `TORANA_SERVER`.                                                        |
+| `--token TOK`     | Bearer token. Env: `TORANA_TOKEN`.                                                        |
+| `--session-id ID` | Reuse a keyed side-session (`^[A-Za-z0-9_-]{1,64}$`). Omit for ephemeral.                 |
+| `--timeout-ms N`  | Clamp to `[1000, ask.max_timeout_ms]`. Default 60000.                                     |
+| `--file PATH`     | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call. |
+| `--profile NAME`  | Resolve `--server` + `--token` from the profile store.                                    |
+| `--json`          | JSON output instead of human text.                                                        |
+| `-h, --help`      | Print help.                                                                               |
 
 On 200: prints the reply text on stdout, then a separator line with usage.
 On 202 (ask didn't complete in `timeout_ms`): prints the `turn_id` on
@@ -193,17 +193,17 @@ torana send [options] --source LABEL <bot_id> <text>
 
 Options:
 
-| Flag | Meaning |
-|---|---|
-| `--server URL` / `--token TOK` | Credentials (as above). |
-| `--user-id ID` | Telegram user id to send to. Either this or `--chat-id` required. |
-| `--chat-id ID` | Alternative target (must already be associated with the bot). |
-| `--source LABEL` | Lowercase `[a-z0-9_-]{1,64}` — required. Appears in the `[system-message from "<label>"]` marker. |
-| `--idempotency-key K` | Explicit key. If omitted, one is auto-generated and printed as a `#`-prefixed comment on stderr so you can reuse it on retry. |
-| `--file PATH` | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call. |
-| `--profile NAME` | Resolve `--server` + `--token` from the profile store. |
-| `--json` | JSON output instead of human text. |
-| `-h, --help` | Print help. |
+| Flag                           | Meaning                                                                                                                       |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `--server URL` / `--token TOK` | Credentials (as above).                                                                                                       |
+| `--user-id ID`                 | Telegram user id to send to. Either this or `--chat-id` required.                                                             |
+| `--chat-id ID`                 | Alternative target (must already be associated with the bot).                                                                 |
+| `--source LABEL`               | Lowercase `[a-z0-9_-]{1,64}` — required. Appears in the `[system-message from "<label>"]` marker.                             |
+| `--idempotency-key K`          | Explicit key. If omitted, one is auto-generated and printed as a `#`-prefixed comment on stderr so you can reuse it on retry. |
+| `--file PATH`                  | Attach a file. Pass `@-` to read bytes from stdin. Repeatable; at most one `@-` per call.                                     |
+| `--profile NAME`               | Resolve `--server` + `--token` from the profile store.                                                                        |
+| `--json`                       | JSON output instead of human text.                                                                                            |
+| `-h, --help`                   | Print help.                                                                                                                   |
 
 Always returns 202; use `torana turns get <id>` for delivery status.
 
@@ -236,13 +236,13 @@ the Agent API security model).
 
 Manage the CLI profile store at `$XDG_CONFIG_HOME/torana/config.toml` (mode 0600).
 
-| Subcommand | Purpose |
-|---|---|
-| `init` | Create an empty profile file (idempotent on existing). |
+| Subcommand                                                | Purpose                                                                                                                                                              |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`                                                    | Create an empty profile file (idempotent on existing).                                                                                                               |
 | `add-profile <name> --server URL --token TOK [--default]` | Upsert a profile. First profile becomes default automatically; `--default` promotes an existing profile. Rejects `${VAR}`-style placeholders — pass the real secret. |
-| `list-profiles [--json]` | Table or JSON; tokens are redacted (first 4 chars + `*`). |
-| `remove-profile <name>` | Idempotent removal; if the default is removed, the alphabetically first remaining profile becomes the new default. |
-| `show [<name>] [--json] [--reveal-token]` | Print one or all profiles. Tokens redacted unless `--reveal-token`. |
+| `list-profiles [--json]`                                  | Table or JSON; tokens are redacted (first 4 chars + `*`).                                                                                                            |
+| `remove-profile <name>`                                   | Idempotent removal; if the default is removed, the alphabetically first remaining profile becomes the new default.                                                   |
+| `show [<name>] [--json] [--reveal-token]`                 | Print one or all profiles. Tokens redacted unless `--reveal-token`.                                                                                                  |
 
 The file is always written with `0600`; `chmod` is re-applied on every
 write. Wider perms on load emit a warning on stderr but don't fail.
@@ -258,7 +258,7 @@ torana skills install --host=<claude|codex>[,host...] [--force] [--dry-run]
 Paths:
 
 - `claude` → `$CLAUDE_CONFIG_DIR/skills` (else `~/.claude/skills`)
-- `codex`  → `$XDG_DATA_HOME/agents/skills` (else `~/.agents/skills`)
+- `codex` → `$XDG_DATA_HOME/agents/skills` (else `~/.agents/skills`)
 
 Default refuses to overwrite files that differ from the shipped source;
 `--force` overwrites; `--dry-run` prints actions without writing. Exits
@@ -268,15 +268,15 @@ Default refuses to overwrite files that differ from the shipped source;
 
 ## Environment variables
 
-| Var | Used by | Meaning |
-|---|---|---|
-| `TORANA_CONFIG` | Gateway commands | Default path to `torana.yaml` |
-| `TORANA_SERVER` | Agent-API commands | Gateway URL |
-| `TORANA_TOKEN` | Agent-API commands | Bearer token |
-| `TORANA_DEBUG` | All | `1` enables credential-resolution trace on stderr |
-| `XDG_CONFIG_HOME` | Agent-API commands | Override the profile-store parent dir (defaults to `~/.config`). |
-| `CLAUDE_CONFIG_DIR` | `skills install` | Override the Claude Code skills target (defaults to `~/.claude`). |
-| `XDG_DATA_HOME` | `skills install` | Override the Codex skills target (defaults to `~/.agents`). |
+| Var                 | Used by            | Meaning                                                           |
+| ------------------- | ------------------ | ----------------------------------------------------------------- |
+| `TORANA_CONFIG`     | Gateway commands   | Default path to `torana.yaml`                                     |
+| `TORANA_SERVER`     | Agent-API commands | Gateway URL                                                       |
+| `TORANA_TOKEN`      | Agent-API commands | Bearer token                                                      |
+| `TORANA_DEBUG`      | All                | `1` enables credential-resolution trace on stderr                 |
+| `XDG_CONFIG_HOME`   | Agent-API commands | Override the profile-store parent dir (defaults to `~/.config`).  |
+| `CLAUDE_CONFIG_DIR` | `skills install`   | Override the Claude Code skills target (defaults to `~/.claude`). |
+| `XDG_DATA_HOME`     | `skills install`   | Override the Codex skills target (defaults to `~/.agents`).       |
 
 ---
 

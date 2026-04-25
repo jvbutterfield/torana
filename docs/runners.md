@@ -191,9 +191,9 @@ Long-lived `codex-jsonl` wrappers can emit a synthetic `{"type":"ready"}` line o
 runner:
   type: claude-code
   env:
-    CLAUDE_CONFIG_DIR: /data/state/claude-config/cato   # not sensitive
+    CLAUDE_CONFIG_DIR: /data/state/claude-config/cato # not sensitive
   secrets:
-    ANTHROPIC_API_KEY: sk-ant-XXXXXXXXXXXXXXXXXXXXX     # masked in logs + validate
+    ANTHROPIC_API_KEY: sk-ant-XXXXXXXXXXXXXXXXXXXXX # masked in logs + validate
 ```
 
 Setting the same key in both `env` and `secrets` is rejected at load time — pick one. Values shorter than 6 characters are not added to the redactor (they would cause pathological substring matches in unrelated log text); use `${VAR}` indirection in `env` for short tokens that absolutely must be redacted.

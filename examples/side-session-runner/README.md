@@ -27,14 +27,14 @@ cd examples/side-session-runner
 bun ../../src/main.ts serve ./torana.yaml
 ```
 
-A Telegram message goes through the *main* subprocess:
+A Telegram message goes through the _main_ subprocess:
 
 ```
 user: hi
 bot:  [main#1] echo: hi
 ```
 
-An agent-API `ask` call with `session_id: "demo"` hits a *side-session*
+An agent-API `ask` call with `session_id: "demo"` hits a _side-session_
 subprocess — separate process, separate turn counter, separate state:
 
 ```
@@ -51,11 +51,11 @@ $ curl -X POST http://localhost:3000/v1/bots/echo/ask \
 
 ## Protocol compatibility
 
-| protocol       | side sessions? |
-|----------------|----------------|
-| `claude-ndjson`| yes            |
-| `codex-jsonl`  | yes            |
-| `jsonl-text`   | no (doctor C011 will flag ask-scope tokens) |
+| protocol        | side sessions?                              |
+| --------------- | ------------------------------------------- |
+| `claude-ndjson` | yes                                         |
+| `codex-jsonl`   | yes                                         |
+| `jsonl-text`    | no (doctor C011 will flag ask-scope tokens) |
 
 If you try to give an `ask`-scope agent-API token to a `jsonl-text`
 command runner, `torana doctor` fails C011. Switch the protocol to

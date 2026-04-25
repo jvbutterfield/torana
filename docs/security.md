@@ -79,7 +79,7 @@ of the main ACL / secret story above. Full protocol in
   "token invalid" — callers can't probe for bot existence.
 - **Per-scope gating.** `ask` and `send` are distinct scopes; a token
   scoped `["send"]` cannot call `/v1/bots/:id/ask` (403).
-- **Send ACL re-check.** Agent-API tokens authorize *bots*, not *users*.
+- **Send ACL re-check.** Agent-API tokens authorize _bots_, not _users_.
   The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.
 - **No enumeration.** Turn lookups return a single `turn_not_found` code

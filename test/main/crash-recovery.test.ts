@@ -266,7 +266,9 @@ describe("runCrashRecovery", () => {
     runCrashRecovery(db, new Map<string, TelegramClient>());
 
     // Turn state was still updated even without a client.
-    const row = db._unsafeQuery("SELECT status FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(turnId) as {
       status: string;
     };
     expect(row.status).toBe("interrupted");
@@ -358,7 +360,9 @@ describe("runCrashRecovery", () => {
     const edits = calls.filter((c) => c.method === "editMessageText");
     expect(edits).toHaveLength(0);
     // Turn still transitions to interrupted and user is notified.
-    const row = db._unsafeQuery("SELECT status FROM turns WHERE id=?").get(turnId) as {
+    const row = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(turnId) as {
       status: string;
     };
     expect(row.status).toBe("interrupted");
@@ -389,10 +393,14 @@ describe("runCrashRecovery", () => {
       ]),
     );
 
-    const rowA = db._unsafeQuery("SELECT status FROM turns WHERE id=?").get(tA) as {
+    const rowA = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(tA) as {
       status: string;
     };
-    const rowB = db._unsafeQuery("SELECT status FROM turns WHERE id=?").get(tB) as {
+    const rowB = db
+      ._unsafeQuery("SELECT status FROM turns WHERE id=?")
+      .get(tB) as {
       status: string;
     };
     expect(rowA.status).toBe("interrupted");

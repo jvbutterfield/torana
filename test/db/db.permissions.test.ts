@@ -4,13 +4,7 @@
 // message history to any other user on the host.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import {
-  chmodSync,
-  mkdtempSync,
-  rmSync,
-  statSync,
-  existsSync,
-} from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -55,12 +49,16 @@ describe("db permissions", () => {
       const db = new GatewayDB(dbPath);
       try {
         // Run a simple write to force the WAL to materialise.
-        db.exec("CREATE TABLE IF NOT EXISTS t (a INT); INSERT INTO t VALUES(1)");
+        db.exec(
+          "CREATE TABLE IF NOT EXISTS t (a INT); INSERT INTO t VALUES(1)",
+        );
         expect(mode(dbPath)).toBe(0o600);
         // WAL may or may not exist depending on SQLite's checkpoint
         // cadence — only assert it's 0600 when it does exist.
-        if (existsSync(dbPath + "-wal")) expect(mode(dbPath + "-wal")).toBe(0o600);
-        if (existsSync(dbPath + "-shm")) expect(mode(dbPath + "-shm")).toBe(0o600);
+        if (existsSync(dbPath + "-wal"))
+          expect(mode(dbPath + "-wal")).toBe(0o600);
+        if (existsSync(dbPath + "-shm"))
+          expect(mode(dbPath + "-shm")).toBe(0o600);
       } finally {
         db.close();
       }

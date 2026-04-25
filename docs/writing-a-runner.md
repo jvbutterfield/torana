@@ -9,7 +9,11 @@ interface AgentRunner {
   readonly botId: string;
   start(): Promise<void>;
   stop(signal?: "SIGTERM" | "SIGKILL"): Promise<void>;
-  sendTurn(turnId: string, text: string, attachments: Attachment[]): SendTurnResult;
+  sendTurn(
+    turnId: string,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult;
   reset(): Promise<void>;
   supportsReset(): boolean;
   isReady(): boolean;
@@ -20,9 +24,18 @@ interface AgentRunner {
   // "not supported" errors.
   supportsSideSessions(): boolean;
   startSideSession(sessionId: string): Promise<void>;
-  sendSideTurn(sessionId: string, turnId: string, text: string, attachments: Attachment[]): SendTurnResult;
+  sendSideTurn(
+    sessionId: string,
+    turnId: string,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult;
   stopSideSession(sessionId: string, graceMs?: number): Promise<void>;
-  onSide<E>(sessionId: string, event: E, handler: (e: Event<E>) => void): Unsubscribe;
+  onSide<E>(
+    sessionId: string,
+    event: E,
+    handler: (e: Event<E>) => void,
+  ): Unsubscribe;
 }
 ```
 
@@ -70,11 +83,11 @@ Every runner emits exactly these events:
 type RunnerEvent =
   | { kind: "ready" }
   | { kind: "text_delta"; turnId; text: string }
-  | { kind: "done";  turnId; stopReason?; usage?; finalText?; durationMs? }
+  | { kind: "done"; turnId; stopReason?; usage?; finalText?; durationMs? }
   | { kind: "error"; turnId; message; retriable }
   | { kind: "fatal"; message; code? }
   | { kind: "rate_limit"; turnId?; retry_after_ms }
-  | { kind: "status"; turnId?; phase }
+  | { kind: "status"; turnId?; phase };
 ```
 
 ### Ordering guarantees

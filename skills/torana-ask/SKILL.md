@@ -88,15 +88,15 @@ git diff | torana ask --file @- reviewer "Anything risky here?"
 
 Exit codes:
 
-| Code | Meaning |
-|---:|---|
-| 0 | Success — reply printed to stdout. |
-| 2 | Bad usage (missing arg, bad flag). **Do not retry.** |
-| 3 | Auth failed. Fix `TORANA_TOKEN` / profile. **Do not retry.** |
-| 4 | Not found (bot, turn). **Do not retry.** |
-| 5 | Runner or server error. Retry with exponential backoff. |
-| 6 | Timeout (`202 in_progress`). Stdout has the `turn_id`; poll with `torana turns get <id>`. |
-| 7 | Capacity / busy. Retry after 1–10 s. |
+| Code | Meaning                                                                                   |
+| ---: | ----------------------------------------------------------------------------------------- |
+|    0 | Success — reply printed to stdout.                                                        |
+|    2 | Bad usage (missing arg, bad flag). **Do not retry.**                                      |
+|    3 | Auth failed. Fix `TORANA_TOKEN` / profile. **Do not retry.**                              |
+|    4 | Not found (bot, turn). **Do not retry.**                                                  |
+|    5 | Runner or server error. Retry with exponential backoff.                                   |
+|    6 | Timeout (`202 in_progress`). Stdout has the `turn_id`; poll with `torana turns get <id>`. |
+|    7 | Capacity / busy. Retry after 1–10 s.                                                      |
 
 ## Security
 

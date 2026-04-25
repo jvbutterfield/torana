@@ -16,7 +16,14 @@
 // Called both directly (`bun scripts/install-skills.ts`) and via the CLI
 // dispatcher (`torana skills install`, see src/cli/skills.ts).
 
-import { chmodSync, existsSync, mkdirSync, statSync, copyFileSync, readFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  statSync,
+  copyFileSync,
+  readFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 
@@ -88,8 +95,8 @@ export function installSkills(opts: InstallOptions): InstallResult {
   for (const host of opts.hosts) {
     const targetDir =
       host === "claude"
-        ? opts.claudeTarget ?? claudeSkillsDir(env)
-        : opts.codexTarget ?? codexSkillsDir(env);
+        ? (opts.claudeTarget ?? claudeSkillsDir(env))
+        : (opts.codexTarget ?? codexSkillsDir(env));
 
     for (const skill of SKILLS) {
       const sourceFile = join(src, skill, "SKILL.md");
@@ -97,34 +104,62 @@ export function installSkills(opts: InstallOptions): InstallResult {
       const srcBytes = readFileSync(sourceFile);
 
       if (opts.dryRun) {
-        actions.push({ source: sourceFile, target: targetFile, host, skill, action: "would-copy" });
+        actions.push({
+          source: sourceFile,
+          target: targetFile,
+          host,
+          skill,
+          action: "would-copy",
+        });
         continue;
       }
 
       if (existsSync(targetFile)) {
         const existing = readFileSync(targetFile);
         if (Buffer.compare(srcBytes, existing) === 0) {
-          actions.push({ source: sourceFile, target: targetFile, host, skill, action: "skipped-identical" });
+          actions.push({
+            source: sourceFile,
+            target: targetFile,
+            host,
+            skill,
+            action: "skipped-identical",
+          });
           continue;
         }
         if (!opts.force) {
-          actions.push({ source: sourceFile, target: targetFile, host, skill, action: "refused-different" });
+          actions.push({
+            source: sourceFile,
+            target: targetFile,
+            host,
+            skill,
+            action: "refused-different",
+          });
           continue;
         }
       }
 
       // Ensure target dir exists.
       const skillDir = join(targetDir, skill);
-      if (!existsSync(skillDir)) mkdirSync(skillDir, { recursive: true, mode: 0o755 });
+      if (!existsSync(skillDir))
+        mkdirSync(skillDir, { recursive: true, mode: 0o755 });
       copyFileSync(sourceFile, targetFile);
       chmodSync(targetFile, 0o644);
-      actions.push({ source: sourceFile, target: targetFile, host, skill, action: "copied" });
+      actions.push({
+        source: sourceFile,
+        target: targetFile,
+        host,
+        skill,
+        action: "copied",
+      });
     }
   }
   return { actions };
 }
 
-export function summarize(result: InstallResult): { lines: string[]; hasRefused: boolean } {
+export function summarize(result: InstallResult): {
+  lines: string[];
+  hasRefused: boolean;
+} {
   const lines: string[] = [];
   let copied = 0;
   let identical = 0;
@@ -139,13 +174,17 @@ export function summarize(result: InstallResult): { lines: string[]; hasRefused:
       lines.push(`  [skip]   ${a.host}/${a.skill} (identical)`);
     } else if (a.action === "refused-different") {
       refused += 1;
-      lines.push(`  [REFUSE] ${a.host}/${a.skill} differs — pass --force to overwrite`);
+      lines.push(
+        `  [REFUSE] ${a.host}/${a.skill} differs — pass --force to overwrite`,
+      );
     } else if (a.action === "would-copy") {
       wouldCopy += 1;
       lines.push(`  [dry]    ${a.host}/${a.skill} → ${a.target}`);
     }
   }
-  lines.unshift(`skills install: ${copied} copied, ${identical} identical, ${refused} refused, ${wouldCopy} dry-run`);
+  lines.unshift(
+    `skills install: ${copied} copied, ${identical} identical, ${refused} refused, ${wouldCopy} dry-run`,
+  );
   return { lines, hasRefused: refused > 0 };
 }
 
@@ -161,9 +200,14 @@ if (import.meta.main) {
     else if (a === "--dry-run") dryRun = true;
     else if (a.startsWith("--host=")) {
       const v = a.slice("--host=".length);
-      for (const h of v.split(",").map((s) => s.trim()).filter((s) => s)) {
+      for (const h of v
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s)) {
         if (h !== "claude" && h !== "codex") {
-          console.error(`install-skills: unknown host '${h}' (expected 'claude' or 'codex')`);
+          console.error(
+            `install-skills: unknown host '${h}' (expected 'claude' or 'codex')`,
+          );
           process.exit(2);
         }
         hosts.push(h);
@@ -175,7 +219,10 @@ if (import.meta.main) {
         console.error("install-skills: --host requires a value");
         process.exit(2);
       }
-      for (const h of next.split(",").map((s) => s.trim()).filter((s) => s)) {
+      for (const h of next
+        .split(",")
+        .map((s) => s.trim())
+        .filter((s) => s)) {
         if (h !== "claude" && h !== "codex") {
           console.error(`install-skills: unknown host '${h}'`);
           process.exit(2);
@@ -191,7 +238,9 @@ if (import.meta.main) {
     }
   }
   if (hosts.length === 0) {
-    console.error("install-skills: --host is required (claude, codex, or both)");
+    console.error(
+      "install-skills: --host is required (claude, codex, or both)",
+    );
     process.exit(2);
   }
   const result = installSkills({ hosts, force, dryRun });

@@ -15,10 +15,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-import {
-  createServer,
-  type Server as HttpServer,
-} from "../../src/server.js";
+import { createServer, type Server as HttpServer } from "../../src/server.js";
 import { loadConfigFromString } from "../../src/config/load.js";
 
 // Manually re-implement the proxy route against a fresh server. We can't
@@ -218,9 +215,7 @@ dashboard:
   enabled: true
   proxy_target: https://internal.example.com
 `;
-    expect(() => loadConfigFromString(raw)).toThrow(
-      /must be loopback/,
-    );
+    expect(() => loadConfigFromString(raw)).toThrow(/must be loopback/);
   });
 
   test("enabled + non-loopback proxy_target WITH opt-in → accepted", () => {

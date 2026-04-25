@@ -92,7 +92,11 @@ export async function runBots(
   const showRunner = response.bots.some((b) => b.runner_type !== undefined);
   const rows = response.bots.map((b) =>
     showRunner
-      ? [b.bot_id, b.runner_type ?? "—", b.supports_side_sessions ? "yes" : "no"]
+      ? [
+          b.bot_id,
+          b.runner_type ?? "—",
+          b.supports_side_sessions ? "yes" : "no",
+        ]
       : [b.bot_id, b.supports_side_sessions ? "yes" : "no"],
   );
   const headers = showRunner

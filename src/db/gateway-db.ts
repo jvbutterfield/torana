@@ -902,9 +902,9 @@ export class GatewayDB {
    * the agent-API `send` ACL re-check when the caller passed chat_id only.
    */
   getUserIdForChat(botId: BotId, chatId: number): string | null {
-    const row = this.stmts.getUserIdForChat.get(botId, chatId) as
-      | { telegram_user_id: string }
-      | null;
+    const row = this.stmts.getUserIdForChat.get(botId, chatId) as {
+      telegram_user_id: string;
+    } | null;
     return row?.telegram_user_id ?? null;
   }
 
