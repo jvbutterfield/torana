@@ -16,6 +16,8 @@ import {
   statSync,
   existsSync,
   readdirSync,
+  symlinkSync,
+  lstatSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -355,6 +357,103 @@ describe("downloadAttachments", () => {
     expect(result.attachments).toHaveLength(0);
     expect(result.errors).toHaveLength(0);
   });
+
+  // O_EXCL: pre-existing file at the destination path must NOT be
+  // overwritten. We retry with a UUID-suffixed filename instead.
+  test("EEXIST collision: regenerates filename with UUID and retries", async () => {
+    const dir = join(tmpDir, "attachments", "alpha");
+    mkdirSync(dir, { recursive: true });
+    const collidePath = join(dir, "55-0.jpg");
+    writeFileSync(collidePath, "preexisting");
+
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff]); // JPEG magic
+    const client = makeFakeClient([
+      { fileId: "fid", filePath: "p", bytes, fileSize: bytes.length },
+    ]);
+    const message: TelegramMessage = {
+      message_id: 1,
+      date: 1,
+      chat: { id: 111, type: "private" },
+      photo: [
+        {
+          file_id: "fid",
+          file_unique_id: "u",
+          width: 100,
+          height: 100,
+          file_size: bytes.length,
+        },
+      ],
+    };
+    const result = await downloadAttachments(
+      config,
+      "alpha",
+      55,
+      message,
+      client,
+    );
+
+    expect(result.errors).toHaveLength(0);
+    expect(result.attachments).toHaveLength(1);
+    // Pre-existing file is untouched (no overwrite).
+    expect(readFileSync(collidePath, "utf8")).toBe("preexisting");
+    // Written path differs from the colliding one and carries a UUID suffix.
+    const written = result.attachments[0].path;
+    expect(written).not.toBe(collidePath);
+    expect(written).toMatch(
+      /55-0-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/,
+    );
+    // Bytes were actually written.
+    expect(readFileSync(written)).toEqual(Buffer.from(bytes));
+  });
+
+  // O_NOFOLLOW: a symlink staged at the destination path must be rejected
+  // outright — we do not follow it (which would let an attacker who can
+  // write into the attachments dir redirect our writes outside it).
+  test.if(process.platform !== "win32")(
+    "symlink at target: refuses to follow (O_NOFOLLOW)",
+    async () => {
+      const dir = join(tmpDir, "attachments", "alpha");
+      mkdirSync(dir, { recursive: true });
+      const decoy = join(tmpDir, "outside-decoy.txt");
+      writeFileSync(decoy, "should-not-be-overwritten");
+      const symlinkPath = join(dir, "77-0.jpg");
+      symlinkSync(decoy, symlinkPath);
+
+      const bytes = new Uint8Array([0xff, 0xd8, 0xff]);
+      const client = makeFakeClient([
+        { fileId: "fid", filePath: "p", bytes, fileSize: bytes.length },
+      ]);
+      const message: TelegramMessage = {
+        message_id: 1,
+        date: 1,
+        chat: { id: 111, type: "private" },
+        photo: [
+          {
+            file_id: "fid",
+            file_unique_id: "u",
+            width: 100,
+            height: 100,
+            file_size: bytes.length,
+          },
+        ],
+      };
+      const result = await downloadAttachments(
+        config,
+        "alpha",
+        77,
+        message,
+        client,
+      );
+
+      // No attachment recorded; a symlink-specific error is reported.
+      expect(result.attachments).toHaveLength(0);
+      expect(result.errors.some((e) => e.includes("symlink"))).toBe(true);
+      // Decoy target is untouched — the write didn't follow the symlink.
+      expect(readFileSync(decoy, "utf8")).toBe("should-not-be-overwritten");
+      // The symlink itself is left in place for ops to inspect.
+      expect(lstatSync(symlinkPath).isSymbolicLink()).toBe(true);
+    },
+  );
 });
 
 describe("computeAttachmentsDiskUsage", () => {
