@@ -96,6 +96,7 @@ function makeConfig(options: {
       enabled: false,
       mount_path: "/dashboard",
       allow_non_loopback_proxy_target: false,
+      forward_full_request: false,
     },
     metrics: { enabled: false },
     attachments: {

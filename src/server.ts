@@ -137,13 +137,26 @@ export function createServer(opts: ServerOptions): Server {
     async fetch(req) {
       try {
         const url = new URL(req.url);
-        const method: HttpMethod | null =
+        // Core methods (GET/POST/DELETE) are accepted unconditionally and
+        // fall through to the default 404 fallback when no route matches.
+        // Optional methods (PUT/PATCH/OPTIONS/HEAD) are accepted only when
+        // an explicit route handles them (the dashboard proxy registers
+        // these when forward_full_request is on); otherwise we return 405,
+        // preserving the agent-api defence-in-depth behaviour and the
+        // legacy plain-text 405 on non-/v1 paths.
+        const isCoreMethod =
           req.method === "GET" ||
           req.method === "POST" ||
-          req.method === "DELETE"
-            ? (req.method as HttpMethod)
-            : null;
-        if (!method) {
+          req.method === "DELETE";
+        const isOptionalMethod =
+          req.method === "PUT" ||
+          req.method === "PATCH" ||
+          req.method === "OPTIONS" ||
+          req.method === "HEAD";
+        const method: HttpMethod | null =
+          isCoreMethod || isOptionalMethod ? (req.method as HttpMethod) : null;
+
+        const methodNotAllowed = (): Response => {
           if (url.pathname.startsWith("/v1/")) {
             return new Response(
               JSON.stringify({
@@ -154,6 +167,11 @@ export function createServer(opts: ServerOptions): Server {
             );
           }
           return new Response("Method Not Allowed", { status: 405 });
+        };
+
+        if (!method) {
+          // Truly unsupported HTTP verb (e.g. CONNECT, TRACE).
+          return methodNotAllowed();
         }
 
         // Exact match wins.
@@ -186,6 +204,11 @@ export function createServer(opts: ServerOptions): Server {
           }
         }
 
+        // No route matched. Optional methods 405 (no handler claims them);
+        // core methods fall through to the 404 fallback.
+        if (isOptionalMethod) {
+          return methodNotAllowed();
+        }
         return await (fallback ?? defaultFallback)(req);
       } catch (err) {
         return await (errorHandler ?? defaultErrorHandler)(err, req);

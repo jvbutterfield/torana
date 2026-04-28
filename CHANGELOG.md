@@ -6,6 +6,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.8] - 2026-04-27
+
+### Added
+
+- **`dashboard.forward_full_request` opt-in passthrough.** Dashboards that own
+  their own auth (login forms, session cookies, mutating actions) can set
+  `dashboard.forward_full_request: true` to (a) forward all standard methods
+  (GET/POST/PUT/PATCH/DELETE/OPTIONS/HEAD) instead of GET-only and (b) preserve
+  `Authorization` and `Cookie` on the inbound request so the upstream can
+  validate bearers and session cookies. Default remains `false` — the safe
+  GET-only header-stripping mode for dashboards with no auth of their own.
+  `Proxy-Authorization`, `Idempotency-Key`, `X-Telegram-Bot-Api-Secret-Token`,
+  and `Host` are still stripped regardless, and `redirect: "manual"` still
+  blocks SSRF-via-302. Combining the new flag with
+  `allow_non_loopback_proxy_target: true` emits a load-time warning since
+  client credentials then cross a network boundary; document the upstream
+  trust assertion before enabling. Closes [#14](https://github.com/jvbutterfield/torana/issues/14).
+
+### Fixed
+
+- **Dashboard proxy was GET-only and stripped Authorization/Cookie
+  unconditionally** ([#14](https://github.com/jvbutterfield/torana/issues/14)),
+  blocking dashboards that authenticate their own users — login `POST` was
+  rejected before reaching the upstream and session cookies never round-tripped.
+  Default behaviour is unchanged; opt in via `dashboard.forward_full_request`
+  (see Added).
+
 ## [1.0.0-rc.7] - 2026-04-25
 
 ### Security

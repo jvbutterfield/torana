@@ -15,7 +15,14 @@ export interface Transport {
   stop(): Promise<void>;
 }
 
-export type HttpMethod = "GET" | "POST" | "DELETE";
+export type HttpMethod =
+  | "GET"
+  | "POST"
+  | "PUT"
+  | "PATCH"
+  | "DELETE"
+  | "OPTIONS"
+  | "HEAD";
 
 /** In-process HTTP router contract. server.ts implements this; transports consume it. */
 export interface HttpRouter {

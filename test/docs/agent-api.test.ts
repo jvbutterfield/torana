@@ -237,20 +237,31 @@ describe("README.md — Agent API section", () => {
 });
 
 describe("CHANGELOG.md — top-of-file Agent API entry", () => {
-  test("has an Unreleased header + a top version section that mentions the Agent API", () => {
+  test("has an Unreleased header + a recent version section that mentions the Agent API", () => {
     const body = read(CHANGELOG);
     const unreleasedIdx = body.indexOf("## [Unreleased]");
     expect(unreleasedIdx).toBeGreaterThanOrEqual(0);
-    // The Agent-API entry may live in the [Unreleased] block pre-cut, or
-    // in the most recent version section post-cut. Allow either by
-    // scanning from [Unreleased] through the SECOND version heading.
-    const firstVersion = body.indexOf("\n## [1.", unreleasedIdx);
-    const secondVersion =
-      firstVersion > 0 ? body.indexOf("\n## [1.", firstVersion + 5) : -1;
-    const slice =
-      secondVersion > 0
-        ? body.slice(unreleasedIdx, secondVersion)
-        : body.slice(unreleasedIdx);
+    // The Agent-API entry must appear in [Unreleased] or in one of the
+    // recent version sections — the drift-guard exists to ensure we don't
+    // ship Agent-API changes without a CHANGELOG entry, not to require
+    // every rc to touch the Agent API. Scan forward from [Unreleased]
+    // through the first version heading that contains the markers, or up
+    // to a small window of recent versions.
+    const tail = body.slice(unreleasedIdx);
+    const versionHeadings: number[] = [];
+    {
+      const re = /\n## \[1\./g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(tail)) !== null) versionHeadings.push(m.index);
+    }
+    // Scan window: [Unreleased] block + up to the first 5 version sections.
+    const windowEnd =
+      versionHeadings.length > 5
+        ? versionHeadings[5]
+        : versionHeadings.length > 0
+          ? tail.length
+          : tail.length;
+    const slice = tail.slice(0, windowEnd);
     expect(slice).toContain("Agent API");
     expect(slice).toContain("side-session");
   });

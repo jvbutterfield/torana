@@ -284,6 +284,21 @@ export function loadConfigFromString(
   const warnings: string[] = [];
   const agentApiTokens = resolveAgentApiTokens(config, raw, warnings);
 
+  // Dashboard: full-request passthrough + non-loopback target sends client
+  // bearers and cookies across a network boundary to a host the gateway
+  // can't vouch for. Each flag alone is fine; together they need a deliberate
+  // ack from the operator that the upstream is at least as trusted as the
+  // gateway itself.
+  if (
+    config.dashboard.enabled &&
+    config.dashboard.forward_full_request &&
+    config.dashboard.allow_non_loopback_proxy_target
+  ) {
+    warnings.push(
+      "dashboard.forward_full_request=true with allow_non_loopback_proxy_target=true forwards client Authorization/Cookie to a non-loopback upstream; confirm the upstream is at least as trusted as the gateway and owns its own CSRF defenses",
+    );
+  }
+
   return {
     config,
     sourcePath: opts.filePath ?? "",
