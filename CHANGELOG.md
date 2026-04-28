@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.8] - 2026-04-27
+
 ### Added
 
 - **`dashboard.forward_full_request` opt-in passthrough.** Dashboards that own
