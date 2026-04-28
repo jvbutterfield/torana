@@ -195,12 +195,42 @@ export const DashboardSchema = z
      * sends. Loopback / UNIX-socket / `localhost` targets are always allowed.
      */
     allow_non_loopback_proxy_target: BoolPermissive.default(false),
+    /**
+     * Opt in to full-request passthrough for dashboards that own their own
+     * auth (login form, session cookies, mutating actions). When true:
+     *
+     *   - All standard methods are forwarded (GET/POST/PUT/PATCH/DELETE/
+     *     OPTIONS/HEAD) instead of GET-only.
+     *   - `Authorization` and `Cookie` are NOT stripped from the inbound
+     *     request, so the upstream can validate bearers and session cookies.
+     *
+     * Still stripped regardless of this flag: `Proxy-Authorization`,
+     * `Idempotency-Key`, `X-Telegram-Bot-Api-Secret-Token`, `Host`. Redirect
+     * following stays disabled (`redirect: "manual"`) so the upstream cannot
+     * be used as an SSRF stepping-stone.
+     *
+     * The operator is asserting two things by setting this:
+     *   1. The upstream is at least as trusted as the gateway itself — every
+     *      bearer/cookie a client attaches to a `/dashboard/...` request
+     *      reaches the upstream process, including ones the client should
+     *      not have sent.
+     *   2. The upstream owns CSRF defenses (CSRF tokens, SameSite=Strict,
+     *      origin checks). GET-only mode was an implicit CSRF defense; this
+     *      mode enables state-changing methods.
+     *
+     * Combining `forward_full_request: true` with
+     * `allow_non_loopback_proxy_target: true` means client credentials cross
+     * a network boundary to a non-loopback host. Both flags must be set
+     * deliberately for that combination.
+     */
+    forward_full_request: BoolPermissive.default(false),
   })
   .strict()
   .default({
     enabled: false,
     mount_path: "/dashboard",
     allow_non_loopback_proxy_target: false,
+    forward_full_request: false,
   })
   .refine((d) => !d.enabled || !!d.proxy_target, {
     message:

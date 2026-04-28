@@ -27,7 +27,7 @@ import { sweepUnreferencedAgentApiFiles } from "./agent-api/attachments.js";
 import { createServer, type Server } from "./server.js";
 import { WebhookTransport } from "./transport/webhook.js";
 import { PollingTransport } from "./transport/polling.js";
-import type { Transport, Unregister } from "./transport/types.js";
+import type { HttpMethod, Transport, Unregister } from "./transport/types.js";
 import {
   registerAgentApiHealthRoute,
   registerAgentApiRoutes,
@@ -463,39 +463,52 @@ function registerFixedRoutes(
   if (config.dashboard.enabled && config.dashboard.proxy_target) {
     const mountPath = config.dashboard.mount_path.replace(/\/+$/, "");
     const target = config.dashboard.proxy_target.replace(/\/$/, "");
-    server.router.route("GET", `${mountPath}/*`, async (req) => {
+    const forwardFull = config.dashboard.forward_full_request;
+
+    // Default mode: GET-only, Authorization/Cookie stripped — safe for a
+    // dashboard with no auth of its own. forward_full_request mode: all
+    // standard methods + auth headers preserved, for dashboards that own
+    // their own auth (login, session cookies, mutating actions). The
+    // operator opts in via dashboard.forward_full_request; see schema.ts
+    // for the trust assertion that flag implies.
+    const handler = async (req: Request): Promise<Response> => {
       const url = new URL(req.url);
       const rel = url.pathname.slice(mountPath.length) || "/";
       const backendUrl = `${target}${rel}${url.search}`;
 
       // Strip hop-by-hop and sensitive request headers before forwarding:
-      //   - Authorization, Cookie, Proxy-Authorization: keeping these would
-      //     leak Agent-API bearer tokens, browser session cookies, or any
-      //     upstream auth header through the dashboard proxy.
-      //   - Idempotency-Key, X-Telegram-Bot-Api-Secret-Token: torana-internal
-      //     secrets the dashboard must never see.
+      //   - Authorization, Cookie: stripped in default mode to avoid
+      //     leaking Agent-API bearer tokens or browser session cookies to
+      //     a dashboard that doesn't own its auth. In forward_full_request
+      //     mode the operator has asserted the upstream owns auth, so we
+      //     pass them through.
+      //   - Proxy-Authorization, Idempotency-Key,
+      //     X-Telegram-Bot-Api-Secret-Token: torana-internal or hop-by-hop
+      //     secrets the dashboard must never see; stripped regardless of
+      //     mode.
       //   - Host: the fetch() rewrites this correctly; copying the gateway's
       //     Host to the backend confuses virtual-hosted upstreams.
       // Retain everything else so request routing + Accept/Accept-Language
       // still work for the dashboard UI.
       const forwardedHeaders = new Headers(req.headers);
-      for (const h of [
-        "authorization",
-        "cookie",
+      const stripList = [
         "proxy-authorization",
         "idempotency-key",
         "x-telegram-bot-api-secret-token",
         "host",
-      ]) {
+      ];
+      if (!forwardFull) {
+        stripList.push("authorization", "cookie");
+      }
+      for (const h of stripList) {
         forwardedHeaders.delete(h);
       }
 
       try {
-        // - method: GET is enforced by the router (we only register GET);
-        //   passing req.method preserves that explicitly.
         // - redirect: "manual" stops fetch from following a backend Location:
         //   header. Without this the proxy can be used as an open redirect
         //   / SSRF stepping-stone into anywhere the gateway host can reach.
+        //   Kept regardless of forward_full_request.
         const proxyReq = new Request(backendUrl, {
           method: req.method,
           headers: forwardedHeaders,
@@ -506,7 +519,14 @@ function registerFixedRoutes(
       } catch {
         return new Response("Dashboard unavailable", { status: 502 });
       }
-    });
+    };
+
+    const methods: HttpMethod[] = forwardFull
+      ? ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+      : ["GET"];
+    for (const m of methods) {
+      server.router.route(m, `${mountPath}/*`, handler);
+    }
   }
 }
 
