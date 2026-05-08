@@ -117,7 +117,8 @@ export class Bot {
         turn_id: turnId,
         reason: result.reason,
       });
-      // Unwind the stream start so we don't leave a dangling "thinking..." placeholder.
+      // Unwind the stream start so the typing timer / activeTurns entry
+      // don't outlive the turn.
       this.streaming.cancelTurn(this.botConfig.id);
       return false;
     }
