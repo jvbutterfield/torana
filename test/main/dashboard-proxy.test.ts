@@ -64,6 +64,7 @@ function mountProxy(forwardFull: boolean): void {
     "idempotency-key",
     "x-telegram-bot-api-secret-token",
     "host",
+    "connection",
   ];
   if (!forwardFull) {
     stripList.push("authorization", "cookie");
@@ -74,11 +75,13 @@ function mountProxy(forwardFull: boolean): void {
     const backendUrl = `${target}${rel}${url.search}`;
     const forwardedHeaders = new Headers(req.headers);
     for (const h of stripList) forwardedHeaders.delete(h);
+    forwardedHeaders.set("connection", "close");
     const proxyReq = new Request(backendUrl, {
       method: req.method,
       headers: forwardedHeaders,
       body: req.body,
       redirect: "manual",
+      signal: req.signal,
     });
     return await fetch(proxyReq);
   };
@@ -303,6 +306,108 @@ describe("dashboard proxy forward_full_request mode", () => {
     expect([0, 302]).toContain(r.status);
     expect(captured).not.toBeNull();
     expect(captured!.url).toContain("127.0.0.1");
+  });
+});
+
+describe("dashboard proxy connection lifetime (GH#16)", () => {
+  // Regression coverage for GH#16: `/dashboard/*` wedges after multi-hour
+  // uptime because (a) bun's HTTP client parks every upstream socket in the
+  // keepalive pool with no idle eviction, and (b) when the inbound client
+  // disconnects mid-stream (SSE EventSource reconnects), the upstream fetch
+  // is never aborted so the upstream socket is held open. The fix: send
+  // `Connection: close` upstream and propagate `req.signal` into the
+  // upstream fetch.
+
+  test("Connection: close is set on the upstream request (default mode)", async () => {
+    mountProxy(false);
+    await fetch(`http://127.0.0.1:${proxyServer.port}/dashboard/x`);
+    expect(captured).not.toBeNull();
+    expect(captured!.headers["connection"]?.toLowerCase()).toBe("close");
+  });
+
+  test("caller-supplied Connection: keep-alive is overridden to close", async () => {
+    // A caller cannot pin a keepalive on the upstream socket. Otherwise the
+    // pool-accumulation regression returns for any caller who sets the
+    // header (most HTTP libs default to keep-alive).
+    mountProxy(false);
+    await fetch(`http://127.0.0.1:${proxyServer.port}/dashboard/y`, {
+      headers: { Connection: "keep-alive" },
+    });
+    expect(captured).not.toBeNull();
+    expect(captured!.headers["connection"]?.toLowerCase()).toBe("close");
+  });
+
+  test("Connection: close is set in forward_full_request mode too", async () => {
+    mountProxy(true);
+    await fetch(`http://127.0.0.1:${proxyServer.port}/dashboard/api/login`, {
+      method: "POST",
+      body: "x",
+    });
+    expect(captured).not.toBeNull();
+    expect(captured!.headers["connection"]?.toLowerCase()).toBe("close");
+  });
+
+  test("client disconnect aborts the upstream fetch (SSE / long-lived response)", async () => {
+    // Replace the default capture upstream with one that keeps the response
+    // body open and exposes whether its inbound request was aborted by the
+    // proxy. This is the exact SSE shape from GH#16: headers flush
+    // immediately, body never ends, then the client goes away. Without
+    // `signal: req.signal` in the proxy, the upstream socket is held until
+    // the upstream times out — that's the leak.
+    await upstream.stop();
+    let upstreamAborted = false;
+    let upstreamSawRequest = false;
+    let resolveAbort!: () => void;
+    const upstreamAbortedPromise = new Promise<void>((resolve) => {
+      resolveAbort = resolve;
+    });
+    upstream = createServer({ port: 0, hostname: "127.0.0.1" });
+    const longLivedHandler = async (req: Request): Promise<Response> => {
+      upstreamSawRequest = true;
+      req.signal.addEventListener("abort", () => {
+        upstreamAborted = true;
+        resolveAbort();
+      });
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(": hello\n\n"));
+          // intentionally never close — caller must abort.
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    };
+    for (const m of ALL_METHODS) {
+      upstream.router.route(m, "/*", longLivedHandler);
+    }
+    mountProxy(false);
+
+    const ac = new AbortController();
+    const inflight = fetch(
+      `http://127.0.0.1:${proxyServer.port}/dashboard/api/pipeline/stream`,
+      { signal: ac.signal },
+    );
+    // Wait until the upstream has actually accepted the proxied request,
+    // otherwise aborting before the proxy hands off would not exercise
+    // signal propagation.
+    const start = Date.now();
+    while (!upstreamSawRequest && Date.now() - start < 2000) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(upstreamSawRequest).toBe(true);
+    ac.abort();
+    await inflight.catch(() => {});
+    // If `signal: req.signal` is missing from the proxy, the upstream never
+    // sees the abort and this race resolves to the rejection.
+    await Promise.race([
+      upstreamAbortedPromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("upstream abort not seen")), 2000),
+      ),
+    ]);
+    expect(upstreamAborted).toBe(true);
   });
 });
 
