@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.9] - 2026-05-07
+
 ### Changed
 
 - **Lazy first sendMessage so Telegram pushes a notification on each
