@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dashboard proxy wedge after multi-hour uptime**
+  ([#16](https://github.com/jvbutterfield/torana/issues/16)). `/dashboard/*`
+  would stop responding after multi-hour uptime while every other torana
+  route stayed healthy. Two leaks fed it: (1) bun's HTTP client parked each
+  torana → upstream connection in its keepalive pool with no idle eviction,
+  so the pool grew monotonically until it hit an upstream cap and blocked
+  all new dashboard requests; (2) when a browser disconnected from a
+  long-lived response (the dashboard's SSE `EventSource`), the inbound
+  abort was not propagated to the upstream `fetch`, so the upstream socket
+  was held open until the upstream itself timed out. The proxy now sets
+  `Connection: close` on the upstream request (bounds pool growth on a
+  per-request basis — the proxy target is loopback by default, so the
+  per-request TCP setup is ~free) and threads `req.signal` into the
+  upstream `fetch` so client disconnects abort the upstream call. No
+  config change required.
+
 ## [1.0.0-rc.8] - 2026-04-27
 
 ### Added

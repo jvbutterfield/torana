@@ -488,6 +488,8 @@ function registerFixedRoutes(
       //     mode.
       //   - Host: the fetch() rewrites this correctly; copying the gateway's
       //     Host to the backend confuses virtual-hosted upstreams.
+      //   - Connection: dropped here because we re-set it to "close" below;
+      //     a caller-supplied "Connection: keep-alive" must not win.
       // Retain everything else so request routing + Accept/Accept-Language
       // still work for the dashboard UI.
       const forwardedHeaders = new Headers(req.headers);
@@ -496,6 +498,7 @@ function registerFixedRoutes(
         "idempotency-key",
         "x-telegram-bot-api-secret-token",
         "host",
+        "connection",
       ];
       if (!forwardFull) {
         stripList.push("authorization", "cookie");
@@ -503,17 +506,32 @@ function registerFixedRoutes(
       for (const h of stripList) {
         forwardedHeaders.delete(h);
       }
+      // Force the upstream socket to close after this response. Without
+      // this, bun's HTTP client parks each torana → upstream connection in
+      // its keepalive pool; over multi-hour uptime the pool grows
+      // monotonically until it hits an upstream/anyio cap, at which point
+      // every new /dashboard/* request blocks waiting for a free slot.
+      // GH#16. The cost is one TCP setup per request, but the proxy target
+      // is loopback by default so RTT is ~zero; the wedge regression is
+      // the worse failure mode.
+      forwardedHeaders.set("connection", "close");
 
       try {
         // - redirect: "manual" stops fetch from following a backend Location:
         //   header. Without this the proxy can be used as an open redirect
         //   / SSRF stepping-stone into anywhere the gateway host can reach.
         //   Kept regardless of forward_full_request.
+        // - signal: req.signal propagates client-disconnect into the upstream
+        //   fetch. Critical for long-lived responses (SSE / EventSource):
+        //   without it, when the browser closes its EventSource the upstream
+        //   socket is held until the upstream itself times out, leaking pool
+        //   slots one-by-one until /dashboard/* wedges. GH#16.
         const proxyReq = new Request(backendUrl, {
           method: req.method,
           headers: forwardedHeaders,
           body: req.body,
           redirect: "manual",
+          signal: req.signal,
         });
         return await fetch(proxyReq);
       } catch {
