@@ -6,6 +6,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- **Lazy first sendMessage so Telegram pushes a notification on each
+  reply.** The streaming UX previously sent an eager `👀 thinking...`
+  placeholder immediately on every turn and edited the response into it
+  as the runner produced text. Telegram doesn't push notifications for
+  edits, so users got no ping when the response was actually ready —
+  they had to keep checking the chat. The placeholder is gone. The
+  user-visible message is now sent fresh: on the first streamed
+  text_delta, or (for non-streaming runners) at finalize time. That
+  fresh `sendMessage` is what triggers the device notification. While
+  the runner is still thinking, the existing 4-second `sendChatAction`
+  typing indicator is the "received your message" feedback. Side
+  benefits: an empty response no longer leaves an orphan `thinking...`
+  in the chat, a turn cancelled before any output is silent (no orphan
+  placeholder), and we drop a redundant `editMessageText` per turn when
+  the initial send already carried the final text.
+
 ### Fixed
 
 - **Dashboard proxy wedge after multi-hour uptime**
