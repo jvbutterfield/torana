@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Config v2 with normalized agents, endpoints, sessions, alert targets, and a
+  read-only `torana config upgrade --from v1 --to v2` conversion command.
+- Schema v5 normalized persistence, sanitized migration dry-runs, automatic
+  pre-v5 snapshots, incremental auto-vacuum, and rehearsed emergency restore.
+
+### Changed
+
+- Telegram and Agent API now dual-write legacy and normalized state so the
+  compatibility bridge can run v1 config on schema v3 or v5 and remain the
+  lossless rollback target for the 2.0 rollout.
+- Conversation and outbox delivery now preserve platform string identifiers;
+  v1 behavior and Telegram request compatibility remain unchanged.
+
 ## [1.0.0-rc.9] - 2026-05-07
 
 ### Changed

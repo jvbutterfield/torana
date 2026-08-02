@@ -6,6 +6,7 @@
 <data_dir>/
   gateway.db                         # SQLite state (WAL)
   gateway.db.pre-v1                  # auto-snapshot before a v0→v1 migration
+  gateway.db.pre-v5                  # auto-snapshot before normalized schema activation
   attachments/<bot_id>/              # inbound files (safe filenames only — see security.md)
   logs/<bot_id>.log                  # runner stdout+stderr, tailable
   state/<bot_id>/                    # per-runner scratch (e.g. Claude config dir)
@@ -68,10 +69,37 @@ Every startup runs crash recovery:
 
 ```sh
 torana migrate --config ./torana.yaml            # apply pending
-torana migrate --config ./torana.yaml --dry-run  # preview planned SQL
+torana migrate --config ./torana.yaml --dry-run  # preview steps + sanitized backfill counts
+torana migrate --config ./torana.yaml --to 5     # explicit bridge activation
 ```
 
-The gateway refuses to start against a stale DB unless you pass `--auto-migrate`. Production deployments typically pass it in supervisord; CI/dry-run environments don't.
+The compatibility bridge can run v1 configuration on schema v3 or v5. It does
+not migrate merely because it starts. A v2 configuration requires schema v5.
+Use `--auto-migrate` only when an explicit automatic schema jump is intended.
+
+### v3 → v5 compatibility bridge
+
+Use this sequence for the Phase 2 rollout:
+
+1. Deploy and soak the bridge binary on schema v3 with the existing v1 config.
+2. Stop intake for the maintenance window.
+3. Run `torana migrate --dry-run` and review the sanitized backfill counts.
+4. Run `torana migrate --to 5`. Torana writes
+   `gateway.db.pre-v5`, applies the normalized schema, and enables incremental
+   auto-vacuum before intake resumes.
+5. Run `torana doctor`, restart the bridge on schema v5, and soak it before
+   switching to a v2 config.
+
+Preferred rollback is binary-only: stop the 2.0 process and start the tested
+compatibility bridge with the v1 config against the same schema-v5 database.
+It continues Telegram and Agent API from dual-written rows and leaves Buzz
+rows untouched.
+
+Snapshot restoration is emergency-only and loses activity after the snapshot.
+Before restoring, preserve the current v5 database for forensics. With Torana
+stopped, replace the database with `gateway.db.pre-v5` (and its matching WAL/
+SHM sidecars if present), then start the pre-migration binary and verify with
+`torana doctor`.
 
 ### v0 → v1 (agent-team only)
 

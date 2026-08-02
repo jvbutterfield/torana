@@ -1,7 +1,7 @@
 // Shared helpers used by both built-in protocols (claude-ndjson, jsonl-text).
 
 import { logger } from "../../log.js";
-import type { Attachment } from "../../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../../platform/types.js";
 import type { RunnerEvent } from "../types.js";
 
 const log = logger("protocol");

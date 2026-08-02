@@ -1,7 +1,7 @@
 // AgentRunner interface and the normalized event shape all runners emit.
 
 import type { BotId } from "../config/schema.js";
-import type { Attachment } from "../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../platform/types.js";
 
 export type TurnId = string;
 
@@ -239,7 +239,6 @@ export class RunnerEventEmitter {
         handler(event);
       } catch (err) {
         // Handler errors are swallowed so one bad listener doesn't break the runner.
-        // eslint-disable-next-line no-console
         console.error("runner event handler threw", err);
       }
     }

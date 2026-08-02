@@ -141,7 +141,7 @@ function buildBotWithStubRunner(
     config,
     botConfig,
     db,
-    telegram: null as never,
+    endpoint: null as never,
     streaming,
     outbox,
     metrics,

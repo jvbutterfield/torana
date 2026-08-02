@@ -2,8 +2,10 @@
 
 import { logger } from "../log.js";
 import type { BotConfig } from "../config/schema.js";
+import type { PlatformAdapter } from "../platform/capabilities.js";
+import { supports } from "../platform/capabilities.js";
+import type { ConversationRef } from "../platform/types.js";
 import type { AgentRunner } from "../runner/types.js";
-import type { TelegramClient } from "../telegram/client.js";
 
 const log = logger("commands");
 
@@ -13,7 +15,8 @@ export interface CommandContext {
   messageId: number;
   fromUserId: number;
   rawText: string;
-  telegram: TelegramClient;
+  adapter: PlatformAdapter;
+  conversation: ConversationRef;
   runner: AgentRunner;
   /** Bot-level snapshot getter for builtin:status / builtin:health. */
   getStatus: () => BotStatusSnapshot;
@@ -65,10 +68,7 @@ export async function dispatchCommand(
 
 async function handleReset(ctx: CommandContext): Promise<void> {
   if (!ctx.runner.supportsReset()) {
-    await ctx.telegram.sendMessage(
-      ctx.chatId,
-      "This bot does not support /reset.",
-    );
+    await sendReply(ctx, "This bot does not support /reset.");
     log.warn("reset requested but runner doesn't support it", {
       bot_id: ctx.botConfig.id,
     });
@@ -76,16 +76,13 @@ async function handleReset(ctx: CommandContext): Promise<void> {
   }
   try {
     await ctx.runner.reset();
-    await ctx.telegram.sendMessage(
-      ctx.chatId,
-      "Session cleared. Fresh start ready.",
-    );
+    await sendReply(ctx, "Session cleared. Fresh start ready.");
   } catch (err) {
     log.error("reset failed", {
       bot_id: ctx.botConfig.id,
       error: err instanceof Error ? err.message : String(err),
     });
-    await ctx.telegram.sendMessage(ctx.chatId, "Reset failed. See logs.");
+    await sendReply(ctx, "Reset failed. See logs.");
   }
 }
 
@@ -100,14 +97,23 @@ async function handleStatus(ctx: CommandContext): Promise<void> {
   ]
     .filter(Boolean)
     .join("\n");
-  await ctx.telegram.sendMessage(ctx.chatId, lines);
+  await sendReply(ctx, lines);
 }
 
 async function handleHealth(ctx: CommandContext): Promise<void> {
   const snap = ctx.getStatus();
   const healthy = snap.runner_ready && !snap.disabled && snap.mailbox_depth < 5;
-  await ctx.telegram.sendMessage(
-    ctx.chatId,
-    healthy ? "✅ healthy" : "⚠️ degraded",
-  );
+  await sendReply(ctx, healthy ? "✅ healthy" : "⚠️ degraded");
+}
+
+async function sendReply(ctx: CommandContext, text: string): Promise<void> {
+  if (supports(ctx.adapter, "send")) {
+    await ctx.adapter.deliver(ctx.conversation, {
+      kind: "send",
+      text,
+      files: [],
+    });
+    return;
+  }
+  throw new Error("command context has no send-capable endpoint");
 }

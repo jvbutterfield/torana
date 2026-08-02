@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
 import type { ResolvedAgentApiToken } from "./config/load.js";
+import { normalizedV1Model, type NormalizedConfigModel } from "./config/v2.js";
 import {
   logger,
   setLogLevel,
@@ -34,6 +35,8 @@ import {
 } from "./agent-api/router.js";
 import { SideSessionPool } from "./agent-api/pool.js";
 import { OrphanListenerManager } from "./agent-api/orphan-listeners.js";
+import type { PlatformAdapter } from "./platform/capabilities.js";
+import { TelegramAdapter } from "./platform/telegram/adapter.js";
 
 const log = logger("main");
 
@@ -43,6 +46,8 @@ export interface StartOptions {
   autoMigrate?: boolean;
   /** Resolved agent-api tokens from load.ts — empty when the feature is disabled. */
   agentApiTokens?: ResolvedAgentApiToken[];
+  /** Platform-neutral endpoint/session metadata from either config version. */
+  normalized?: NormalizedConfigModel;
 }
 
 export interface RunningGateway {
@@ -56,6 +61,7 @@ export async function startGateway(
   opts: StartOptions,
 ): Promise<RunningGateway> {
   const { config } = opts;
+  const normalized = opts.normalized ?? normalizedV1Model(config);
   setLogLevel(config.gateway.log_level);
   setLogFormat(config.gateway.log_format ?? autoFormat());
   setSecrets(opts.secrets);
@@ -78,15 +84,23 @@ export async function startGateway(
     // Lightly check: if DB needs migration and autoMigrate not set, fail loudly.
     const { planMigration } = await import("./db/migrate.js");
     const plan = planMigration(dbPath);
-    if (plan.steps.length > 0) {
+    const bridgeOnV3 =
+      normalized.sourceVersion === 1 && plan.currentVersion === 3;
+    if (plan.steps.length > 0 && !bridgeOnV3) {
       throw new Error(
         `database schema is not current (from=${plan.currentVersion} to=${plan.targetVersion}).\n` +
           `Run 'torana migrate --config <path>' first, or pass --auto-migrate.`,
       );
     }
+    if (bridgeOnV3) {
+      log.warn(
+        "running the compatibility bridge on schema v3; use 'torana migrate --to 5' during the maintenance window",
+      );
+    }
   }
 
   const db = new GatewayDB(dbPath);
+  db.syncNormalizedConfig(normalized);
   const metrics = new Metrics(config);
 
   const clients = new Map<string, TelegramClient>();
@@ -101,9 +115,17 @@ export async function startGateway(
     );
   }
 
-  const alerts = new AlertManager(config, clients);
-  const outbox = new OutboxProcessor(config, db, clients, metrics, alerts);
-  const streaming = new StreamManager(config, db, outbox, clients);
+  const adapters = new Map<string, PlatformAdapter>();
+  for (const [botId, client] of clients) {
+    adapters.set(
+      botId,
+      new TelegramAdapter(db.getEndpointId(botId, "telegram"), client, botId),
+    );
+  }
+
+  const alerts = new AlertManager(config, adapters);
+  const outbox = new OutboxProcessor(config, db, adapters, metrics, alerts);
+  const streaming = new StreamManager(config, db, outbox, adapters);
 
   // Build Bot instances.
   const bots: Bot[] = config.bots.map(
@@ -112,7 +134,7 @@ export async function startGateway(
         config,
         botConfig,
         db,
-        telegram: clients.get(botConfig.id)!,
+        endpoint: adapters.get(botConfig.id)!,
         streaming,
         outbox,
         metrics,
@@ -124,7 +146,7 @@ export async function startGateway(
     config,
     db,
     bots,
-    clients,
+    adapters,
     streaming,
     outbox,
     metrics,
@@ -132,7 +154,7 @@ export async function startGateway(
   });
 
   // Crash recovery.
-  runCrashRecovery(db, clients);
+  runCrashRecovery(db, adapters);
 
   // HTTP server + router.
   const server = createServer({
@@ -550,18 +572,34 @@ function registerFixedRoutes(
 
 export function runCrashRecovery(
   db: GatewayDB,
-  clients: Map<string, TelegramClient>,
+  endpoints: ReadonlyMap<string, PlatformAdapter>,
 ): void {
+  const adapters = new Map(endpoints);
   log.info("running crash recovery");
   const running = db.getRunningTurns();
   for (const turn of running) {
     const ss = db.getStreamState(turn.id);
     if (ss?.active_telegram_message_id) {
-      const client = clients.get(turn.bot_id);
-      if (client) {
+      const adapter = adapters.get(turn.bot_id);
+      if (adapter) {
         const display = ss.buffer_text?.trim() || "(restarted)";
-        void client
-          .editMessageText(turn.chat_id, ss.active_telegram_message_id, display)
+        void adapter
+          .deliver(
+            {
+              platform: "telegram",
+              communityId: null,
+              endpointId: turn.bot_id,
+              channelId: String(turn.chat_id),
+              threadRootId: null,
+              workflowRunId: null,
+              type: "direct",
+            },
+            {
+              kind: "edit",
+              externalMessageId: String(ss.active_telegram_message_id),
+              text: display,
+            },
+          )
           .catch(() => {});
       }
     }
@@ -590,11 +628,23 @@ export function runCrashRecovery(
       const isAgentApi =
         turn.source === "agent_api_send" || turn.source === "agent_api_ask";
       if (!isAgentApi) {
-        const client = clients.get(turn.bot_id);
-        if (client) {
-          void client.sendMessage(
-            turn.chat_id,
-            "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
+        const adapter = adapters.get(turn.bot_id);
+        if (adapter) {
+          void adapter.deliver(
+            {
+              platform: "telegram",
+              communityId: null,
+              endpointId: turn.bot_id,
+              channelId: String(turn.chat_id),
+              threadRootId: null,
+              workflowRunId: null,
+              type: "direct",
+            },
+            {
+              kind: "send",
+              text: "\u26a0\ufe0f Gateway restarted during an active turn. The previous response may be incomplete.",
+              files: [],
+            },
           );
         }
       }

@@ -20,6 +20,8 @@ const REQUIRED = [
   "dist/db/migrations/0001_persona_to_bot_id.sql",
   "dist/db/migrations/0002_agent_api.sql",
   "dist/db/migrations/0003_runner_session_resume.sql",
+  "dist/db/migrations/0004_normalized_platform_state.sql",
+  "dist/db/migrations/0005_normalized_turns_outbox.sql",
   // Agent-API skills — `torana skills install` reads these at runtime from the
   // installed package, not from a bundle, so they have to ship as real files.
   "skills/torana-ask/SKILL.md",

@@ -2,10 +2,9 @@
 //
 // States this dispatcher handles:
 //   - Fresh install: DB doesn't exist or has no tables. Apply schema.sql, set user_version=TARGET.
-//   - v0 upgrade: DB has inbound_updates with a `persona` column. Apply 0001 + 0002 + 0003.
-//   - v1 upgrade: DB has bot_id but no agent_api tables. Apply 0002 + 0003.
-//   - v2 upgrade: DB has agent_api tables but no codex_thread_id column. Apply 0003.
-//   - v3 current: user_version=3 — no-op.
+//   - v0-v2 upgrades apply the legacy migrations followed by the schema-v5
+//     compatibility expansion.
+//   - v3 applies 0004 + 0005; v4 applies 0005; v5 is current.
 //
 // Migration is idempotent: running twice is a no-op. Failure rolls back the
 // transaction; next run re-applies from scratch.
@@ -20,11 +19,13 @@ import {
   writeSync,
   unlinkSync,
   statSync,
+  statfsSync,
   chmodSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logger } from "../log.js";
+import { createHash } from "node:crypto";
 
 const log = logger("migrate");
 
@@ -45,6 +46,8 @@ export interface MigrationPlan {
   steps: MigrationStep[];
   /** Path the snapshot was written to, if a pre-migration snapshot was taken. */
   snapshotPath?: string;
+  /** Sanitized row counts used by dry-run/operator review. */
+  backfills?: Record<string, number>;
 }
 
 // __dirname varies by how the code is running:
@@ -98,7 +101,7 @@ export function detectVersion(db: Database): number | null {
   );
 }
 
-const TARGET_VERSION = 3;
+export const TARGET_VERSION = 5;
 
 const STEP_0001: MigrationStep = {
   id: "0001_persona_to_bot_id",
@@ -128,11 +131,41 @@ const STEP_0003: MigrationStep = {
   },
 } as unknown as MigrationStep;
 
+const STEP_0004: MigrationStep = {
+  id: "0004_normalized_platform_state",
+  description:
+    "Add normalized endpoints, conversations, inbound events, sessions, and compatibility columns",
+  get sql(): string {
+    return readMigrationSql("0004_normalized_platform_state.sql");
+  },
+} as unknown as MigrationStep;
+
+const STEP_0005: MigrationStep = {
+  id: "0005_normalized_turns_outbox",
+  description:
+    "Rebuild turns/outbox for string external IDs and normalized delivery",
+  get sql(): string {
+    return readMigrationSql("0005_normalized_turns_outbox.sql");
+  },
+} as unknown as MigrationStep;
+
+const STEP_V5_MAINTENANCE: MigrationStep = {
+  id: "v5_incremental_auto_vacuum",
+  description: "Enable and verify incremental auto-vacuum for schema v5",
+  sql: "",
+};
+
 function freshInstallStep(): MigrationStep {
   return {
     id: "fresh-install",
     description: `Apply v${TARGET_VERSION} schema.sql and set user_version=${TARGET_VERSION}`,
-    sql: readSchemaSql() + `\nPRAGMA user_version = ${TARGET_VERSION};`,
+    sql:
+      "PRAGMA auto_vacuum=INCREMENTAL;\n" +
+      readSchemaSql() +
+      "\n" +
+      STEP_0004.sql +
+      "\n" +
+      STEP_0005.sql,
   };
 }
 
@@ -149,6 +182,7 @@ export function planMigration(dbPath: string): MigrationPlan {
   const db = new Database(dbPath, { readonly: true });
   try {
     const version = detectVersion(db);
+    const backfills = version !== null ? collectBackfillCounts(db) : undefined;
     if (version === null) {
       return {
         currentVersion: null,
@@ -157,31 +191,54 @@ export function planMigration(dbPath: string): MigrationPlan {
       };
     }
     if (version === TARGET_VERSION) {
+      const mode = db.query("PRAGMA auto_vacuum").get() as {
+        auto_vacuum: number;
+      };
       return {
         currentVersion: version,
         targetVersion: TARGET_VERSION,
-        steps: [],
+        steps: mode.auto_vacuum === 2 ? [] : [STEP_V5_MAINTENANCE],
+        backfills,
+      };
+    }
+    if (version === 4) {
+      return {
+        currentVersion: 4,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0005],
+        backfills,
+      };
+    }
+    if (version === 3) {
+      return {
+        currentVersion: 3,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0004, STEP_0005],
+        backfills,
       };
     }
     if (version === 2) {
       return {
         currentVersion: 2,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0003],
+        steps: [STEP_0003, STEP_0004, STEP_0005],
+        backfills,
       };
     }
     if (version === 1) {
       return {
         currentVersion: 1,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0002, STEP_0003],
+        steps: [STEP_0002, STEP_0003, STEP_0004, STEP_0005],
+        backfills,
       };
     }
     if (version === 0) {
       return {
         currentVersion: 0,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0001, STEP_0002, STEP_0003],
+        steps: [STEP_0001, STEP_0002, STEP_0003, STEP_0004, STEP_0005],
+        backfills,
       };
     }
     throw new Error(
@@ -215,7 +272,10 @@ export function applyMigrations(
   }
 
   const wantSnapshot =
-    opts.snapshotOnAnyUpgrade ?? opts.snapshotV0Upgrade ?? false;
+    opts.snapshotOnAnyUpgrade ?? opts.snapshotV0Upgrade ?? true;
+  if (plan.currentVersion !== null && plan.targetVersion >= 5) {
+    assertMigrationDiskSpace(dbPath);
+  }
   // Only snapshot when upgrading an existing DB — fresh installs have nothing to restore.
   if (wantSnapshot && plan.currentVersion !== null) {
     const snapshotPath = `${dbPath}.pre-v${plan.targetVersion}`;
@@ -261,6 +321,19 @@ export function applyMigrations(
           description: step.description,
         });
         db.exec(step.sql);
+        if (step.id === "0004_normalized_platform_state") {
+          backfillPayloadHashes(db);
+        }
+      }
+      if (plan.targetVersion >= 5 && plan.currentVersion !== null) {
+        db.exec("PRAGMA auto_vacuum=INCREMENTAL");
+        db.exec("VACUUM");
+        const mode = db.query("PRAGMA auto_vacuum").get() as {
+          auto_vacuum: number;
+        };
+        if (mode.auto_vacuum !== 2) {
+          throw new Error("failed to enable incremental auto-vacuum");
+        }
       }
       log.info("migrations complete", {
         from: plan.currentVersion,
@@ -289,6 +362,68 @@ export function applyMigrations(
     lock.release();
   }
   return plan;
+}
+
+function assertMigrationDiskSpace(dbPath: string): void {
+  const databaseBytes = statSync(dbPath).size;
+  const fs = statfsSync(dirname(dbPath));
+  const availableBytes = Number(fs.bavail) * Number(fs.bsize);
+  // Snapshot plus VACUUM can temporarily require roughly two extra database
+  // images. Keep a small fixed margin for WAL/SHM and filesystem metadata.
+  const requiredBytes = databaseBytes * 2 + 16 * 1024 * 1024;
+  if (availableBytes < requiredBytes) {
+    throw new Error(
+      `insufficient disk space for schema-v5 snapshot/VACUUM: ` +
+        `need at least ${requiredBytes} bytes, have ${availableBytes}`,
+    );
+  }
+}
+
+function collectBackfillCounts(db: Database): Record<string, number> {
+  const tables = [
+    "inbound_updates",
+    "turns",
+    "outbox",
+    "worker_state",
+    "bot_state",
+    "user_chats",
+    "agent_api_idempotency",
+    "side_sessions",
+  ];
+  const out: Record<string, number> = {};
+  for (const table of tables) {
+    const exists = db
+      .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
+      .get(table);
+    if (!exists) continue;
+    const row = db.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+      count: number;
+    };
+    out[table] = row.count;
+  }
+  return out;
+}
+
+function backfillPayloadHashes(db: Database): void {
+  const rows = db
+    .query(
+      "SELECT id, payload_json FROM inbound_events WHERE payload_sha256 = ''",
+    )
+    .all() as Array<{ id: number; payload_json: string | null }>;
+  const update = db.prepare(
+    "UPDATE inbound_events SET payload_sha256 = ? WHERE id = ?",
+  );
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      update.run(
+        createHash("sha256")
+          .update(row.payload_json ?? "")
+          .digest("hex"),
+        row.id,
+      );
+    }
+  });
+  tx();
 }
 
 /** Lifetime of a migration — if a lock file is older than this, treat as stale. */

@@ -244,16 +244,16 @@ The dispatcher routes each update to its bot's runner independently. No special 
 
 ## Commands
 
-| Command                                                                | What it does                                                                                                                                                      |
-| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `torana start`                                                         | Run the gateway                                                                                                                                                   |
-| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003)                           |
-| `torana validate`                                                      | Offline schema check — no Telegram, no DB                                                                                                                         |
-| `torana migrate`                                                       | Apply pending DB migrations (`--dry-run` to preview)                                                                                                              |
-| `torana version`                                                       | Print package version + Bun runtime                                                                                                                               |
-| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md)              |
-| `torana config`                                                        | Manage the CLI profile store (`init` / `add-profile` / `list-profiles` / `remove-profile` / `show`). Stored at `$XDG_CONFIG_HOME/torana/config.toml`, mode `0600` |
-| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation                                                                     |
+| Command                                                                | What it does                                                                                                                                         |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `torana start`                                                         | Run the gateway                                                                                                                                      |
+| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003)              |
+| `torana validate`                                                      | Offline schema check — no Telegram, no DB                                                                                                            |
+| `torana migrate`                                                       | Apply pending DB migrations (`--dry-run` to preview; `--to 5` for explicit bridge activation)                                                        |
+| `torana version`                                                       | Print package version + Bun runtime                                                                                                                  |
+| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md) |
+| `torana config`                                                        | Manage CLI profiles or render a v1 gateway config as v2 with `config upgrade --from v1 --to v2 --input PATH`                                         |
+| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation                                                        |
 
 ---
 

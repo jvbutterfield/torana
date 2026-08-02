@@ -1,6 +1,7 @@
 // §12.5.6: the Prometheus /metrics scrape must never include token
 // names, token secrets, user ids, chat ids, or marker-wrapped prompt
-// content. The only high-cardinality label we permit is `bot_id`;
+// content. The only high-cardinality labels we permit are the legacy
+// `bot_id` and its platform-neutral replacement, `agent_id`;
 // everything else is a low-cardinality enum.
 //
 // This test asserts the structural property: scan the rendered
@@ -62,7 +63,10 @@ describe("§12.5.6 disclosure.metrics-labels", () => {
     // new leaky label sneaks in, the test will fail loud.
     const allowedLabels = new Set([
       "bot_id",
+      "agent_id",
       "status",
+      "platform",
+      "operation",
       "result",
       "reason",
       "outcome",

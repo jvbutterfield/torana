@@ -11,6 +11,11 @@ import {
 import type { BotConfig } from "../../src/config/schema.js";
 import type { AgentRunner } from "../../src/runner/types.js";
 import type { TelegramClient } from "../../src/telegram/client.js";
+import type { PlatformAdapter } from "../../src/platform/capabilities.js";
+import {
+  TelegramAdapter,
+  telegramConversation,
+} from "../../src/platform/telegram/adapter.js";
 
 function stubRunner(overrides: Partial<AgentRunner> = {}): AgentRunner {
   return {
@@ -48,17 +53,17 @@ function stubRunner(overrides: Partial<AgentRunner> = {}): AgentRunner {
 }
 
 function stubTelegram(): {
-  client: TelegramClient;
+  client: PlatformAdapter;
   calls: Array<{ method: string; args: unknown[] }>;
 } {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   const client = {
     async sendMessage(chatId: number, text: string) {
       calls.push({ method: "sendMessage", args: [chatId, text] });
-      return { messageId: 1 };
+      return { ok: true, messageId: 1 };
     },
   } as unknown as TelegramClient;
-  return { client, calls };
+  return { client: new TelegramAdapter("alpha", client), calls };
 }
 
 function buildCtx(opts: {
@@ -73,7 +78,8 @@ function buildCtx(opts: {
     messageId: 1,
     fromUserId: 42,
     rawText: opts.rawText ?? "",
-    telegram: client,
+    adapter: client,
+    conversation: telegramConversation("alpha", 111),
     runner: opts.runner ?? stubRunner(),
     getStatus: () => ({
       botId: opts.botConfig.id,
@@ -226,7 +232,8 @@ describe("dispatchCommand: /status", () => {
       messageId: 1,
       fromUserId: 42,
       rawText: "/status",
-      telegram: client,
+      adapter: client,
+      conversation: telegramConversation("alpha", 111),
       runner: stubRunner(),
       getStatus: () => ({
         botId: "alpha",
@@ -268,7 +275,8 @@ describe("dispatchCommand: /health", () => {
       messageId: 1,
       fromUserId: 42,
       rawText: "/health",
-      telegram: client,
+      adapter: client,
+      conversation: telegramConversation("alpha", 111),
       runner: stubRunner({ isReady: () => false }),
       getStatus: () => ({
         botId: "alpha",
@@ -294,7 +302,8 @@ describe("dispatchCommand: /health", () => {
       messageId: 1,
       fromUserId: 42,
       rawText: "/health",
-      telegram: client,
+      adapter: client,
+      conversation: telegramConversation("alpha", 111),
       runner: stubRunner(),
       getStatus: () => ({
         botId: "alpha",

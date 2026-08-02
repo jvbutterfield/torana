@@ -4,16 +4,19 @@
 
 import { logger } from "../log.js";
 import type { AlertManager } from "../alerts.js";
-import type { BotConfig, BotId, Config } from "../config/schema.js";
+import type { BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
-import type { TelegramClient } from "../telegram/client.js";
-import type { TelegramUpdate } from "../telegram/types.js";
 import type { Metrics } from "../metrics.js";
 import { Bot } from "./bot.js";
-import { processUpdate, type ProcessUpdateOutcome } from "./process-update.js";
+import {
+  processInboundEvent,
+  type ProcessInboundOutcome,
+} from "./process-inbound-event.js";
 import type { BotStatusSnapshot, CommandContext } from "./commands.js";
 import type { StreamManager } from "../streaming.js";
 import type { OutboxProcessor } from "../outbox.js";
+import type { PlatformAdapter } from "../platform/capabilities.js";
+import type { ConversationRef } from "../platform/types.js";
 
 const log = logger("registry");
 
@@ -21,7 +24,7 @@ export interface BotRegistryOptions {
   config: Config;
   db: GatewayDB;
   bots: Bot[];
-  clients: Map<BotId, TelegramClient>;
+  adapters: Map<BotId, PlatformAdapter>;
   streaming: StreamManager;
   outbox: OutboxProcessor;
   metrics: Metrics;
@@ -32,7 +35,7 @@ export class BotRegistry {
   private config: Config;
   private db: GatewayDB;
   private bots: Map<BotId, Bot>;
-  private clients: Map<BotId, TelegramClient>;
+  private adapters: Map<BotId, PlatformAdapter>;
   private metrics: Metrics;
   private alerts: AlertManager;
   private dispatchTimer: ReturnType<typeof setInterval> | null = null;
@@ -41,7 +44,7 @@ export class BotRegistry {
     this.config = opts.config;
     this.db = opts.db;
     this.bots = new Map(opts.bots.map((b) => [b.id, b]));
-    this.clients = opts.clients;
+    this.adapters = opts.adapters;
     this.metrics = opts.metrics;
     this.alerts = opts.alerts;
   }
@@ -68,29 +71,39 @@ export class BotRegistry {
   }
 
   /**
-   * Transport entry point: deliver a raw TelegramUpdate for the given bot.
+   * Transport entry point: deliver a platform-native payload for an endpoint.
    */
   async handleUpdate(
     botId: BotId,
-    update: TelegramUpdate,
-  ): Promise<ProcessUpdateOutcome> {
+    update: unknown,
+  ): Promise<ProcessInboundOutcome> {
     const bot = this.bots.get(botId);
     if (!bot) {
       log.warn("update for unknown bot", { bot_id: botId });
       return { status: "dropped_malformed" };
     }
+    const adapter = this.adapters.get(botId);
+    if (!adapter) {
+      log.warn("update for endpoint without adapter", { bot_id: botId });
+      return { status: "dropped_malformed" };
+    }
+    const event = adapter.normalizeInbound(update);
+    if (!event || !event.conversation) {
+      return { status: "dropped_malformed" };
+    }
     this.metrics.inc(botId, "inbound_received");
-    const outcome = await processUpdate(
+    const outcome = await processInboundEvent(
       {
         config: this.config,
         db: this.db,
         botConfig: bot.botConfig,
-        telegram: bot.telegram,
+        adapter,
         alerts: this.alerts,
         onEnqueued: () => this.dispatchFor(botId),
-        commandContextFactory: (args) => this.buildCommandContext(bot, args),
+        commandContextFactory: (args) =>
+          this.buildCommandContext(bot, adapter, event.conversation!, args),
       },
-      update,
+      event,
     );
     if (outcome.status === "replay_skipped") {
       this.metrics.inc(botId, "inbound_deduped");
@@ -125,6 +138,8 @@ export class BotRegistry {
 
   private buildCommandContext(
     bot: Bot,
+    adapter: PlatformAdapter,
+    conversation: ConversationRef,
     args: {
       chatId: number;
       messageId: number;
@@ -138,7 +153,8 @@ export class BotRegistry {
       messageId: args.messageId,
       fromUserId: args.fromUserId,
       rawText: args.rawText,
-      telegram: bot.telegram,
+      adapter,
+      conversation,
       runner: bot.runner,
       getStatus: () => this.snapshotFor(bot),
     };

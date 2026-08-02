@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { Metrics } from "../../src/metrics.js";
 import { AlertManager } from "../../src/alerts.js";
 import { TelegramClient } from "../../src/telegram/client.js";
+import { coerceTelegramAdapters } from "../../src/platform/telegram/adapter.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 describe("Metrics", () => {
@@ -93,7 +94,8 @@ describe("Metrics", () => {
     const m = new Metrics(config);
     m.inc("alpha", "turns_completed", 3);
     m.inc("alpha", "turns_failed", 1);
-    m.inc("beta", "telegram_send_failures", 2);
+    m.recordOutboundFailure("beta", "send");
+    m.recordOutboundFailure("beta", "send");
     const body = m.renderPrometheus({ alpha: 2, beta: 1 });
     expect(body).toContain("# HELP gateway_uptime_secs");
     expect(body).toContain("# HELP turns_total");
@@ -107,19 +109,31 @@ describe("Metrics", () => {
       /outbox_attempts_total\{bot_id="beta",result="retry"\} 2/,
     );
     expect(body).toContain("# HELP telegram_api_calls_total");
+    expect(body).toContain(
+      'torana_platform_api_calls_total{platform="telegram",status="2xx"} 0',
+    );
+    expect(body).toContain(
+      'torana_agent_turns_total{agent_id="alpha",status="completed"} 3',
+    );
+    expect(body).toContain('torana_agent_state{agent_id="alpha"} 2');
+    expect(body).toContain(
+      'torana_outbound_failures_total{agent_id="beta",operation="send"} 2',
+    );
     // Ends with trailing newline.
     expect(body.endsWith("\n")).toBe(true);
   });
 });
 
 describe("AlertManager", () => {
+  const adapters = (clients: Map<string, TelegramClient>) =>
+    coerceTelegramAdapters(clients);
   function makeClient(
     sends: Array<{ chatId: number; text: string }>,
   ): TelegramClient {
     return {
       async sendMessage(chatId: number, text: string) {
         sends.push({ chatId, text });
-        return { messageId: 1 };
+        return { ok: true, messageId: 1 };
       },
     } as unknown as TelegramClient;
   }
@@ -128,7 +142,7 @@ describe("AlertManager", () => {
     const config = makeTestConfig([makeTestBotConfig("alpha")]);
     const sends: Array<{ chatId: number; text: string }> = [];
     const clients = new Map([["alpha", makeClient(sends)]]);
-    const a = new AlertManager(config, clients);
+    const a = new AlertManager(config, adapters(clients));
     await a.workerDegraded("alpha", "reason");
     expect(sends).toHaveLength(0);
   });
@@ -145,7 +159,7 @@ describe("AlertManager", () => {
       ["alpha", makeClient([])], // subject bot — not the delivery bot
       ["beta", makeClient(sends)],
     ]);
-    const a = new AlertManager(config, clients);
+    const a = new AlertManager(config, adapters(clients));
     await a.tokenInvalid("alpha");
     expect(sends).toHaveLength(1);
     expect(sends[0].chatId).toBe(99_999);
@@ -159,7 +173,7 @@ describe("AlertManager", () => {
     });
     const sends: Array<{ chatId: number; text: string }> = [];
     const clients = new Map([["alpha", makeClient(sends)]]);
-    const a = new AlertManager(config, clients);
+    const a = new AlertManager(config, adapters(clients));
     await a.workerDegraded("alpha", "reason");
     await a.workerDegraded("alpha", "reason");
     await a.workerDegraded("alpha", "different reason");
@@ -178,7 +192,7 @@ describe("AlertManager", () => {
       ["alpha", makeClient(sends)],
       ["beta", makeClient([])],
     ]);
-    const a = new AlertManager(config, clients);
+    const a = new AlertManager(config, adapters(clients));
     // Different subject (alpha vs. beta) → different cooldown key.
     await a.workerDegraded("alpha", "r");
     await a.workerDegraded("beta", "r");
@@ -193,7 +207,7 @@ describe("AlertManager", () => {
     });
     const sends: Array<{ chatId: number; text: string }> = [];
     const clients = new Map([["alpha", makeClient(sends)]]);
-    const a = new AlertManager(config, clients);
+    const a = new AlertManager(config, adapters(clients));
     await a.workerDegraded("alpha", "r");
     await new Promise((r) => setTimeout(r, 80));
     await a.workerDegraded("alpha", "r");
@@ -209,7 +223,10 @@ describe("AlertManager", () => {
         throw new Error("network");
       },
     } as unknown as TelegramClient;
-    const a = new AlertManager(config, new Map([["alpha", failClient]]));
+    const a = new AlertManager(
+      config,
+      adapters(new Map([["alpha", failClient]])),
+    );
     // Must not throw.
     await a.tokenInvalid("alpha");
   });
@@ -220,7 +237,7 @@ describe("AlertManager", () => {
     });
     const sends: Array<{ chatId: number; text: string }> = [];
     const clients = new Map([["alpha", makeClient(sends)]]);
-    const a = new AlertManager(config, clients);
+    const a = new AlertManager(config, adapters(clients));
     await a.workerDegraded("alpha", "r");
     await a.workerCrashLoop("alpha", 5);
     await a.tokenInvalid("alpha");

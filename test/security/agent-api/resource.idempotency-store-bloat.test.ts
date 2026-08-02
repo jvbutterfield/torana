@@ -39,28 +39,22 @@ function seedIdempotencyRows(count: number): void {
     }
   )._db;
 
-  // Ensure at least one turn row exists (FK target).
-  inner
-    .prepare(
-      `INSERT INTO inbound_updates (id, bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json)
-       VALUES (1, 'bot1', 1, 1, 1, '1', '{}')`,
-    )
-    .run();
-  inner
-    .prepare(
-      `INSERT INTO turns (id, bot_id, chat_id, source_update_id, status, attachment_paths_json, source)
-       VALUES (1, 'bot1', 1, 1, 'completed', '[]', 'agent_api_send')`,
-    )
-    .run();
+  // Ensure at least one dual-written turn row exists (FK target).
+  const inboundId = db.insertUpdate("bot1", 1, 1, 1, "1", "{}")!;
+  const turnId = db.createTurn("bot1", 1, inboundId, []);
+  db.completeTurn(turnId, "completed");
 
   const stmt = inner.prepare(
-    `INSERT INTO agent_api_idempotency (bot_id, idempotency_key, turn_id, created_at)
-     VALUES ('bot1', ?, 1, '2000-01-01 00:00:00')`,
+    `INSERT INTO agent_api_idempotency
+       (bot_id, agent_id, idempotency_key, turn_id, created_at)
+     VALUES ('bot1', 'bot1', ?, ?, '2000-01-01 00:00:00')`,
   );
   // Wrap in a transaction — 10k individual commits is slow and not
   // what we're measuring.
   db.transaction(() => {
-    for (let i = 0; i < count; i += 1) stmt.run(`key-${i}-flood-xxxxxxxxxxxx`);
+    for (let i = 0; i < count; i += 1) {
+      stmt.run(`key-${i}-flood-xxxxxxxxxxxx`, turnId);
+    }
   });
 }
 

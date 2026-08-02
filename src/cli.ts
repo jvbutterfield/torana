@@ -10,7 +10,7 @@
 //     to choose between the two surfaces; the legacy parseArgs is preserved
 //     unmodified so existing test imports keep working.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import { loadConfigFromFile, ConfigLoadError } from "./config/load.js";
@@ -65,6 +65,7 @@ interface ParsedArgs {
   server: string | null;
   token: string | null;
   profile: string | null;
+  migrationTo: number | null;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -80,6 +81,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     server: null,
     token: null,
     profile: null,
+    migrationTo: null,
   };
 
   for (let i = isHelpFlag ? 0 : 1; i < argv.length; i += 1) {
@@ -92,6 +94,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.autoMigrate = true;
     } else if (a === "--dry-run") {
       args.dryRun = true;
+    } else if (a === "--to") {
+      const next = argv[++i];
+      if (!next) throw new Error("--to requires a schema version");
+      args.migrationTo = Number(next);
     } else if (a === "--format") {
       const next = argv[++i];
       if (next !== "text" && next !== "json") {
@@ -118,6 +124,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.token = a.slice("--token=".length);
     } else if (a.startsWith("--profile=")) {
       args.profile = a.slice("--profile=".length);
+    } else if (a.startsWith("--to=")) {
+      args.migrationTo = Number(a.slice("--to=".length));
     } else if (a.startsWith("-")) {
       throw new Error(`unknown flag: ${a}`);
     }
@@ -230,9 +238,13 @@ async function main(argv: string[]): Promise<void> {
         result = await runRemoteDoctor({ server: remote, token: remoteToken });
       } else {
         const path = resolveConfigPath(args.configPath);
-        const { config, secrets } = loadConfigFromFile(path);
+        const { config, normalized, secrets } = loadConfigFromFile(path);
         setSecrets(secrets);
-        result = await runDoctor({ config, configPath: path });
+        result = await runDoctor({
+          config,
+          configPath: path,
+          sourceConfigVersion: normalized.sourceVersion,
+        });
       }
       if (args.format === "json") {
         console.log(JSON.stringify(result, null, 2));
@@ -250,8 +262,12 @@ async function main(argv: string[]): Promise<void> {
         }
       }
       process.exit(result.checks.some((c) => c.status === "fail") ? 1 : 0);
+      return;
     }
     case "migrate": {
+      if (args.migrationTo !== null && args.migrationTo !== 5) {
+        throw new Error("migrate currently supports only --to 5");
+      }
       const path = resolveConfigPath(args.configPath);
       const { config, secrets } = loadConfigFromFile(path);
       setSecrets(secrets);
@@ -266,7 +282,7 @@ async function main(argv: string[]): Promise<void> {
     }
     case "start": {
       const path = resolveConfigPath(args.configPath);
-      const { config, secrets, agentApiTokens, warnings } =
+      const { config, normalized, secrets, agentApiTokens, warnings } =
         loadConfigFromFile(path);
       setSecrets(secrets);
       setLogLevel(config.gateway.log_level);
@@ -277,6 +293,7 @@ async function main(argv: string[]): Promise<void> {
 
       const running = await startGateway({
         config,
+        normalized,
         secrets,
         autoMigrate: args.autoMigrate,
         agentApiTokens,
@@ -318,7 +335,8 @@ Agent-API client commands (require --server + --token, env equivalents, or a pro
 Gateway options:
   --config, -c <path>   Path to torana.yaml (defaults to $TORANA_CONFIG or ./torana.yaml)
   --auto-migrate        (start) Apply DB migrations automatically if stale
-  --dry-run             (migrate) Print planned SQL without applying
+  --dry-run             (migrate) Print planned steps without applying
+  --to 5                (migrate) Explicit schema-v5 bridge activation
   --format <text|json>  (doctor) Output format (default: text)
   --server <url>        (doctor) Run remote R001..R003 probes against <url>
   --token <tok>         (doctor) Bearer token for remote probe

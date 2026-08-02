@@ -23,6 +23,7 @@ import { OutboxProcessor } from "../../src/outbox.js";
 import { StreamManager } from "../../src/streaming.js";
 import { Metrics } from "../../src/metrics.js";
 import { TelegramClient } from "../../src/telegram/client.js";
+import { coerceTelegramAdapters } from "../../src/platform/telegram/adapter.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 import type { Config } from "../../src/config/schema.js";
 
@@ -143,9 +144,10 @@ beforeEach(() => {
     fetchImpl,
   });
   const clients = new Map([["alpha", client]]);
+  const adapters = coerceTelegramAdapters(clients);
   const metrics = new Metrics(config);
-  const outbox = new OutboxProcessor(config, db, clients, metrics);
-  const streaming = new StreamManager(config, db, outbox, clients);
+  const outbox = new OutboxProcessor(config, db, adapters, metrics);
+  const streaming = new StreamManager(config, db, outbox, adapters);
 
   harness = {
     tmpDir,

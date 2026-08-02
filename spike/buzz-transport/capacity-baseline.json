@@ -1,0 +1,91 @@
+{
+  "measuredAt": "2026-08-01T22:35:44.109Z",
+  "host": { "platform": "darwin", "arch": "arm64" },
+  "versions": {
+    "claude": "2.1.220 (Claude Code)",
+    "codex": "codex-cli 0.146.0"
+  },
+  "caveat": "Idle CLI baselines only. Provider-authenticated in-turn peaks and the Railway deployment ceiling remain required for the production capacity gate.",
+  "measurements": [
+    {
+      "runner": "claude",
+      "requested": 1,
+      "alive": 1,
+      "processCount": 1,
+      "totalRssKiB": 380032,
+      "rssKiBPerInvocation": 380032,
+      "totalFdCount": 30,
+      "fdCountPerInvocation": 30
+    },
+    {
+      "runner": "claude",
+      "requested": 2,
+      "alive": 2,
+      "processCount": 2,
+      "totalRssKiB": 760976,
+      "rssKiBPerInvocation": 380488,
+      "totalFdCount": 60,
+      "fdCountPerInvocation": 30
+    },
+    {
+      "runner": "claude",
+      "requested": 8,
+      "alive": 8,
+      "processCount": 8,
+      "totalRssKiB": 2924464,
+      "rssKiBPerInvocation": 365558,
+      "totalFdCount": 242,
+      "fdCountPerInvocation": 30.3
+    },
+    {
+      "runner": "claude",
+      "requested": 32,
+      "alive": 32,
+      "processCount": 88,
+      "totalRssKiB": 8052576,
+      "rssKiBPerInvocation": 251643,
+      "totalFdCount": 466,
+      "fdCountPerInvocation": 14.6
+    },
+    {
+      "runner": "codex",
+      "requested": 1,
+      "alive": 1,
+      "processCount": 1,
+      "totalRssKiB": 47424,
+      "rssKiBPerInvocation": 47424,
+      "totalFdCount": 38,
+      "fdCountPerInvocation": 38
+    },
+    {
+      "runner": "codex",
+      "requested": 2,
+      "alive": 2,
+      "processCount": 2,
+      "totalRssKiB": 94816,
+      "rssKiBPerInvocation": 47408,
+      "totalFdCount": 76,
+      "fdCountPerInvocation": 38
+    },
+    {
+      "runner": "codex",
+      "requested": 8,
+      "alive": 8,
+      "processCount": 8,
+      "totalRssKiB": 379456,
+      "rssKiBPerInvocation": 47432,
+      "totalFdCount": 302,
+      "fdCountPerInvocation": 37.8
+    },
+    {
+      "runner": "codex",
+      "requested": 32,
+      "alive": 32,
+      "processCount": 32,
+      "totalRssKiB": 1519408,
+      "rssKiBPerInvocation": 47482,
+      "totalFdCount": 1208,
+      "fdCountPerInvocation": 37.8
+    }
+  ]
+}

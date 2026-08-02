@@ -444,15 +444,18 @@ describe("sweepUnreferencedAgentApiFiles", () => {
     await writeFileAt(referenced, 48 * 60 * 60 * 1000);
     await writeFileAt(telegramFile, 48 * 60 * 60 * 1000);
 
-    // Mark one as referenced by writing a turn row pointing at it.
-    db.exec(`
-      INSERT INTO inbound_updates (bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
-      VALUES ('bot1', 1, 100, 10, '42', '{}', 'received');
-    `);
-    db.exec(`
-      INSERT INTO turns (bot_id, chat_id, source_update_id, attachment_paths_json)
-      VALUES ('bot1', 100, 1, '${JSON.stringify([referenced]).replace(/'/g, "''")}');
-    `);
+    // Mark one as referenced through the compatibility helper so both the
+    // legacy and normalized turn fields are populated on schema v5.
+    const inboundId = db.insertUpdate(
+      "bot1",
+      1,
+      100,
+      10,
+      "42",
+      "{}",
+      "received",
+    )!;
+    db.createTurn("bot1", 100, inboundId, [referenced]);
 
     const result = await sweepUnreferencedAgentApiFiles(
       db,

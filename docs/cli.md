@@ -134,10 +134,22 @@ Prints the redacted resolved config as JSON on success.
 Apply or preview pending DB migrations.
 
 ```
-torana migrate [--config PATH] [--dry-run]
+torana migrate [--config PATH] [--dry-run] [--to 5]
 ```
 
-`--dry-run` prints the planned SQL as JSON without touching the DB.
+`--dry-run` prints planned steps and sanitized backfill row counts as JSON
+without touching the DB. `--to 5` makes the compatibility-bridge activation
+explicit during the maintenance window.
+
+### `torana config upgrade`
+
+Render a v1 gateway configuration as v2 YAML without overwriting it:
+
+```sh
+torana config upgrade --from v1 --to v2 --input ./torana.yaml
+```
+
+Review or redirect stdout to a new file, then validate that file before use.
 
 ### `torana version`
 

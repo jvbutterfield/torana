@@ -48,7 +48,6 @@ function isLoopbackUrl(url: string): boolean {
 }
 
 // Coerce env-interpolated strings into numbers. ${VAR} always yields a string.
-const NumberCoerce = z.coerce.number();
 const IntCoerce = z.coerce.number().int();
 const BoolPermissive = z
   .union([z.boolean(), z.enum(["true", "false", "1", "0"])])
@@ -779,6 +778,8 @@ export const SECRET_PATHS = [
   "bots[].token",
   "bots[].runner.secrets[*]",
   "agent_api.tokens[].secret_ref",
+  "agents[].endpoints[].private_key",
+  "agents[].endpoints[].auth_tag",
 ] as const;
 
 export type AgentApiTokenConfig = z.infer<typeof AgentApiTokenSchema>;

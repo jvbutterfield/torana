@@ -12,6 +12,11 @@ import { startGateway, type RunningGateway } from "../../src/main.js";
 import { FakeTelegram, findFreePort } from "./fake-telegram.js";
 import type { Config } from "../../src/config/schema.js";
 import type { TelegramUpdate } from "../../src/telegram/types.js";
+import {
+  ConfigV2Schema,
+  normalizeV2,
+  upgradeV1Object,
+} from "../../src/config/v2.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCRIPT = resolve(__dirname, "fixtures/test-runner.ts");
@@ -173,6 +178,46 @@ function makeTextUpdate(id: number, text: string): TelegramUpdate {
 }
 
 describe("integration: round-trip", () => {
+  test("v2 Telegram-only config completes the webhook round trip", async () => {
+    const token = "TOK_V2:AAAAAAA";
+    const webhookSecret = "v2-webhook-secret-value-at-least-32-chars";
+    fake = new FakeTelegram({ bots: { [token]: "v2agent" } });
+    const apiBase = await fake.start();
+    const port = await findFreePort();
+    const v1 = makeConfig({
+      apiBaseUrl: apiBase,
+      port,
+      mode: "webhook",
+      webhookBaseUrl: `http://127.0.0.1:${port}`,
+      webhookSecret,
+      bots: [{ id: "v2agent", token }],
+    });
+    const upgraded = upgradeV1Object(v1) as {
+      agents: Array<{ endpoints: Array<{ id: string }> }>;
+    } & Record<string, unknown>;
+    upgraded.agents[0]!.endpoints[0]!.id = "v2agent-primary";
+    const v2 = ConfigV2Schema.parse(upgraded);
+    const normalized = normalizeV2(v2);
+
+    gateway = await startGateway({
+      config: normalized.config,
+      normalized: normalized.model,
+      secrets: [token, webhookSecret],
+      autoMigrate: true,
+    });
+
+    const response = await fake.deliverWebhookUpdate(
+      "v2agent",
+      makeTextUpdate(1, "v2 ping"),
+    );
+    expect(response.status).toBe(200);
+    await fake.waitFor(
+      () => telegramHasEchoOf(fake!, "v2agent", "echo: v2 ping"),
+      { timeoutMs: 12_000 },
+    );
+    expect(fake.callsFor("v2agent", "setMessageReaction")).toHaveLength(1);
+  }, 20_000);
+
   test("polling: inbound text → runner echoes → sendMessage hits fake", async () => {
     const token = "TOK_POLL:AAAAAAA";
     fake = new FakeTelegram({ bots: { [token]: "alpha" } });
