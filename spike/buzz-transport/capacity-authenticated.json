@@ -1,0 +1,128 @@
+{
+  "measuredAt": "2026-08-02T00:03:31.742Z",
+  "host": {
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "versions": {
+    "claude": "2.1.220",
+    "codex": "codex-cli 0.146.0"
+  },
+  "prompt": "minimal authenticated provider turn; Claude uses haiku",
+  "measurements": [
+    {
+      "runner": "claude",
+      "requested": 1,
+      "succeeded": 1,
+      "durationMs": 2515,
+      "peakProcessCount": 3,
+      "peakTotalRssKiB": 456224,
+      "peakRssKiBPerInvocation": 456224,
+      "peakFdCount": 52,
+      "peakFdCountPerInvocation": 52
+    },
+    {
+      "runner": "claude",
+      "requested": 2,
+      "succeeded": 2,
+      "durationMs": 2777,
+      "peakProcessCount": 4,
+      "peakTotalRssKiB": 853024,
+      "peakRssKiBPerInvocation": 426512,
+      "peakFdCount": 73,
+      "peakFdCountPerInvocation": 36.5
+    },
+    {
+      "runner": "claude",
+      "requested": 8,
+      "succeeded": 8,
+      "durationMs": 4094,
+      "peakProcessCount": 10,
+      "peakTotalRssKiB": 3080192,
+      "peakRssKiBPerInvocation": 385024,
+      "peakFdCount": 298,
+      "peakFdCountPerInvocation": 37.3
+    },
+    {
+      "runner": "claude",
+      "requested": 32,
+      "succeeded": 32,
+      "durationMs": 20004,
+      "peakProcessCount": 64,
+      "peakTotalRssKiB": 9355696,
+      "peakRssKiBPerInvocation": 292366,
+      "peakFdCount": 1490,
+      "peakFdCountPerInvocation": 46.6
+    },
+    {
+      "runner": "codex",
+      "requested": 1,
+      "succeeded": 1,
+      "durationMs": 6735,
+      "peakProcessCount": 1,
+      "peakTotalRssKiB": 220128,
+      "peakRssKiBPerInvocation": 220128,
+      "peakFdCount": 54,
+      "peakFdCountPerInvocation": 54
+    },
+    {
+      "runner": "codex",
+      "requested": 2,
+      "succeeded": 2,
+      "durationMs": 3799,
+      "peakProcessCount": 4,
+      "peakTotalRssKiB": 419024,
+      "peakRssKiBPerInvocation": 209512,
+      "peakFdCount": 164,
+      "peakFdCountPerInvocation": 82
+    },
+    {
+      "runner": "codex",
+      "requested": 8,
+      "succeeded": 8,
+      "durationMs": 6045,
+      "peakProcessCount": 16,
+      "peakTotalRssKiB": 1670624,
+      "peakRssKiBPerInvocation": 208828,
+      "peakFdCount": 608,
+      "peakFdCountPerInvocation": 76
+    },
+    {
+      "runner": "codex",
+      "requested": 32,
+      "succeeded": 32,
+      "durationMs": 23078,
+      "peakProcessCount": 63,
+      "peakTotalRssKiB": 5915136,
+      "peakRssKiBPerInvocation": 184848,
+      "peakFdCount": 2506,
+      "peakFdCountPerInvocation": 78.3
+    }
+  ],
+  "railway": {
+    "project": "agent-team",
+    "environment": "production",
+    "service": "agent-team",
+    "replicas": 1,
+    "region": "us-west2",
+    "memoryLimitMb": 32768,
+    "gatewayAverageMb": 417.20229031843587,
+    "gatewayMaxMb": 808.51501056,
+    "metricsWindowStart": "2026-08-01T00:08:53.835149+00:00",
+    "metricsWindowEnd": "2026-08-02T00:08:54.854502+00:00"
+  },
+  "approvedDefaults": {
+    "maxPerAgent": 8,
+    "maxGlobal": 32,
+    "maxConcurrentTurnsPerAgent": 2,
+    "maxConcurrentTurnsGlobal": 12,
+    "calculation": {
+      "conservativeClaudePeakMiB": 445.53125,
+      "platformSafetyMultiplier": 1.25,
+      "gatewayBaselineMb": 808.51501056,
+      "plannedMaxMemoryMb": 18629.76501056,
+      "memoryHeadroomPercent": 43.1,
+      "requiredHeadroomPercent": 30
+    }
+  }
+}

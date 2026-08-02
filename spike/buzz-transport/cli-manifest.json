@@ -1,0 +1,441 @@
+{
+  "schemaVersion": 1,
+  "binary": "buzz",
+  "versionProbe": {
+    "supported": false,
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "{\"error\":\"user_error\",\"message\":\"error: unexpected argument '--version' found\\n\\nUsage: buzz [OPTIONS] <COMMAND>\\n\\nFor more information, try '--help'.\\n\",\"retryable\":false}"
+  },
+  "sha256": "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
+  "commands": [
+    {
+      "command": "agents",
+      "subcommands": [
+        {
+          "command": "archive"
+        },
+        {
+          "command": "archived"
+        },
+        {
+          "command": "draft-create"
+        },
+        {
+          "command": "draft-update"
+        },
+        {
+          "command": "unarchive"
+        }
+      ]
+    },
+    {
+      "command": "canvas",
+      "subcommands": [
+        {
+          "command": "get"
+        },
+        {
+          "command": "set"
+        }
+      ]
+    },
+    {
+      "command": "channels",
+      "subcommands": [
+        {
+          "command": "add-member"
+        },
+        {
+          "command": "archive"
+        },
+        {
+          "command": "create"
+        },
+        {
+          "command": "delete"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "join"
+        },
+        {
+          "command": "leave"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "members"
+        },
+        {
+          "command": "purpose"
+        },
+        {
+          "command": "remove-member"
+        },
+        {
+          "command": "search"
+        },
+        {
+          "command": "set-add-policy"
+        },
+        {
+          "command": "topic"
+        },
+        {
+          "command": "unarchive"
+        },
+        {
+          "command": "update"
+        }
+      ]
+    },
+    {
+      "command": "dms",
+      "subcommands": [
+        {
+          "command": "add-member"
+        },
+        {
+          "command": "hide"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "open"
+        }
+      ]
+    },
+    {
+      "command": "emoji",
+      "subcommands": [
+        {
+          "command": "export"
+        },
+        {
+          "command": "import"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "rm"
+        },
+        {
+          "command": "set"
+        }
+      ]
+    },
+    {
+      "command": "feed",
+      "subcommands": [
+        {
+          "command": "get"
+        }
+      ]
+    },
+    {
+      "command": "issues",
+      "subcommands": [
+        {
+          "command": "create"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "status"
+        }
+      ]
+    },
+    {
+      "command": "media",
+      "subcommands": [
+        {
+          "command": "get"
+        }
+      ]
+    },
+    {
+      "command": "mem",
+      "subcommands": [
+        {
+          "command": "get"
+        },
+        {
+          "command": "hash"
+        },
+        {
+          "command": "ls"
+        },
+        {
+          "command": "patch"
+        },
+        {
+          "command": "rm"
+        },
+        {
+          "command": "set"
+        }
+      ]
+    },
+    {
+      "command": "messages",
+      "subcommands": [
+        {
+          "command": "delete"
+        },
+        {
+          "command": "edit"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "search"
+        },
+        {
+          "command": "send"
+        },
+        {
+          "command": "send-diff"
+        },
+        {
+          "command": "thread"
+        },
+        {
+          "command": "vote"
+        }
+      ]
+    },
+    {
+      "command": "moderation",
+      "subcommands": [
+        {
+          "command": "audit"
+        },
+        {
+          "command": "ban"
+        },
+        {
+          "command": "reports"
+        },
+        {
+          "command": "resolve"
+        },
+        {
+          "command": "restricted"
+        },
+        {
+          "command": "timeout"
+        },
+        {
+          "command": "unban"
+        },
+        {
+          "command": "untimeout"
+        }
+      ]
+    },
+    {
+      "command": "notes",
+      "subcommands": [
+        {
+          "command": "get"
+        },
+        {
+          "command": "ls"
+        },
+        {
+          "command": "rm"
+        },
+        {
+          "command": "set"
+        }
+      ]
+    },
+    {
+      "command": "pack",
+      "subcommands": [
+        {
+          "command": "inspect"
+        },
+        {
+          "command": "validate"
+        }
+      ]
+    },
+    {
+      "command": "patches",
+      "subcommands": [
+        {
+          "command": "get"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "send"
+        },
+        {
+          "command": "status"
+        }
+      ]
+    },
+    {
+      "command": "pr",
+      "subcommands": [
+        {
+          "command": "get"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "open"
+        },
+        {
+          "command": "status"
+        },
+        {
+          "command": "update"
+        }
+      ]
+    },
+    {
+      "command": "reactions",
+      "subcommands": [
+        {
+          "command": "add"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "remove"
+        }
+      ]
+    },
+    {
+      "command": "repos",
+      "subcommands": [
+        {
+          "command": "bind"
+        },
+        {
+          "command": "create"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "protect",
+          "subcommands": [
+            {
+              "command": "list"
+            },
+            {
+              "command": "remove"
+            },
+            {
+              "command": "set"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "command": "social",
+      "subcommands": [
+        {
+          "command": "contacts"
+        },
+        {
+          "command": "event"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "notes"
+        },
+        {
+          "command": "publish"
+        },
+        {
+          "command": "set-contacts"
+        },
+        {
+          "command": "set-list"
+        }
+      ]
+    },
+    {
+      "command": "upload",
+      "subcommands": [
+        {
+          "command": "file"
+        }
+      ]
+    },
+    {
+      "command": "users",
+      "subcommands": [
+        {
+          "command": "get"
+        },
+        {
+          "command": "presence"
+        },
+        {
+          "command": "set-presence"
+        },
+        {
+          "command": "set-profile"
+        },
+        {
+          "command": "set-status"
+        }
+      ]
+    },
+    {
+      "command": "workflows",
+      "subcommands": [
+        {
+          "command": "approve"
+        },
+        {
+          "command": "create"
+        },
+        {
+          "command": "delete"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "runs"
+        },
+        {
+          "command": "trigger"
+        },
+        {
+          "command": "update"
+        }
+      ]
+    }
+  ]
+}

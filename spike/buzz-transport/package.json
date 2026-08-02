@@ -1,0 +1,22 @@
+{
+  "name": "@torana/buzz-transport-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --types bun-types protocol.ts relay-client.ts live.ts hosted-live.ts measure-authenticated-capacity.ts verify-artifact-provenance.ts protocol.test.ts buzz-cli-golden.test.ts",
+    "manifest": "bun run generate-cli-manifest.ts",
+    "manifest:check": "bun run generate-cli-manifest.ts --check",
+    "provenance:check": "bun run verify-artifact-provenance.ts",
+    "capacity": "bun run measure-capacity.ts",
+    "capacity:authenticated": "bun run measure-authenticated-capacity.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.0.1",
+    "nostr-tools": "2.24.1"
+  },
+  "devDependencies": {
+    "bun-types": "1.3.12"
+  }
+}

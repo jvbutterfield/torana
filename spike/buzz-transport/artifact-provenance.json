@@ -1,0 +1,30 @@
+{
+  "verifiedAt": "2026-08-02T00:08:00Z",
+  "application": {
+    "version": "0.5.3",
+    "bundleIdentifier": "xyz.block.buzz.app",
+    "architecture": "aarch64"
+  },
+  "source": {
+    "repository": "https://github.com/block/buzz",
+    "tag": "desktop-v0.5.3",
+    "commit": "3a96acea09b4a9e3f02c3a26cfb0607d2ccacf42",
+    "release": "https://github.com/block/buzz/releases/tag/desktop-v0.5.3"
+  },
+  "releaseArtifact": {
+    "assetId": 497138686,
+    "name": "Buzz_0.5.3_aarch64.app.tar.gz",
+    "downloadUrl": "https://github.com/block/buzz/releases/download/desktop-v0.5.3/Buzz_0.5.3_aarch64.app.tar.gz",
+    "sizeBytes": 91633977,
+    "sha256": "aa4673e16fbdf0f37b770d7fb28e33abb70169e3d6c0702d074decaf76d6711f",
+    "downloadedSha256Matched": true
+  },
+  "buzzExecutable": {
+    "installedPath": "/Applications/Buzz.app/Contents/MacOS/buzz",
+    "releaseArchivePath": "Buzz.app/Contents/MacOS/buzz",
+    "sha256": "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
+    "byteForByteMatch": true,
+    "codeSigningCdHash": "13ca5d08b05b1e462173087dc174d27dd9a97941",
+    "teamIdentifier": "EYF346PHUG"
+  }
+}
