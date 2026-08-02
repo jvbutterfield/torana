@@ -2,7 +2,12 @@ import { logger, type Logger } from "../log.js";
 import { nextBackoffMs } from "../backoff.js";
 import type { BotConfig, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
-import type { AgentRunner, RunnerEvent } from "../runner/types.js";
+import type {
+  AgentRunner,
+  RunnerEvent,
+  RunnerSession,
+  Unsubscribe,
+} from "../runner/types.js";
 import { ClaudeCodeRunner } from "../runner/claude-code.js";
 import { CodexRunner } from "../runner/codex.js";
 import { CommandRunner } from "../runner/command.js";
@@ -25,6 +30,12 @@ export interface BotOptions {
   runner?: AgentRunner;
 }
 
+export type ManagedTurnOutcome =
+  | { kind: "completed" }
+  | { kind: "failed"; reason: string }
+  | { kind: "interrupted"; reason: string; code?: string }
+  | { kind: "cancelled"; reason: string };
+
 export class Bot {
   readonly botConfig: BotConfig;
   readonly endpoint: PlatformAdapter;
@@ -41,6 +52,7 @@ export class Bot {
   private activeTurnId: number | null = null;
   private stopping = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private managedTurns = new Map<number, (reason: string) => void>();
 
   constructor(opts: BotOptions) {
     this.config = opts.config;
@@ -78,6 +90,16 @@ export class Bot {
     this.db.initWorkerState(this.botConfig.id);
     this.db.initBotState(this.botConfig.id);
     await this.runner.start();
+  }
+
+  /** Initialize a v2 agent whose turns are owned exclusively by sessions. */
+  startSessionHost(): void {
+    this.db.initWorkerState(this.botConfig.id);
+    this.db.initBotState(this.botConfig.id);
+    this.db.updateWorkerState(this.botConfig.id, {
+      status: "ready",
+      last_ready_at: new Date().toISOString(),
+    });
   }
 
   async stop(graceMs?: number): Promise<void> {
@@ -124,6 +146,113 @@ export class Bot {
     }
 
     this.activeTurnId = turnId;
+    const gen = this.db.incrementWorkerGeneration(this.botConfig.id);
+    this.db.startTurn(turnId, gen);
+    const srcId = this.db.getTurnSourceUpdateId(turnId);
+    if (srcId !== null) this.db.setUpdateStatus(srcId, "dispatched");
+    this.metrics.inc(this.botConfig.id, "turns_dispatched");
+    return true;
+  }
+
+  cancelManagedTurn(turnId: number, reason = "cancelled by operator"): boolean {
+    const cancel = this.managedTurns.get(turnId);
+    if (!cancel) return false;
+    cancel(reason);
+    return true;
+  }
+
+  /** Dispatch one normalized conversation turn through an independent session. */
+  dispatchSessionTurn(
+    sessionKey: string,
+    session: RunnerSession,
+    turnId: number,
+    chatId: number,
+    text: string,
+    attachmentPaths: string[],
+    onTerminal: (outcome: ManagedTurnOutcome) => void,
+  ): boolean {
+    const attachments = attachmentPaths.map((path) => ({
+      kind: "document" as const,
+      path,
+      bytes: 0,
+    }));
+    const tid = String(turnId);
+    const unsubs: Unsubscribe[] = [];
+    let terminal = false;
+    const cleanup = (outcome: ManagedTurnOutcome) => {
+      if (terminal) return;
+      terminal = true;
+      for (const unsub of unsubs) unsub();
+      this.managedTurns.delete(turnId);
+      onTerminal(outcome);
+    };
+    unsubs.push(
+      session.on("text_delta", (ev) => {
+        if (String(ev.turnId) === tid) {
+          this.streaming.appendText(this.botConfig.id, ev.text, turnId);
+        }
+      }),
+      session.on("done", (ev) => {
+        if (String(ev.turnId) !== tid) return;
+        this.db.completeTurn(turnId);
+        void this.streaming.finalizeTurn(
+          this.botConfig.id,
+          ev.finalText ?? "",
+          turnId,
+        );
+        this.metrics.inc(this.botConfig.id, "turns_completed");
+        const srcId = this.db.getTurnSourceUpdateId(turnId);
+        if (srcId !== null) this.db.setUpdateStatus(srcId, "processed");
+        cleanup({ kind: "completed" });
+      }),
+      session.on("error", (ev) => {
+        if (String(ev.turnId) !== tid) return;
+        this.db.completeTurn(turnId, ev.message);
+        void this.streaming.finalizeTurn(
+          this.botConfig.id,
+          ev.message || "An error occurred.",
+          turnId,
+        );
+        this.metrics.inc(this.botConfig.id, "turns_failed");
+        const srcId = this.db.getTurnSourceUpdateId(turnId);
+        if (srcId !== null) this.db.setUpdateStatus(srcId, "processed");
+        cleanup({ kind: "failed", reason: ev.message });
+      }),
+      session.on("fatal", (ev) => {
+        this.db.interruptTurn(turnId, `runner_${ev.code ?? "unknown"}`);
+        const srcId = this.db.getTurnSourceUpdateId(turnId);
+        if (srcId !== null) this.db.setUpdateStatus(srcId, "interrupted");
+        this.streaming.cancelTurn(this.botConfig.id, turnId);
+        cleanup({
+          kind: "interrupted",
+          reason: `runner_${ev.code ?? "unknown"}`,
+          code: ev.code,
+        });
+      }),
+    );
+    this.managedTurns.set(turnId, (reason) => {
+      this.db.interruptTurn(turnId, reason);
+      const srcId = this.db.getTurnSourceUpdateId(turnId);
+      if (srcId !== null) this.db.setUpdateStatus(srcId, "interrupted");
+      this.streaming.cancelTurn(this.botConfig.id, turnId);
+      cleanup({
+        kind: reason === "cancelled by operator" ? "cancelled" : "interrupted",
+        reason,
+      });
+    });
+    this.streaming.startTurn(this.botConfig.id, turnId, chatId);
+    const result = session.sendTurn(tid, text, attachments);
+    if (!result.accepted) {
+      for (const unsub of unsubs) unsub();
+      this.managedTurns.delete(turnId);
+      this.streaming.cancelTurn(this.botConfig.id, turnId);
+      this.log.warn("conversation session rejected turn", {
+        session_key: sessionKey,
+        turn_id: turnId,
+        reason: result.reason,
+      });
+      return false;
+    }
     const gen = this.db.incrementWorkerGeneration(this.botConfig.id);
     this.db.startTurn(turnId, gen);
     this.metrics.inc(this.botConfig.id, "turns_dispatched");

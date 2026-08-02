@@ -22,6 +22,7 @@ import {
   type RunnerEventKind,
   type RunnerStatus,
   type SendTurnResult,
+  type SideSessionStartOptions,
   type TurnId,
   type Unsubscribe,
 } from "./types.js";
@@ -65,6 +66,7 @@ interface ClaudeSideSession {
    * on-disk Claude session-file. See §12.4 ask-claude E2E.
    */
   claudeUuid: string;
+  restored: boolean;
   emitter: RunnerEventEmitter;
   proc: Subprocess<"pipe", "pipe", "pipe"> | null;
   logStream: WriteStream | null;
@@ -200,7 +202,10 @@ export class ClaudeCodeRunner implements AgentRunner {
     return true;
   }
 
-  async startSideSession(sessionId: string): Promise<void> {
+  async startSideSession(
+    sessionId: string,
+    options: SideSessionStartOptions = {},
+  ): Promise<void> {
     if (!SIDE_SESSION_ID_REGEX.test(sessionId)) {
       throw new InvalidSideSessionId(sessionId);
     }
@@ -210,9 +215,17 @@ export class ClaudeCodeRunner implements AgentRunner {
 
     await this.ensureLogDir(this.logDir);
 
+    const restoredUuid =
+      typeof options.resumeState?.session_uuid === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        options.resumeState.session_uuid,
+      )
+        ? options.resumeState.session_uuid
+        : null;
     const entry: ClaudeSideSession = {
       id: sessionId,
-      claudeUuid: randomUUID(),
+      claudeUuid: restoredUuid ?? randomUUID(),
+      restored: restoredUuid !== null,
       emitter: new RunnerEventEmitter(),
       proc: null,
       logStream: null,
@@ -229,13 +242,17 @@ export class ClaudeCodeRunner implements AgentRunner {
       entry.rejectReady = reject;
     });
     this.sideSessions.set(sessionId, entry);
+    options.onResumeStateChanged?.({
+      version: 1,
+      session_uuid: entry.claudeUuid,
+    });
 
     try {
       const argv = [
         this.config.cli_path,
         ...this.protocolFlags,
         ...this.config.args,
-        "--session-id",
+        entry.restored ? "--resume" : "--session-id",
         entry.claudeUuid,
       ];
       entry.proc = this.spawnImpl({

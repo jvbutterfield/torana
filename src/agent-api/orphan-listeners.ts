@@ -12,7 +12,11 @@
 
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { SideSessionPool } from "./pool.js";
-import type { AgentRunner, RunnerEvent } from "../runner/types.js";
+import type {
+  AgentRunner,
+  RunnerEvent,
+  RunnerSession,
+} from "../runner/types.js";
 import type { Metrics } from "../metrics.js";
 import { logger } from "../log.js";
 import { recordOrphanResolution, type OrphanResolution } from "./metrics.js";
@@ -37,14 +41,23 @@ export class OrphanListenerManager {
   ) {}
 
   attach(opts: {
-    runner: AgentRunner;
+    session?: RunnerSession;
+    /** @deprecated Compatibility input; new code passes `session`. */
+    runner?: AgentRunner;
     botId: string;
     sessionId: string;
     turnId: number;
     /** Backstop — if no terminal event within this window, force-release. */
     backstopMs?: number;
   }): void {
-    const { runner, botId, sessionId, turnId } = opts;
+    const { botId, sessionId, turnId } = opts;
+    const session =
+      opts.session ??
+      (opts.runner
+        ? legacySessionView(opts.runner, sessionId)
+        : (() => {
+            throw new Error("orphan listener requires a runner session");
+          })());
     const key = `${botId}\u0000${sessionId}\u0000${turnId}`;
     if (this.regs.has(key)) return;
 
@@ -91,12 +104,12 @@ export class OrphanListenerManager {
     // Buffer text_delta into final_text for the case where done lacks it.
     let buffer = "";
     reg.unsubs.push(
-      runner.onSide(sessionId, "text_delta", (ev) => {
+      session.on("text_delta", (ev) => {
         if ("turnId" in ev && ev.turnId === String(turnId)) buffer += ev.text;
       }),
     );
     reg.unsubs.push(
-      runner.onSide(sessionId, "done", (ev) => {
+      session.on("done", (ev) => {
         const final =
           "finalText" in ev && typeof ev.finalText === "string"
             ? ev.finalText
@@ -104,12 +117,8 @@ export class OrphanListenerManager {
         onTerminal({ ...ev, finalText: final } as RunnerEvent, "done");
       }),
     );
-    reg.unsubs.push(
-      runner.onSide(sessionId, "error", (ev) => onTerminal(ev, "error")),
-    );
-    reg.unsubs.push(
-      runner.onSide(sessionId, "fatal", (ev) => onTerminal(ev, "fatal")),
-    );
+    reg.unsubs.push(session.on("error", (ev) => onTerminal(ev, "error")));
+    reg.unsubs.push(session.on("fatal", (ev) => onTerminal(ev, "fatal")));
 
     const backstop = opts.backstopMs ?? 60 * 60 * 1000;
     reg.backstopTimer = setTimeout(() => {
@@ -187,4 +196,13 @@ export class OrphanListenerManager {
       });
     }
   }
+}
+
+function legacySessionView(
+  runner: AgentRunner,
+  sessionId: string,
+): Pick<RunnerSession, "on"> {
+  return {
+    on: (event, handler) => runner.onSide(sessionId, event, handler),
+  };
 }

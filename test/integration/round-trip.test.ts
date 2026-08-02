@@ -20,6 +20,10 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCRIPT = resolve(__dirname, "fixtures/test-runner.ts");
+const MEMORY_RUNNER_SCRIPT = resolve(
+  __dirname,
+  "fixtures/session-memory-runner.ts",
+);
 const ALLOWED_USER = 111_222_333;
 
 let tmpDir: string;
@@ -164,13 +168,35 @@ function telegramHasEchoOf(
   return false;
 }
 
-function makeTextUpdate(id: number, text: string): TelegramUpdate {
+function telegramChatHasText(
+  fake: FakeTelegram,
+  botId: string,
+  chatId: number,
+  needle: string,
+): boolean {
+  return (["sendMessage", "editMessageText"] as const).some((method) =>
+    fake
+      .callsFor(botId, method)
+      .some(
+        (call) =>
+          call.body.chat_id === chatId &&
+          typeof call.body.text === "string" &&
+          call.body.text.includes(needle),
+      ),
+  );
+}
+
+function makeTextUpdate(
+  id: number,
+  text: string,
+  chatId = 111,
+): TelegramUpdate {
   return {
     update_id: id,
     message: {
       message_id: id,
       date: Math.floor(Date.now() / 1000),
-      chat: { id: 111, type: "private" },
+      chat: { id: chatId, type: "private" },
       from: { id: ALLOWED_USER, is_bot: false },
       text,
     },
@@ -178,6 +204,78 @@ function makeTextUpdate(id: number, text: string): TelegramUpdate {
 }
 
 describe("integration: round-trip", () => {
+  test("v2 conversation sessions keep two Telegram sentinel facts isolated", async () => {
+    const token = "TOK_V2_MEMORY:AAAAAAA";
+    const webhookSecret = "v2-memory-webhook-secret-at-least-32-chars";
+    fake = new FakeTelegram({ bots: { [token]: "memory" } });
+    const apiBase = await fake.start();
+    const port = await findFreePort();
+    const upgraded = upgradeV1Object(
+      makeConfig({
+        apiBaseUrl: apiBase,
+        port,
+        mode: "webhook",
+        webhookBaseUrl: `http://127.0.0.1:${port}`,
+        webhookSecret,
+        bots: [{ id: "memory", token }],
+      }),
+    ) as {
+      sessions: { scope: string };
+      agents: Array<{
+        runner: Record<string, unknown>;
+        endpoints: Array<{ id: string }>;
+      }>;
+    } & Record<string, unknown>;
+    upgraded.sessions.scope = "conversation";
+    upgraded.agents[0]!.endpoints[0]!.id = "memory-primary";
+    upgraded.agents[0]!.runner = {
+      type: "command",
+      cmd: ["bun", MEMORY_RUNNER_SCRIPT],
+      protocol: "jsonl-text",
+      env: {},
+      on_reset: "restart",
+      process_model: "resident",
+      resume_model: "stable_session_id",
+    };
+    const normalized = normalizeV2(ConfigV2Schema.parse(upgraded));
+    gateway = await startGateway({
+      config: normalized.config,
+      normalized: normalized.model,
+      secrets: [token, webhookSecret],
+      autoMigrate: true,
+    });
+
+    await fake.deliverWebhookUpdate(
+      "memory",
+      makeTextUpdate(1, "remember sentinel amber", 111),
+    );
+    await fake.deliverWebhookUpdate(
+      "memory",
+      makeTextUpdate(2, "remember sentinel cobalt", 222),
+    );
+    await fake.waitFor(
+      () =>
+        telegramChatHasText(fake!, "memory", 111, "stored: amber") &&
+        telegramChatHasText(fake!, "memory", 222, "stored: cobalt"),
+      { timeoutMs: 12_000 },
+    );
+
+    await fake.deliverWebhookUpdate(
+      "memory",
+      makeTextUpdate(3, "what is the sentinel?", 111),
+    );
+    await fake.deliverWebhookUpdate(
+      "memory",
+      makeTextUpdate(4, "what is the sentinel?", 222),
+    );
+    await fake.waitFor(
+      () =>
+        telegramChatHasText(fake!, "memory", 111, "sentinel: amber") &&
+        telegramChatHasText(fake!, "memory", 222, "sentinel: cobalt"),
+      { timeoutMs: 12_000 },
+    );
+  }, 25_000);
+
   test("v2 Telegram-only config completes the webhook round trip", async () => {
     const token = "TOK_V2:AAAAAAA";
     const webhookSecret = "v2-webhook-secret-value-at-least-32-chars";

@@ -53,11 +53,36 @@ export const SendBodySchema = z
       .regex(/^\d{1,20}$/)
       .optional(),
     chat_id: z.coerce.number().int().optional(),
+    conversation: z
+      .object({
+        endpoint_id: z.string().min(1),
+        external_conversation_id: z.string().min(1),
+        thread_root_id: z.string().min(1).optional(),
+        workflow_run_id: z.string().min(1).optional(),
+      })
+      .strict()
+      .refine((value) => !(value.thread_root_id && value.workflow_run_id), {
+        message: "thread_root_id and workflow_run_id cannot be combined",
+      })
+      .optional(),
   })
   .strict()
-  .refine((b) => !!b.user_id || b.chat_id !== undefined, {
-    message: "either user_id or chat_id required",
-    path: ["user_id"],
+  .superRefine((body, ctx) => {
+    const legacy = !!body.user_id || body.chat_id !== undefined;
+    if (!legacy && !body.conversation) {
+      ctx.addIssue({
+        code: "custom",
+        message: "either user_id, chat_id, or conversation required",
+        path: ["user_id"],
+      });
+    }
+    if (legacy && body.conversation) {
+      ctx.addIssue({
+        code: "custom",
+        message: "legacy and normalized target forms cannot be combined",
+        path: ["conversation"],
+      });
+    }
   });
 
 export type SendBody = z.infer<typeof SendBodySchema>;

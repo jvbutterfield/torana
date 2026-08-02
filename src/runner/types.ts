@@ -58,6 +58,50 @@ export type SendTurnResult =
       reason: "busy" | "not_ready";
     };
 
+/** Provider-native state that is safe to persist between gateway runs. */
+export type RunnerResumeState = Record<string, unknown>;
+
+export interface RunnerSessionCapabilities {
+  processModel: "resident" | "per_turn" | "stateless";
+  resumeModel: "provider_state" | "stable_session_id" | "none";
+}
+
+export interface CreateRunnerSessionOptions {
+  /** Stable, runner-safe identifier derived from the durable session key. */
+  sessionKey: string;
+  resumeState?: RunnerResumeState;
+  onResumeStateChanged(state: RunnerResumeState): void;
+}
+
+/** One independently serialized conversation context. */
+export interface RunnerSession {
+  readonly id: string;
+  sendTurn(
+    turnId: TurnId,
+    text: string,
+    attachments: Attachment[],
+  ): SendTurnResult;
+  cancel(): Promise<void>;
+  reset(): Promise<void>;
+  stop(graceMs?: number): Promise<void>;
+  on<E extends RunnerEventKind>(
+    event: E,
+    handler: RunnerEventHandler<E>,
+  ): Unsubscribe;
+}
+
+export interface AgentRunnerFactory {
+  sessionCapabilities(): RunnerSessionCapabilities;
+  createSession(options: CreateRunnerSessionOptions): Promise<RunnerSession>;
+}
+
+export interface SideSessionStartOptions {
+  resumeState?: RunnerResumeState;
+  onResumeStateChanged?: (state: RunnerResumeState) => void;
+  /** Internal migration flag for normalized ephemeral stateless sessions. */
+  managed?: boolean;
+}
+
 export interface AgentRunner {
   readonly botId: BotId;
 
@@ -96,7 +140,10 @@ export interface AgentRunner {
 
   supportsSideSessions(): boolean;
 
-  startSideSession(sessionId: string): Promise<void>;
+  startSideSession(
+    sessionId: string,
+    options?: SideSessionStartOptions,
+  ): Promise<void>;
 
   sendSideTurn(
     sessionId: string,

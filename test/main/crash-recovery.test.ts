@@ -140,6 +140,35 @@ describe("runCrashRecovery", () => {
     expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(0);
   });
 
+  test("v2 at-most-once recovery interrupts a dispatched turn before first output", () => {
+    const { client, calls } = makeRecordingClient();
+    const turnId = seedRunningTurn("alpha", 111, false);
+    db.initWorkerState("alpha");
+
+    runCrashRecovery(db, new Map([["alpha", client]]), true);
+
+    const row = db
+      ._unsafeQuery("SELECT status, error_text FROM turns WHERE id=?")
+      .get(turnId) as {
+      status: string;
+      error_text: string | null;
+    };
+    expect(row.status).toBe("interrupted");
+    expect(row.error_text).toContain("restarted");
+    expect(db.getInboundUpdateStatus("alpha", 1)?.status).toBe("interrupted");
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+
+    // Recovery is idempotent: the terminal turn is never dispatched again and
+    // a second startup pass does not emit another warning.
+    runCrashRecovery(db, new Map([["alpha", client]]), true);
+    expect(
+      db._unsafeQuery("SELECT status FROM turns WHERE id=?").get(turnId) as {
+        status: string;
+      },
+    ).toEqual({ status: "interrupted" });
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+
   test("orphaned turn WITH first_output → interrupted + user notified", () => {
     const { client, calls } = makeRecordingClient();
     const turnId = seedRunningTurn("alpha", 111, true);

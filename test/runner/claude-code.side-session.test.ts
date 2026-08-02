@@ -360,6 +360,42 @@ describe("ClaudeCodeRunner side-sessions", () => {
     }
   });
 
+  test("persisted Claude UUID restores with --resume after manager restart", async () => {
+    const captured: string[][] = [];
+    const persisted = "123e4567-e89b-42d3-a456-426614174000";
+    const r = new ClaudeCodeRunner({
+      botId: "alpha",
+      config: makeConfig("normal"),
+      logDir: tmpDir,
+      protocolFlags: [],
+      startupMs: 100,
+      spawnImpl: ((opts: Parameters<typeof import("bun").spawn>[0]) => {
+        const cmd = (opts as { cmd?: unknown }).cmd;
+        if (Array.isArray(cmd)) captured.push([...cmd] as string[]);
+        return (require("bun") as typeof import("bun")).spawn(opts);
+      }) as never,
+    });
+    let emitted: Record<string, unknown> | null = null;
+    await r.startSideSession("restored-claude", {
+      resumeState: { version: 1, session_uuid: persisted },
+      onResumeStateChanged: (state) => {
+        emitted = state;
+      },
+    });
+    try {
+      const argv = captured[0] ?? [];
+      const index = argv.indexOf("--resume");
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(argv[index + 1]).toBe(persisted);
+      expect(emitted as Record<string, unknown> | null).toEqual({
+        version: 1,
+        session_uuid: persisted,
+      });
+    } finally {
+      await r.stopSideSession("restored-claude", 500);
+    }
+  });
+
   test("spawn failure leaves no phantom entry in the sideSessions map", async () => {
     const r = new ClaudeCodeRunner({
       botId: "alpha",

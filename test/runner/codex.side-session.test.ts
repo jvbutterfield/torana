@@ -412,6 +412,39 @@ describe("CodexRunner side-sessions", () => {
 });
 
 describe("CodexRunner side-sessions — threadId resume continuity", () => {
+  test("persisted thread_id is reused on the first turn after manager restart", async () => {
+    const r = new CodexRunner({
+      botId: "alpha",
+      config: makeConfig("replay-resume"),
+      logDir: tmpDir,
+      protocolFlags: TEST_PROTOCOL_FLAGS,
+    });
+    await r.startSideSession("restored-codex", {
+      resumeState: { version: 1, thread_id: "tid-persisted" },
+    });
+    try {
+      const events = collectSide(r, "restored-codex");
+      const sent = r.sendSideTurn(
+        "restored-codex",
+        "restored-turn",
+        "hello",
+        [],
+      );
+      expect(sent.accepted).toBe(true);
+      await waitFor(() => events.find((event) => event.kind === "done"), 5000);
+      const log = await Bun.file(
+        resolve(tmpDir, "alpha.side.restored-codex.log"),
+      ).text();
+      const line = log
+        .split("\n")
+        .find((candidate) => candidate.includes('"thread.started"'));
+      const parsed = JSON.parse(line ?? "{}") as { __argv?: string[] };
+      expect(parsed.__argv?.join(" ")).toContain("resume tid-persisted");
+    } finally {
+      await r.stopSideSession("restored-codex", 500);
+    }
+  });
+
   test("first turn has no resume; second turn passes `exec resume <threadId>`", async () => {
     const r = new CodexRunner({
       botId: "alpha",

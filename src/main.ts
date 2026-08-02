@@ -37,6 +37,7 @@ import { SideSessionPool } from "./agent-api/pool.js";
 import { OrphanListenerManager } from "./agent-api/orphan-listeners.js";
 import type { PlatformAdapter } from "./platform/capabilities.js";
 import { TelegramAdapter } from "./platform/telegram/adapter.js";
+import { ConversationScheduler } from "./conversation/scheduler.js";
 
 const log = logger("main");
 
@@ -153,8 +154,31 @@ export async function startGateway(
     alerts,
   });
 
+  // The promoted session manager is shared by normalized platform traffic
+  // and the Agent API. V1 configurations keep the legacy one-runner path.
+  const sessionManager = new SideSessionPool({
+    config,
+    db,
+    registry,
+    metrics,
+    contextRetentionMs: normalized.sessions.context_retention_ms,
+  });
+  sessionManager.startSweeper();
+  if (normalized.sourceVersion === 2) {
+    registry.setConversationScheduler(
+      new ConversationScheduler({
+        db,
+        registry,
+        manager: sessionManager,
+        normalized,
+        workerTuning: config.worker_tuning,
+        alerts,
+      }),
+    );
+  }
+
   // Crash recovery.
-  runCrashRecovery(db, adapters);
+  runCrashRecovery(db, adapters, normalized.sourceVersion === 2);
 
   // HTTP server + router.
   const server = createServer({
@@ -176,9 +200,8 @@ export async function startGateway(
   let agentApiIdempotencySweep: ReturnType<typeof setInterval> | null = null;
   if (config.agent_api?.enabled) {
     const tokens = opts.agentApiTokens ?? [];
-    agentApiPool = new SideSessionPool({ config, db, registry, metrics });
+    agentApiPool = sessionManager;
     agentApiOrphans = new OrphanListenerManager(db, agentApiPool, metrics);
-    agentApiPool.startSweeper();
     agentApiUnregs.push(
       ...registerAgentApiRoutes(server.router, {
         config,
@@ -236,6 +259,10 @@ export async function startGateway(
     );
   }
 
+  // Start runners and the normalized scheduler before adapters begin intake.
+  // This guarantees that every accepted event has an active durable dispatch
+  // owner from the moment its enqueue transaction commits.
+  await registry.startAll();
   await Promise.all(
     transports.map((t) =>
       t.start((botId, update) =>
@@ -249,7 +276,6 @@ export async function startGateway(
   // log line just makes the dup-risk visible.
   outbox.recoverInFlight();
   outbox.start();
-  await registry.startAll();
 
   // Periodic mailbox-backlog alert.
   const backlogTimer = setInterval(() => {
@@ -374,7 +400,7 @@ export async function startGateway(
         //     so ask handlers observe fatal events rather than hangs.
         const runnerGraceMs = config.shutdown.runner_grace_secs * 1000;
         if (agentApiOrphans) agentApiOrphans.shutdown();
-        if (agentApiPool) await agentApiPool.shutdown(runnerGraceMs);
+        await sessionManager.shutdown(runnerGraceMs);
 
         // 3. Stop main runners with per-runner grace.
         await registry.stopAll(runnerGraceMs);
@@ -573,6 +599,7 @@ function registerFixedRoutes(
 export function runCrashRecovery(
   db: GatewayDB,
   endpoints: ReadonlyMap<string, PlatformAdapter>,
+  atMostOnce = false,
 ): void {
   const adapters = new Map(endpoints);
   log.info("running crash recovery");
@@ -603,7 +630,7 @@ export function runCrashRecovery(
           .catch(() => {});
       }
     }
-    if (!turn.first_output_at) {
+    if (!atMostOnce && !turn.first_output_at) {
       log.info("re-queueing orphaned turn", {
         turn_id: turn.id,
         bot_id: turn.bot_id,
@@ -617,6 +644,9 @@ export function runCrashRecovery(
         source: turn.source ?? null,
       });
       db.interruptTurn(turn.id, "Gateway restarted during active turn");
+      if (atMostOnce) {
+        db.setUpdateStatus(turn.source_update_id, "interrupted");
+      }
 
       // For Agent-API-originated turns (ask / send), the end user in the
       // Telegram chat never initiated anything — the external agent did,

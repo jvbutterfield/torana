@@ -145,7 +145,7 @@ function handleSendInner(
     if (!parsed.success) {
       await cleanupFiles(attachmentPaths);
       const issue = parsed.error.issues[0];
-      if (issue?.message === "either user_id or chat_id required") {
+      if (issue?.message.includes("required")) {
         return errorResponse("missing_target");
       }
       return errorResponse("invalid_body", issue?.message);
@@ -154,22 +154,65 @@ function handleSendInner(
 
     // 5. Resolve chat + ACL re-check.
     const bot = deps.registry.bot(botId)!;
-    const resolve = resolveChatId(deps.db, botId, {
-      user_id: body.user_id,
-      chat_id: body.chat_id,
-    });
-    if (resolve.kind === "err") {
-      await cleanupFiles(attachmentPaths);
-      return errorResponse(resolve.code);
-    }
-    const chatId = resolve.chatId;
+    let chatId: number;
+    let targetConversation:
+      | { id: number; sessionKey: string | null; platform: string }
+      | undefined;
+    if (body.conversation) {
+      const target = deps.db.findObservedConversationTarget(botId, {
+        endpointId: body.conversation.endpoint_id,
+        externalConversationId: body.conversation.external_conversation_id,
+        threadRootId: body.conversation.thread_root_id,
+        workflowRunId: body.conversation.workflow_run_id,
+      });
+      if (!target) {
+        await cleanupFiles(attachmentPaths);
+        return errorResponse(
+          "invalid_body",
+          "normalized target is unknown, archived, disabled, or belongs to another agent",
+        );
+      }
+      chatId =
+        target.platform === "telegram"
+          ? Number(target.externalConversationId)
+          : 0;
+      targetConversation = target;
+      if (target.platform === "telegram") {
+        const userId = findUserForChat(deps.db, botId, chatId);
+        if (
+          userId === null ||
+          !isAuthorized(deps.config, bot.botConfig, userId)
+        ) {
+          await cleanupFiles(attachmentPaths);
+          return errorResponse("target_not_authorized");
+        }
+      }
+    } else {
+      const resolve = resolveChatId(deps.db, botId, {
+        user_id: body.user_id,
+        chat_id: body.chat_id,
+      });
+      if (resolve.kind === "err") {
+        await cleanupFiles(attachmentPaths);
+        return errorResponse(resolve.code);
+      }
+      chatId = resolve.chatId;
 
-    const userId = body.user_id
-      ? Number(body.user_id)
-      : findUserForChat(deps.db, botId, chatId);
-    if (userId === null || !isAuthorized(deps.config, bot.botConfig, userId)) {
-      await cleanupFiles(attachmentPaths);
-      return errorResponse("target_not_authorized");
+      const userId = body.user_id
+        ? Number(body.user_id)
+        : findUserForChat(deps.db, botId, chatId);
+      if (
+        userId === null ||
+        !isAuthorized(deps.config, bot.botConfig, userId)
+      ) {
+        await cleanupFiles(attachmentPaths);
+        return errorResponse("target_not_authorized");
+      }
+      targetConversation =
+        deps.db.findObservedConversationTarget(botId, {
+          endpointId: deps.db.getEndpointId(botId, "telegram"),
+          externalConversationId: String(chatId),
+        }) ?? undefined;
     }
 
     // 6. Marker-wrap prompt.
@@ -187,6 +230,7 @@ function handleSendInner(
         idempotencyKey,
         sourceLabel: body.source,
         attachmentPaths,
+        targetConversation,
       });
     } catch (err) {
       await cleanupFiles(attachmentPaths);

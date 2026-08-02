@@ -29,6 +29,16 @@ import {
   recordEviction,
   setSideSessionsLive,
 } from "./metrics.js";
+import {
+  agentApiSessionKey,
+  ephemeralSessionKey,
+  runnerSessionId,
+} from "../conversation/session-key.js";
+import { LegacyAgentRunnerFactory } from "../runner/factory.js";
+import type {
+  RunnerSession,
+  RunnerSessionCapabilities,
+} from "../runner/types.js";
 
 export interface SideSessionPoolOptions {
   config: Config;
@@ -39,10 +49,18 @@ export interface SideSessionPoolOptions {
   sweepIntervalMs?: number;
   /** Optional metrics emitter — omitted in tests that don't assert metrics. */
   metrics?: Metrics;
+  /** Provider-context retention for normalized conversations. */
+  contextRetentionMs?: number;
 }
 
 export type AcquireResult =
-  | { kind: "ok"; sessionId: string; ephemeral: boolean }
+  | {
+      kind: "ok";
+      sessionId: string;
+      ephemeral: boolean;
+      runnerSession: RunnerSession;
+      durableSessionKey: string;
+    }
   | { kind: "capacity" }
   | { kind: "token_capacity"; tokenName: string; limit: number }
   | { kind: "busy" }
@@ -88,13 +106,17 @@ interface PoolEntry {
    * tests that don't pass tokenInfo to acquire().
    */
   tokenName: string | null;
+  durableSessionKey: string;
+  runnerSessionId: string;
+  runnerSession: RunnerSession | null;
+  capabilities: RunnerSessionCapabilities;
 }
 
 function entryKey(botId: string, sessionId: string): string {
   return `${botId}\u0000${sessionId}`;
 }
 
-export class SideSessionPool {
+export class ConversationSessionManager {
   private config: Config;
   private db: GatewayDB;
   private registry: BotRegistry;
@@ -112,6 +134,7 @@ export class SideSessionPool {
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private sweepIntervalMs: number;
   private shuttingDown = false;
+  private contextRetentionMs: number;
   /**
    * Background stopPromises (ephemeral auto-stop on release, TTL sweeps)
    * that aren't tracked in `entries` anymore but must be awaited during
@@ -126,9 +149,11 @@ export class SideSessionPool {
     this.metrics = opts.metrics;
     this.clock = opts.clock ?? Date.now;
     this.sweepIntervalMs = opts.sweepIntervalMs ?? 60_000;
+    this.contextRetentionMs = opts.contextRetentionMs ?? 7_776_000_000;
 
     // Startup reconciliation: any rows the prior process left are orphans.
     this.db.markAllSideSessionsStopped();
+    this.db.markAllConversationSessionsStopped();
   }
 
   /**
@@ -170,6 +195,8 @@ export class SideSessionPool {
     botId: string,
     sessionId: string | null,
     tokenInfo?: AcquireTokenInfo,
+    durableSessionKeyOverride?: string,
+    forceEphemeral = false,
   ): Promise<AcquireResult> {
     const startMs = this.clock();
     const recordOutcome = (
@@ -183,7 +210,7 @@ export class SideSessionPool {
     const bot = this.registry.bot(botId);
     if (!bot)
       return { kind: "runner_error", message: `unknown bot '${botId}'` };
-    if (!bot.runner.supportsSideSessions()) {
+    if (!durableSessionKeyOverride && !bot.runner.supportsSideSessions()) {
       return { kind: "runner_does_not_support_side_sessions" };
     }
 
@@ -220,11 +247,31 @@ export class SideSessionPool {
       }
 
       const key = entryKey(botId, sessionId);
-      const existing = this.entries.get(key);
+      let existing = this.entries.get(key);
+      if (existing && durableSessionKeyOverride) {
+        const persisted = this.db.getConversationSession(
+          existing.durableSessionKey,
+        );
+        const contextExpired =
+          persisted?.context_expires_at !== null &&
+          persisted?.context_expires_at !== undefined &&
+          Date.parse(persisted.context_expires_at) <= this.clock();
+        if (contextExpired && existing.inflight === 0) {
+          this.scheduleStop(
+            existing,
+            this.config.shutdown.runner_grace_secs * 1000,
+          );
+          await existing.stopPromise;
+          this.db.resetConversationSession(existing.durableSessionKey);
+          existing = undefined;
+        }
+      }
       if (existing) {
         if (existing.state === "stopping") {
-          // Treat as miss — the entry is on its way out.
-          this.entries.delete(key);
+          // Do not race a replacement spawn against runner teardown for the
+          // same opaque id. The scheduler/HTTP caller can retry after stop.
+          recordOutcome("busy");
+          return { kind: "busy" };
         } else {
           if (existing.inflight > 0) {
             recordOutcome("busy");
@@ -237,7 +284,13 @@ export class SideSessionPool {
           succeeded = true;
           this.markEntryToken(botId, sessionId, tokenInfo);
           recordOutcome("reuse");
-          return { kind: "ok", sessionId, ephemeral: existing.ephemeral };
+          return {
+            kind: "ok",
+            sessionId,
+            ephemeral: existing.ephemeral,
+            runnerSession: existing.runnerSession!,
+            durableSessionKey: existing.durableSessionKey,
+          };
         }
       }
 
@@ -247,7 +300,12 @@ export class SideSessionPool {
         recordOutcome("capacity");
         return { kind: "capacity" };
       }
-      const res = await this.spawnAndRegister(botId, sessionId, false);
+      const res = await this.spawnAndRegister(
+        botId,
+        sessionId,
+        forceEphemeral,
+        durableSessionKeyOverride,
+      );
       if (res.kind === "ok") {
         succeeded = true;
         this.markEntryToken(botId, sessionId, tokenInfo);
@@ -262,6 +320,21 @@ export class SideSessionPool {
         this.releaseTokenSlot(tokenInfo.name);
       }
     }
+  }
+
+  /** Acquire a normalized conversation session for the durable scheduler. */
+  acquireConversation(
+    botId: string,
+    durableSessionKey: string,
+    ephemeral = false,
+  ): Promise<AcquireResult> {
+    return this.acquire(
+      botId,
+      runnerSessionId(durableSessionKey),
+      undefined,
+      durableSessionKey,
+      ephemeral,
+    );
   }
 
   /**
@@ -309,6 +382,7 @@ export class SideSessionPool {
     if (entry.state === "busy") entry.state = "ready";
     if (entry.state === "ready" && entry.inflight === 0) {
       this.db.markSideSessionState(botId, sessionId, "ready");
+      this.db.updateConversationSessionState(entry.durableSessionKey, "ready");
     }
     if (entry.ephemeral && entry.inflight === 0) {
       this.scheduleStop(entry, this.config.shutdown.runner_grace_secs * 1000);
@@ -354,6 +428,54 @@ export class SideSessionPool {
     return out;
   }
 
+  async cancelConversation(durableSessionKey: string): Promise<boolean> {
+    const entry = [...this.entries.values()].find(
+      (candidate) => candidate.durableSessionKey === durableSessionKey,
+    );
+    if (!entry?.runnerSession || entry.inflight === 0) return false;
+    await entry.runnerSession.cancel();
+    this.scheduleStop(entry, this.config.shutdown.runner_grace_secs * 1000);
+    await entry.stopPromise;
+    return true;
+  }
+
+  async resetConversation(durableSessionKey: string): Promise<void> {
+    const entry = [...this.entries.values()].find(
+      (candidate) => candidate.durableSessionKey === durableSessionKey,
+    );
+    if (entry) {
+      this.scheduleStop(entry, this.config.shutdown.runner_grace_secs * 1000);
+      await entry.stopPromise;
+    }
+    this.db.resetConversationSession(durableSessionKey);
+  }
+
+  conversationStatus(durableSessionKey: string): {
+    state: string;
+    queueDepth: number;
+    live: boolean;
+    ageMs: number | null;
+    runnerHealth: "ready" | "busy" | "stopped";
+  } {
+    const entry = [...this.entries.values()].find(
+      (candidate) => candidate.durableSessionKey === durableSessionKey,
+    );
+    const persisted = this.db.getConversationSession(durableSessionKey);
+    const state = entry?.state ?? persisted?.state ?? "stopped";
+    const lastUsedAt =
+      entry?.lastUsedAtMs ??
+      (persisted?.last_used_at ? Date.parse(persisted.last_used_at) : NaN);
+    return {
+      state,
+      queueDepth: this.db.conversationSessionQueueDepth(durableSessionKey),
+      live: !!entry,
+      ageMs: Number.isFinite(lastUsedAt)
+        ? Math.max(0, this.clock() - lastUsedAt)
+        : null,
+      runnerHealth: state === "busy" ? "busy" : entry ? "ready" : "stopped",
+    };
+  }
+
   async shutdown(graceMs: number): Promise<void> {
     this.shuttingDown = true;
     this.stopSweeper();
@@ -374,11 +496,36 @@ export class SideSessionPool {
     botId: string,
     sessionId: string,
     ephemeral: boolean,
+    durableSessionKeyOverride?: string,
   ): Promise<AcquireResult> {
     const key = entryKey(botId, sessionId);
     // Pre-register so a concurrent acquire with the same id sees the entry.
     const now = this.clock();
     const hardTtlMs = this.config.agent_api.side_sessions.hard_ttl_ms;
+    const durableSessionKey =
+      durableSessionKeyOverride ??
+      (ephemeral
+        ? ephemeralSessionKey(sessionId.slice(4))
+        : agentApiSessionKey(botId, sessionId));
+    const bot = this.registry.bot(botId);
+    if (!bot) {
+      return { kind: "runner_error", message: `unknown bot '${botId}'` };
+    }
+    const runnerConfig = bot.botConfig?.runner as
+      | Parameters<typeof capabilitiesFor>[0]
+      | undefined;
+    // Minimal test/third-party registry stubs from the v1 API do not expose
+    // botConfig. Keep their observable side-session id behavior intact.
+    // Preserve the public Agent API side-session id contract. Normalized
+    // platform sessions use opaque runner ids so provider-facing identifiers
+    // never expose conversation routing keys.
+    const opaqueRunnerId =
+      durableSessionKeyOverride && runnerConfig
+        ? runnerSessionId(durableSessionKey)
+        : sessionId;
+    const capabilities = capabilitiesFor(
+      runnerConfig ?? { type: "claude-code" },
+    );
     const entry: PoolEntry = {
       botId,
       sessionId,
@@ -390,7 +537,27 @@ export class SideSessionPool {
       state: "starting",
       stopPromise: null,
       tokenName: null,
+      durableSessionKey,
+      runnerSessionId: opaqueRunnerId,
+      runnerSession: null,
+      capabilities,
     };
+    const persistedBeforeStart =
+      this.db.getConversationSession(durableSessionKey);
+    let persistedResumeState: Record<string, unknown> | null = null;
+    const contextExpired =
+      persistedBeforeStart?.context_expires_at !== null &&
+      persistedBeforeStart?.context_expires_at !== undefined &&
+      Date.parse(persistedBeforeStart.context_expires_at) <= now;
+    if (persistedBeforeStart?.provider_state_json && !contextExpired) {
+      try {
+        const parsed = JSON.parse(persistedBeforeStart.provider_state_json);
+        if (parsed && typeof parsed === "object") persistedResumeState = parsed;
+      } catch {
+        // Invalid provider state is rotated below.
+      }
+    }
+    if (contextExpired) this.db.resetConversationSession(durableSessionKey);
     this.entries.set(key, entry);
     this.db.upsertSideSession({
       botId,
@@ -401,16 +568,31 @@ export class SideSessionPool {
       hardExpiresAt: new Date(entry.hardExpiresAtMs).toISOString(),
       state: "starting",
     });
-
-    const bot = this.registry.bot(botId);
-    if (!bot) {
-      this.entries.delete(key);
-      this.db.deleteSideSession(botId, sessionId);
-      return { kind: "runner_error", message: `unknown bot '${botId}'` };
-    }
+    this.db.persistConversationSession({
+      sessionKey: durableSessionKey,
+      agentId: botId,
+      runnerSessionId: opaqueRunnerId,
+      runnerType: runnerConfig?.type ?? "legacy_side_session",
+      providerState: persistedResumeState,
+      state: "starting",
+      startedAt: new Date(now).toISOString(),
+      hardExpiresAt: new Date(entry.hardExpiresAtMs).toISOString(),
+      contextExpiresAt: new Date(now + this.contextRetentionMs).toISOString(),
+    });
 
     try {
-      await bot.runner.startSideSession(sessionId);
+      const factory = new LegacyAgentRunnerFactory(bot.runner, capabilities);
+      entry.runnerSession = await factory.createSession({
+        sessionKey: opaqueRunnerId,
+        resumeState: persistedResumeState ?? undefined,
+        onResumeStateChanged: (state) => {
+          this.db.updateConversationSessionProviderState(
+            durableSessionKey,
+            state,
+            new Date(this.clock() + this.contextRetentionMs).toISOString(),
+          );
+        },
+      });
     } catch (err) {
       this.entries.delete(key);
       this.db.deleteSideSession(botId, sessionId);
@@ -427,8 +609,33 @@ export class SideSessionPool {
 
     entry.state = "busy";
     this.db.markSideSessionState(botId, sessionId, "busy");
+    this.db.persistConversationSession({
+      sessionKey: durableSessionKey,
+      agentId: botId,
+      runnerSessionId: opaqueRunnerId,
+      runnerType: runnerConfig?.type ?? "legacy_side_session",
+      providerState: (() => {
+        const row = this.db.getConversationSession(durableSessionKey);
+        if (!row?.provider_state_json) return null;
+        try {
+          return JSON.parse(row.provider_state_json) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })(),
+      state: "busy",
+      startedAt: new Date(now).toISOString(),
+      hardExpiresAt: new Date(entry.hardExpiresAtMs).toISOString(),
+      contextExpiresAt: new Date(now + this.contextRetentionMs).toISOString(),
+    });
     this.publishLiveGauge(botId);
-    return { kind: "ok", sessionId, ephemeral };
+    return {
+      kind: "ok",
+      sessionId,
+      ephemeral,
+      runnerSession: entry.runnerSession,
+      durableSessionKey,
+    };
   }
 
   private ensureCapacity(botId: string): { kind: "ok" } | { kind: "err" } {
@@ -474,7 +681,12 @@ export class SideSessionPool {
       session_id: entry.sessionId,
       reason,
     });
-    recordEviction(this.metrics, entry.botId, reason);
+    // Codex-style per-turn sessions have no resident process to evict. The
+    // lightweight routing entry may still be recycled for capacity, but
+    // process-eviction metrics must remain zero for this model.
+    if (entry.capabilities.processModel !== "per_turn") {
+      recordEviction(this.metrics, entry.botId, reason);
+    }
     this.scheduleStop(entry, this.config.shutdown.runner_grace_secs * 1000);
   }
 
@@ -482,16 +694,16 @@ export class SideSessionPool {
     if (entry.stopPromise) return;
     entry.state = "stopping";
     this.db.markSideSessionState(entry.botId, entry.sessionId, "stopping");
+    this.db.updateConversationSessionState(entry.durableSessionKey, "stopping");
     // An entry in `stopping` no longer counts as live — republish now so
     // operators see the drop even if the actual subprocess stop takes a
     // few hundred ms to return.
     this.publishLiveGauge(entry.botId);
     const key = entryKey(entry.botId, entry.sessionId);
     const p = (async () => {
-      const bot = this.registry.bot(entry.botId);
-      if (bot) {
+      if (entry.runnerSession) {
         try {
-          await bot.runner.stopSideSession(entry.sessionId, graceMs);
+          await entry.runnerSession.stop(graceMs);
         } catch (err) {
           this.log.warn("side-session stop failed", {
             bot_id: entry.botId,
@@ -510,6 +722,14 @@ export class SideSessionPool {
       }
       this.entries.delete(key);
       this.db.deleteSideSession(entry.botId, entry.sessionId);
+      if (entry.ephemeral) {
+        this.db.resetConversationSession(entry.durableSessionKey);
+      } else {
+        this.db.updateConversationSessionState(
+          entry.durableSessionKey,
+          "stopped",
+        );
+      }
       this.publishLiveGauge(entry.botId);
     })();
     entry.stopPromise = p;
@@ -522,6 +742,10 @@ export class SideSessionPool {
     const idleTtl = this.config.agent_api.side_sessions.idle_ttl_ms;
     for (const entry of [...this.entries.values()]) {
       if (entry.state === "stopping") continue;
+      // Per-turn runners own no idle process. Context expiration is checked
+      // against the durable row on the next lazy acquisition; process TTLs
+      // and process-eviction metrics deliberately do not apply here.
+      if (entry.capabilities.processModel === "per_turn") continue;
       // Hard TTL first: mark stopping regardless of inflight; release() will
       // complete teardown when inflight hits zero. If inflight is already
       // zero, stop immediately.
@@ -548,3 +772,29 @@ export class SideSessionPool {
     }
   }
 }
+
+function capabilitiesFor(runner: {
+  type: string;
+  protocol?: string;
+  process_model?: "resident" | "per_turn" | "stateless";
+  resume_model?: "stable_session_id" | "none";
+}): RunnerSessionCapabilities {
+  if (runner.type === "claude-code") {
+    return { processModel: "resident", resumeModel: "provider_state" };
+  }
+  if (runner.type === "codex") {
+    return { processModel: "per_turn", resumeModel: "provider_state" };
+  }
+  return {
+    processModel:
+      runner.process_model ??
+      (runner.protocol === "jsonl-text" ? "stateless" : "resident"),
+    resumeModel:
+      runner.resume_model === "stable_session_id"
+        ? "stable_session_id"
+        : "none",
+  };
+}
+
+/** Compatibility name for the Agent API surface and third-party imports. */
+export { ConversationSessionManager as SideSessionPool };
