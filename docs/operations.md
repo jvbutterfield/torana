@@ -159,6 +159,33 @@ Hard-cutoff at `shutdown.hard_timeout_secs` (default 25). Tuned to fit within Ra
 
 v1 reads config once at startup. SIGHUP is **not** handled — restart to apply changes.
 
+## Buzz key and auth rotation
+
+Drain the endpoint, wait for accepted turns and its outbox to reach zero, then
+replace the endpoint private key and matching owner-signed auth tag together.
+`torana validate` rejects a new key paired with the old tag. Run `torana
+doctor`, restart, and confirm `/health` reports the expected identity and no
+`key` or `auth` diagnosis before resuming. Never delete old pending signed rows;
+they remain historical evidence and should be dead-lettered explicitly if they
+must not publish.
+
+Membership changes arrive live. Removal stops intake for that channel without
+advancing past an unprocessed accepted event. After an intentional access
+change, inspect endpoint status and cursor age before assuming the relay is at
+fault.
+
+## Buzz canary rollout
+
+1. Deploy with `platforms.buzz.enabled: false`; run validate and doctor.
+2. Mark exactly one Buzz endpoint enabled, then turn on the master switch.
+3. Observe health, reconnect age, queue/outbox depth, dedup, and conversation
+   isolation across ordinary mentions, DMs, and one restart.
+4. Enable remaining endpoints individually. Keep proactive triggers off.
+5. Rehearse a drain and binary rollback before tagging 2.0.0.
+
+See [`release-readiness.md`](release-readiness.md) for the 24-hour soak and
+real-relay release gates.
+
 ## Runbook snippets
 
 ### Inspect and rotate conversation sessions

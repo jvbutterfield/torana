@@ -1,4 +1,12 @@
-# Transports: Telegram and Buzz
+# Transports
+
+Transport documentation now lives in the platform guides:
+
+- [Common platform contract](platforms.md)
+- [Telegram webhook and polling](platforms/telegram.md)
+- [Buzz authenticated WebSocket relay](platforms/buzz.md)
+
+The detailed compatibility notes below remain for existing links.
 
 Torana ships Telegram webhook/polling transports and an authenticated Buzz
 WebSocket transport. `transport.default_mode` and `transport_override.mode`

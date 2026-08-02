@@ -165,6 +165,12 @@ accepts only `dead`/`failed` rows and restores the exact stored payload and
 signed event. `gateway drain` validates the data-directory lock PID and sends
 the gateway `SIGTERM`, invoking the ordered no-loss shutdown path.
 
+`torana buzz call` is the runner-facing typed broker client. It reads one JSON
+request from stdin and requires the short-lived capability supplied by Torana
+during an active session. It is not a general operator escape hatch: endpoint
+selection, command manifest, membership, event ownership, file bounds, and
+timeouts are enforced server-side, and raw credentials are never printed.
+
 ### `torana config upgrade`
 
 Render a v1 gateway configuration as v2 YAML without overwriting it:

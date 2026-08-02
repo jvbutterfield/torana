@@ -51,9 +51,9 @@ agents:
         enabled: true
         community_id: primary
         relay_url: ${BUZZ_RELAY_URL}
-        private_key: ${BUZZ_PRIVATE_KEY_CATO}
-        auth_tag: ${BUZZ_AUTH_TAG_CATO}
-        owner_pubkey: ${BUZZ_OWNER_PUBKEY}
+        private_key: "${BUZZ_PRIVATE_KEY_CATO}"
+        auth_tag: "${BUZZ_AUTH_TAG_CATO}"
+        owner_pubkey: "${BUZZ_OWNER_PUBKEY}"
         respond_to: owner_only
         reactions: { received_emoji: "👀" } # null disables acknowledgements
         rerun_on_edit: false

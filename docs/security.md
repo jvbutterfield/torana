@@ -45,6 +45,9 @@ torana's v1 threat surface covers:
 - **Secret leakage via logs** — known secrets and `/bot<TOKEN>/` URL segments are redacted by the central logger.
 - **RCE in config parsing** — `js-yaml` is used in its default safe mode; custom types are not enabled.
 - **Supply-chain vulnerabilities** in our runtime dependencies (audited via `npm audit --audit-level=high` at release).
+- **Buzz identity and relay input** — private signing keys, owner auth tags,
+  signatures, event IDs, authors, mentions, membership, event kinds, replay,
+  attachments, and workspace-tool calls fail closed at their trust boundary.
 
 ### Out of scope
 
@@ -67,6 +70,29 @@ torana's v1 threat surface covers:
 - **Value redactor.** At startup, the logger is seeded with every secret value pulled from the resolved config (bot tokens, webhook secret). Any occurrence of those exact strings in log payloads is masked with `<redacted>`.
 - **Empty secrets rejected.** `bots[].token` and `transport.webhook.secret` must be non-empty after env interpolation. `${VAR:-}` with a missing var is a fatal config-load error.
 - **Doctor C007.** `torana doctor` warns if your config file is world-readable (mode with world-read bit set). Does not refuse to start.
+- **Buzz broker isolation.** Private keys and owner tags remain in Torana by
+  default. Runners receive an endpoint-bound short-lived capability. Raw-key
+  exposure requires the explicit dangerous acknowledgement and removes broker
+  enforcement for that identity.
+
+## Buzz trust boundaries
+
+- Every inbound event must have a valid Nostr signature and matching event ID.
+  Cursor advancement and event insertion commit atomically; duplicate relay
+  delivery cannot create a second turn.
+- Owner-only and allowlist policies compare normalized pubkeys. Stream prompts
+  require an exact endpoint mention by default. Live membership removal stops
+  intake and subscription eligibility.
+- Peer trace/hop tags are never trusted as the sole loop control. Local signed
+  outbox counts enforce the endpoint and conversation reply budgets.
+- Workflow triggers are off by default, accept only pinned notification kinds,
+  isolate context by workflow run, and never infer approval from a runner reply.
+- Broker command names, flags, endpoint ownership, membership, authored-event
+  ownership, paths, sizes, and timeouts are validated before a pinned Buzz CLI
+  is spawned. One installation remains one trust domain.
+
+The complete Phase 11 threat matrix and residual risks are recorded in
+[`release-readiness.md`](release-readiness.md).
 
 ## Attachments
 
@@ -89,7 +115,8 @@ All calls use `telegram.api_base_url` (default `https://api.telegram.org`) over 
 
 ## Supply chain
 
-- Minimal runtime deps: `js-yaml ^4`, `zod ^3`, `bun:sqlite` (built in).
+- Minimal runtime deps include `js-yaml`, `zod`, `nostr-tools`, and the audited
+  Noble cryptography packages; `bun:sqlite` is built in.
 - **No lifecycle scripts.** The published package declares no `preinstall`/`postinstall`/`prepare`. CI enforces this.
 - Quickstart recommends `--ignore-scripts` to block transitive install-time scripts.
 - Published with `--provenance --access public` — attests the package was built from this repo.

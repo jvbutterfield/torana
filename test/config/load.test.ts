@@ -46,6 +46,38 @@ describe("config/load", () => {
     expect(loaded.config.bots[0]?.token).toBe(v1.bots[0]?.token);
   });
 
+  test("normalizes a Buzz-only agent without constructing a Telegram identity", () => {
+    const upgraded = upgradeV1Object(
+      makeTestConfig([makeTestBotConfig("alpha")]),
+    ) as any;
+    upgraded.platforms.telegram.enabled = false;
+    upgraded.agents[0].endpoints = [
+      {
+        id: "alpha-buzz",
+        platform: "buzz",
+        enabled: false,
+        community_id: "team",
+        relay_url: "wss://relay.example.com",
+        private_key: "1".padStart(64, "0"),
+        respond_to: "anyone",
+      },
+    ];
+    const loaded = loadConfigFromString(yaml.dump(upgraded), {
+      skipInterpolation: true,
+    });
+    expect(loaded.config.bots[0]?.token).toBe("disabled-buzz-only:alpha");
+    expect(
+      loaded.normalized.endpoints.some(
+        (endpoint) => endpoint.platform === "telegram",
+      ),
+    ).toBe(false);
+    expect(loaded.normalized.endpoints[0]).toMatchObject({
+      id: "alpha-buzz",
+      platform: "buzz",
+      enabled: false,
+    });
+  });
+
   test("v2 rejects duplicate endpoint ids and malformed Buzz keys", () => {
     const v1 = makeTestConfig([
       makeTestBotConfig("alpha"),

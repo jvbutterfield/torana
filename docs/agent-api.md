@@ -7,6 +7,13 @@ API calls and platform conversations share the same durable
 `ConversationSessionManager`; the HTTP contracts described here remain
 backward-compatible.
 
+Agents may be Telegram-only, Buzz-only, or multi-platform. `ask` never needs a
+platform endpoint. A Telegram `send` target continues to resolve through the
+observed user/chat mapping for backward compatibility; platform conversation
+inspection and operations use the normalized admin routes. When a Telegram or
+Agent API turn is allowed to use Buzz workspace tools, `tools.buzz` must name
+one explicit default endpoint owned by that agent.
+
 Two modes:
 
 - **`ask`** — synchronous request/response against a bot's runner in an

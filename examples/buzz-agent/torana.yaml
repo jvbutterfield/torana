@@ -1,0 +1,59 @@
+version: 2
+
+gateway:
+  port: ${PORT:-3000}
+  bind_host: ${BIND_HOST:-127.0.0.1}
+  data_dir: ./data
+
+platforms:
+  telegram:
+    enabled: false
+    delivery: { default_mode: polling }
+  buzz:
+    # Safe rollout: validate with both switches off, then enable this master
+    # switch and the endpoint switch together during the canary window.
+    enabled: false
+
+access_control: { default_policy: deny, allowed_user_ids: [] }
+sessions: { scope: conversation }
+limits: {}
+retention: {}
+worker_tuning: {}
+streaming: {}
+outbox: {}
+shutdown: {}
+dashboard: {}
+metrics: { enabled: true }
+attachments: {}
+agent_api: { enabled: false, tokens: [] }
+
+agents:
+  - id: buzzbot
+    runner:
+      type: codex
+      cli_path: codex
+      approval_mode: full-auto
+      sandbox: workspace-write
+      pass_resume_flag: true
+      cwd: ${AGENT_WORKSPACE}
+      env:
+        CODEX_HOME: ${CODEX_HOME}
+    endpoints:
+      - id: buzzbot-buzz
+        platform: buzz
+        enabled: false
+        community_id: primary
+        relay_url: ${BUZZ_RELAY_URL}
+        private_key: '${BUZZ_PRIVATE_KEY}'
+        auth_tag: '${BUZZ_AUTH_TAG}'
+        owner_pubkey: '${BUZZ_OWNER_PUBKEY}'
+        respond_to: owner_only
+        subscribe: mentions_and_dms
+        reactions: { received_emoji: "👀" }
+    tools:
+      buzz:
+        policy: collaborate
+        default_endpoint_id: buzzbot-buzz
+        allowed_endpoint_ids: [buzzbot-buzz]
+        expose_private_key_to_runner: false
+        acknowledge_dangerous: false

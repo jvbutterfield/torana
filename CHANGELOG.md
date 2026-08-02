@@ -6,6 +6,31 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Config v2 multi-platform agents with Telegram, Buzz-only, and combined
+  endpoint layouts; durable isolated conversation sessions and explicit aliases.
+- Authenticated Buzz relay intake, signed exact-event outbox delivery, native
+  edits/deletes/reactions/forums/workflows, hardened media, endpoint lifecycle,
+  metrics, operator APIs/CLI, and an endpoint-scoped credential broker.
+- Disabled-by-default Buzz and agent-team examples, a gated 24-hour mixed
+  platform soak, fault injection, and the Phase 11 security/release review.
+
+### Changed
+
+- Package positioning and documentation now describe a multi-platform gateway.
+- Config v1 remains accepted. `bots[].id` is exposed as the `agent_id` alias
+  during the compatibility window; `agent_api.side_sessions` and Claude
+  `pass_continue_flag` are deprecated in favor of `sessions.*` and managed
+  conversation continuity.
+
+### Migration
+
+- Config v2 requires schema v5. Use the rc.10 compatibility bridge to migrate
+  and retain that tested binary/config pair as the lossless rollback target.
+- The 2.0.0 tag and package publication remain blocked on the real-relay,
+  restart-continuity, 24-hour soak, canary, and rollback gates.
+
 ## [1.0.0-rc.10] - 2026-08-01
 
 ### Added

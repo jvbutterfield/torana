@@ -1,7 +1,7 @@
 {
   "name": "torana",
   "version": "1.0.0-rc.10",
-  "description": "Open-source Telegram gateway for agent runtimes. Configuration-driven, any-runner, webhook or polling.",
+  "description": "Open-source multi-platform gateway for agent runtimes, with Telegram and authenticated Buzz endpoints.",
   "license": "MIT",
   "author": "Jason Butterfield <jbutterfield@gmail.com>",
   "repository": {
@@ -14,6 +14,8 @@
   "homepage": "https://github.com/jvbutterfield/torana#readme",
   "keywords": [
     "telegram",
+    "buzz",
+    "nostr",
     "bot",
     "gateway",
     "agent",

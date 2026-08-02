@@ -80,7 +80,7 @@ export async function startGateway(
     transport: config.transport.default_mode,
   });
 
-  warnOnEmptyAcl(config);
+  warnOnEmptyAcl(config, normalized);
   warnOnYoloCodexBots(config);
 
   await ensureDirectories(config);
@@ -113,7 +113,13 @@ export async function startGateway(
   const metrics = new Metrics(config);
 
   const clients = new Map<string, TelegramClient>();
+  const telegramAgents = new Set(
+    normalized.endpoints
+      .filter((endpoint) => endpoint.platform === "telegram")
+      .map((endpoint) => endpoint.agentId),
+  );
   for (const bot of config.bots) {
+    if (!telegramAgents.has(bot.id)) continue;
     clients.set(
       bot.id,
       new TelegramClient({
@@ -149,20 +155,28 @@ export async function startGateway(
   const buzzBroker = new BuzzCredentialBroker({ config, normalized });
 
   // Build Bot instances.
-  const bots: Bot[] = config.bots.map(
-    (botConfig) =>
-      new Bot({
-        config,
-        botConfig,
-        db,
-        endpoint: adapters.get(botConfig.id)!,
-        streaming,
-        outbox,
-        metrics,
-        alerts,
-        buzzBroker,
-      }),
-  );
+  const bots: Bot[] = config.bots.map((botConfig) => {
+    const endpoint =
+      adapters.get(botConfig.id) ??
+      normalized.endpoints
+        .filter((candidate) => candidate.agentId === botConfig.id)
+        .map((candidate) => adapters.get(candidate.id))
+        .find((candidate): candidate is PlatformAdapter => !!candidate);
+    if (!endpoint) {
+      throw new Error(`agent '${botConfig.id}' has no messaging endpoint`);
+    }
+    return new Bot({
+      config,
+      botConfig,
+      db,
+      endpoint,
+      streaming,
+      outbox,
+      metrics,
+      alerts,
+      buzzBroker,
+    });
+  });
 
   const registry = new BotRegistry({
     config,
@@ -264,8 +278,16 @@ export async function startGateway(
   const webhookClients = new Map<string, TelegramClient>();
   const pollingClients = new Map<string, TelegramClient>();
   for (const bot of config.bots) {
+    const telegramEndpoint = normalized.endpoints.find(
+      (endpoint) =>
+        endpoint.agentId === bot.id &&
+        endpoint.platform === "telegram" &&
+        endpoint.enabled,
+    );
+    if (!telegramEndpoint) continue;
     const mode = bot.transport_override?.mode ?? config.transport.default_mode;
-    const c = clients.get(bot.id)!;
+    const c = clients.get(bot.id);
+    if (!c) continue;
     if (mode === "webhook") webhookClients.set(bot.id, c);
     else pollingClients.set(bot.id, c);
   }
@@ -515,10 +537,23 @@ export async function startGateway(
   return running;
 }
 
-export function warnOnEmptyAcl(config: Config): void {
+export function warnOnEmptyAcl(
+  config: Config,
+  normalized?: NormalizedConfigModel,
+): void {
   const globalEmpty = config.access_control.allowed_user_ids.length === 0;
+  const telegramAgents = normalized
+    ? new Set(
+        normalized.endpoints
+          .filter(
+            (endpoint) => endpoint.platform === "telegram" && endpoint.enabled,
+          )
+          .map((endpoint) => endpoint.agentId),
+      )
+    : null;
   const affectedBots = config.bots
     .filter((b) => {
+      if (telegramAgents && !telegramAgents.has(b.id)) return false;
       const override = b.access_control?.allowed_user_ids;
       return override ? override.length === 0 : globalEmpty;
     })

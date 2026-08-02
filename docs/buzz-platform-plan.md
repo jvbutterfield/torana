@@ -395,10 +395,10 @@ agents:
         enabled: false
         community_id: primary
         relay_url: ${BUZZ_RELAY_URL}
-        private_key: ${BUZZ_PRIVATE_KEY_CATO}
-        auth_tag: ${BUZZ_AUTH_TAG_CATO}
+        private_key: '${BUZZ_PRIVATE_KEY_CATO}'
+        auth_tag: '${BUZZ_AUTH_TAG_CATO}'
         respond_to: owner_only
-        owner_pubkey: ${BUZZ_OWNER_PUBKEY}
+        owner_pubkey: '${BUZZ_OWNER_PUBKEY}'
         allowed_pubkeys: []       # required and non-empty when respond_to: allowlist
         subscribe: mentions_and_dms
         reactions:
@@ -1628,6 +1628,21 @@ Release gates:
 - 24-hour mixed-platform soak with zero lost accepted events, zero cross-conversation context failures, bounded resources, and no orphan subprocesses;
 - security review has no unresolved P0/P1 findings;
 - lossless binary rollback to the compatibility bridge succeeds against the migrated database; emergency snapshot restoration also succeeds with its documented loss window.
+
+**Local implementation evidence (2026-08-02 MDT):** Phase 11 adds a real
+Buzz-only v2 runtime path, disabled-by-default Buzz-only and multi-persona
+agent-team examples, stale-auth-tag and SQLite-busy fault injection, and a
+gated five-persona mixed Telegram/Buzz soak that verifies signed events,
+durable delivery, and one-to-one conversation-session isolation. The security
+review, fault matrix, audit/license inventory, migration notes, platform,
+session, configuration, operations, runner, Agent API, CLI, and release docs
+are published in the repository. The default suite passes with 1,376 tests,
+14 intentional opt-in skips, zero failures, and 3,735 assertions; typecheck,
+lint, formatting, build, whitespace, and the high-severity dependency audit
+also pass. Phase 11 is **not release-complete**: the real Telegram and relay
+E2Es, real Codex/Claude restart checks, 24-hour soak, canary/full-team rollout,
+rollback rehearsal, external `agent-team` version pins, and the 2.0.0 tag and
+publication remain operator gates.
 
 ---
 

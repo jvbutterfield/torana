@@ -452,7 +452,10 @@ export class BotRegistry {
     const state = this.db.getBotState(bot.id);
     return {
       botId: bot.id,
-      runner_ready: bot.runner.isReady(),
+      // Config v2 uses the logical bot as a lazy RunnerSession factory host;
+      // its legacy main runner is intentionally never started. Readiness is
+      // therefore the scheduler host, not that dormant compatibility runner.
+      runner_ready: this.conversationScheduler ? true : bot.runner.isReady(),
       mailbox_depth: this.db.getMailboxDepth(bot.id),
       last_turn_at: this.db.getLastTurnAt(bot.id),
       disabled: !!state?.disabled,

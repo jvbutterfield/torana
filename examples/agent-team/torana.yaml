@@ -1,0 +1,119 @@
+version: 2
+
+gateway:
+  port: ${PORT:-3000}
+  bind_host: 0.0.0.0
+  data_dir: /data/gateway
+
+platforms:
+  telegram:
+    enabled: true
+    delivery: { default_mode: polling }
+  buzz:
+    # Master switch remains off in the committed production template. The
+    # operator endpoint below is the only endpoint preselected as the canary.
+    enabled: false
+    cli_path: buzz
+    cli_sha256: 1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee
+
+access_control:
+  default_policy: deny
+  allowed_user_ids: [${TELEGRAM_OWNER_ID}]
+sessions: { scope: conversation, max_per_agent: 8, max_global: 32 }
+limits: {}
+retention: {}
+worker_tuning: {}
+streaming: {}
+outbox: {}
+shutdown: { outbox_drain_secs: 10, runner_grace_secs: 5, hard_timeout_secs: 25 }
+dashboard: {}
+metrics: { enabled: true }
+attachments: {}
+agent_api: { enabled: false, tokens: [] }
+
+agents:
+  - id: planner
+    runner:
+      type: codex
+      approval_mode: full-auto
+      sandbox: workspace-write
+      pass_resume_flag: true
+      cwd: /data/workspaces/planner
+      env: { CODEX_HOME: /data/state/codex/planner }
+    endpoints:
+      - id: planner-telegram
+        platform: telegram
+        enabled: true
+        token: ${TELEGRAM_BOT_TOKEN_PLANNER}
+        reactions: { received_emoji: "👀" }
+      - id: planner-buzz
+        platform: buzz
+        enabled: false
+        community_id: primary
+        relay_url: ${BUZZ_RELAY_URL}
+        private_key: '${BUZZ_PRIVATE_KEY_PLANNER}'
+        auth_tag: '${BUZZ_AUTH_TAG_PLANNER}'
+        owner_pubkey: '${BUZZ_OWNER_PUBKEY}'
+        respond_to: owner_only
+    tools:
+      buzz:
+        policy: collaborate
+        allowed_endpoint_ids: [planner-buzz]
+
+  - id: builder
+    runner:
+      type: codex
+      approval_mode: full-auto
+      sandbox: workspace-write
+      pass_resume_flag: true
+      cwd: /data/workspaces/builder
+      env: { CODEX_HOME: /data/state/codex/builder }
+    endpoints:
+      - id: builder-telegram
+        platform: telegram
+        enabled: true
+        token: ${TELEGRAM_BOT_TOKEN_BUILDER}
+        reactions: { received_emoji: "👀" }
+      - id: builder-buzz
+        platform: buzz
+        enabled: false
+        community_id: primary
+        relay_url: ${BUZZ_RELAY_URL}
+        private_key: '${BUZZ_PRIVATE_KEY_BUILDER}'
+        auth_tag: '${BUZZ_AUTH_TAG_BUILDER}'
+        owner_pubkey: '${BUZZ_OWNER_PUBKEY}'
+        respond_to: owner_only
+    tools:
+      buzz:
+        policy: collaborate
+        allowed_endpoint_ids: [builder-buzz]
+
+  - id: operator
+    runner:
+      type: codex
+      approval_mode: full-auto
+      sandbox: workspace-write
+      pass_resume_flag: true
+      cwd: /data/workspaces/operator
+      env: { CODEX_HOME: /data/state/codex/operator }
+    endpoints:
+      - id: operator-telegram
+        platform: telegram
+        enabled: true
+        token: ${TELEGRAM_BOT_TOKEN_OPERATOR}
+        reactions: { received_emoji: "👀" }
+      - id: operator-buzz
+        platform: buzz
+        # Preselected canary; inert until platforms.buzz.enabled becomes true.
+        enabled: true
+        community_id: primary
+        relay_url: ${BUZZ_RELAY_URL}
+        private_key: '${BUZZ_PRIVATE_KEY_OPERATOR}'
+        auth_tag: '${BUZZ_AUTH_TAG_OPERATOR}'
+        owner_pubkey: '${BUZZ_OWNER_PUBKEY}'
+        respond_to: owner_only
+    tools:
+      buzz:
+        policy: collaborate
+        default_endpoint_id: operator-buzz
+        allowed_endpoint_ids: [operator-buzz]

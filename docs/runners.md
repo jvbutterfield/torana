@@ -16,7 +16,11 @@ against a runner that doesn't support them returns
 `501 runner_does_not_support_side_sessions`. `send` works against every
 runner.
 
-Pick one per bot in your YAML. Different bots in the same gateway can use different runners — see [Hybrid configurations](#hybrid-configurations) below.
+Pick one per logical agent in v2 (or per bot in v1). Different agents in the
+same gateway can use different runners. Conversation-scoped sessions isolate
+Telegram chats, Buzz channels/DMs/forum roots, workflows, and Agent API asks;
+only an explicit same-agent alias shares context. See
+[`sessions.md`](sessions.md) and [Hybrid configurations](#hybrid-configurations).
 
 ## Buzz workspace tools
 
@@ -32,6 +36,12 @@ One Torana installation remains one trust domain. The broker is a policy
 chokepoint for normal operation, not a sandbox against a runner that already
 has arbitrary host access. Use separate containers or VMs when personas need a
 hard security boundary.
+
+For durable v2 sessions, Claude and Codex restore provider state using the
+stable opaque runner session ID. A `command` runner must declare
+`resume_model: stable_session_id` and persist/restore context keyed by
+`TORANA_SESSION_ID`, or use `sessions.scope: ephemeral`. The deprecated
+Claude `pass_continue_flag` is retained only for `legacy_agent` compatibility.
 
 ## claude-code
 

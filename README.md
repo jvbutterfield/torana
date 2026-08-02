@@ -2,16 +2,16 @@
 
 # torana
 
-**An open-source Telegram gateway for agent runtimes.**
-Drop a YAML config, point it at Claude Code, Codex, or any subprocess — get a production-grade Telegram bot.
+**An open-source multi-platform gateway for agent runtimes.**
+Connect Telegram and authenticated Buzz communities to Claude Code, Codex, or any compatible subprocess.
 
 [![npm version](https://img.shields.io/npm/v/torana.svg)](https://www.npmjs.com/package/torana)
 [![CI](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml/badge.svg)](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Bun ≥ 1.3](https://img.shields.io/badge/bun-%E2%89%A5%201.3-black)](https://bun.sh)
-[![Tests: 1142](https://img.shields.io/badge/tests-1142%20passing-brightgreen)](#testing)
+[![Tests: 1370+](https://img.shields.io/badge/tests-1370%2B%20passing-brightgreen)](#testing)
 
-**torana** (Sanskrit: तोरण, _ceremonial gateway_) — the doorway between Telegram and your agents.
+**torana** (Sanskrit: तोरण, _ceremonial gateway_) — the doorway between your platforms and agents.
 
 </div>
 
@@ -19,7 +19,10 @@ Drop a YAML config, point it at Claude Code, Codex, or any subprocess — get a 
 
 ## What you get
 
-A single binary that runs one or more Telegram bots, each backed by whatever agent runtime you want. Webhook or polling. Streaming edits. Crash recovery. Dedup. Attachments. Slash commands. Graceful shutdown. Structured logs that redact secrets.
+A single binary that runs logical agents across Telegram and Buzz. Webhook,
+polling, or authenticated relay. Signed delivery, streaming edits, crash
+recovery, dedup, isolated conversation sessions, attachments, graceful
+shutdown, and structured logs that redact secrets.
 
 You write YAML. torana handles the rest.
 
@@ -49,14 +52,14 @@ torana start  --config torana.yaml   # done
 
 ## Why torana
 
-**You're building a Telegram-facing agent** and you've hit one of these:
+**You're putting an agent into real conversations** and you've hit one of these:
 
 - Every example you found glues together `node-telegram-bot-api`, a database you don't want, and 400 lines of session/dedup/retry boilerplate — and it still loses messages on restart.
 - You want different bots backed by different LLMs (Claude for code, Codex for writing, your own subprocess for niche tasks) but don't want to run three separate services.
 - You've tried running `claude-code` or `codex` behind Telegram yourself and discovered the 15 edge cases: Telegram's 4096-char limit, edit-rate throttling, partial stream replies, mid-turn crashes, orphan attachments, webhook secret validation.
 - You want a bot you can actually leave running — not a prototype.
 
-torana is the infrastructure layer for that. It is **not** an agent, not a framework, not an SDK. It's the gateway that turns an agent CLI into a reliable Telegram service.
+torana is the infrastructure layer for that. It is **not** an agent, not a framework, not an SDK. It turns an agent CLI into a reliable multi-platform service.
 
 ---
 
@@ -80,6 +83,11 @@ torana start  --config torana.yaml
 ```
 
 Once echo works, swap the `runner:` block for `claude-code` or `codex` and you're live. See [`examples/echo-bot/`](examples/echo-bot/) and [`examples/codex-bot/`](examples/codex-bot/).
+
+For Buzz, start with the disabled-by-default
+[`examples/buzz-agent/`](examples/buzz-agent/) configuration. Operators with a
+team should use [`examples/agent-team/`](examples/agent-team/) for the
+master-switch → one-canary → full-team rollout.
 
 ---
 
@@ -134,10 +142,11 @@ See [`docs/agent-api.md`](docs/agent-api.md) for the full protocol + [`docs/cli.
 ```mermaid
 flowchart LR
     TG[Telegram]
+    BZ[Buzz relay]
     AG[Other agents<br/>/ scripts / CI]
     subgraph torana[torana process]
       direction LR
-      T[Transport<br/>webhook or polling]
+      T[Platform adapters<br/>Telegram + Buzz]
       A[Agent API<br/>/v1/bots/:id/ask<br/>/v1/bots/:id/send]
       D[Dispatcher<br/>+ dedup + ACL]
       P[Side-session pool<br/>LRU + TTL]
@@ -157,12 +166,15 @@ flowchart LR
       B2 -.state.-> DB
     end
     TG <--> T
+    BZ <--> T
     AG -. bearer auth .-> A
     R1 <--> CC[claude CLI]
     R2 <--> CX[codex CLI]
 ```
 
-One process. One SQLite database. Per-bot isolated runners. Crashes in one bot don't take down the others. Agent-API callers live beside Telegram traffic; the pool keeps their side-sessions off the main runner so a long ask from CI never blocks a Telegram reply.
+One process. One SQLite database. Per-agent runners and per-conversation
+sessions. Telegram, Buzz, and Agent API traffic share the durable scheduler
+without sharing context unless an explicit same-agent alias says they should.
 
 ---
 
@@ -170,8 +182,8 @@ One process. One SQLite database. Per-bot isolated runners. Crashes in one bot d
 
 **Delivery.**
 
-- Inbound `update_id` deduplicated in SQLite — safe to replay a webhook or resume polling after a crash.
-- Outbound sends go through a **dead-letter outbox** with exponential backoff. A flaky Telegram response doesn't lose a reply.
+- Inbound Telegram `update_id` and signed Buzz event IDs are deduplicated in SQLite.
+- Durable sends and mutations use a **dead-letter outbox**. Buzz retries reuse the exact stored signed event ID.
 
 **Crash recovery.**
 
@@ -272,11 +284,11 @@ This is deliberate. It matches the explicit-env-passing ethos of reproducible de
 
 ---
 
-## Non-goals (v1)
+## Non-goals
 
 Explicit scope. torana does **not**:
 
-- Handle group chats, voice, video, or inline mode.
+- Mirror every platform feature. Capabilities are explicit and unsupported operations fail closed.
 - Implement its own agent logic — runners do that.
 - Pluggable storage backends. SQLite only. WAL-mode, durable, operationally simple.
 
@@ -286,7 +298,11 @@ If you need any of those, torana is the wrong tool and that's fine.
 
 ## Status
 
-**v1.0.0-rc.** Core transport, dispatch, streaming, and storage paths are stable and covered by 1142+ tests. Public config schema (`version: 1`) is frozen for v1 — any breaking change waits for `version: 2`.
+**v1.0.0-rc.10 is the compatibility bridge.** Config v1 remains accepted.
+The 2.0 implementation adds config v2, schema v5, Buzz, durable conversation
+sessions, platform-neutral operations, and the endpoint credential broker.
+Production 2.0 release still requires the canary and 24-hour gates in
+[`docs/release-readiness.md`](docs/release-readiness.md).
 
 Recent:
 
@@ -303,12 +319,14 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 ## Testing
 
 ```sh
-bun test                           # unit + integration: 1142+ tests, ~60s
+bun test                           # default unit + integration suite
 CODEX_E2E=1 bun test               # + end-to-end tests against the live codex CLI
 AGENT_API_E2E=1 bun test test/e2e/agent-api/
                                    # + Agent-API E2E matrix against real claude / codex binaries
 AGENT_API_SOAK=1 bun test test/soak/agent-api.test.ts
                                    # + 24h pool/memory/leak soak (default duration; overrideable)
+BUZZ_PLATFORM_SOAK=1 bun test test/soak/buzz-platform.test.ts
+                                   # + 24h mixed Telegram/Buzz isolation soak
 ```
 
 The E2E and soak tests require authenticated `claude` / `codex` binaries and burn API quota, so they're opt-in. CI doesn't run them.
@@ -318,6 +336,9 @@ The E2E and soak tests require authenticated `claude` / `codex` binaries and bur
 ## Docs
 
 - [`docs/configuration.md`](docs/configuration.md) — full config reference
+- [`docs/platforms.md`](docs/platforms.md) — platform contract and capability matrix
+- [`docs/platforms/buzz.md`](docs/platforms/buzz.md) — Buzz identity, relay, events, and media
+- [`docs/sessions.md`](docs/sessions.md) — conversation keys, isolation, aliases, and retention
 - [`docs/runners.md`](docs/runners.md) — built-in runners, including Claude Code and Codex setup
 - [`docs/transports.md`](docs/transports.md) — webhook vs polling
 - [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own runner
@@ -325,6 +346,7 @@ The E2E and soak tests require authenticated `claude` / `codex` binaries and bur
 - [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
 - [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, send, side-sessions, tokens)
 - [`docs/cli.md`](docs/cli.md) — CLI reference, flag-by-flag
+- [`docs/release-readiness.md`](docs/release-readiness.md) — security review, fault matrix, soak, and rollout gates
 
 ---
 

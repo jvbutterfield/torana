@@ -382,7 +382,7 @@ export const ConfigV2Schema = z
         });
       }
       agentIds.add(agent.id);
-      let telegramCount = 0;
+      let telegramEndpointCount = 0;
       for (const [endpointIndex, endpoint] of agent.endpoints.entries()) {
         if (endpointIds.has(endpoint.id) || endpoint.id === agent.id) {
           ctx.addIssue({
@@ -400,9 +400,8 @@ export const ConfigV2Schema = z
           });
         }
         endpointIds.add(endpoint.id);
-        if (endpoint.platform === "telegram" && endpoint.enabled)
-          telegramCount += 1;
         if (endpoint.platform === "telegram") {
+          telegramEndpointCount += 1;
           for (const [chatId, override] of Object.entries(
             endpoint.chat_overrides,
           )) {
@@ -780,12 +779,11 @@ export const ConfigV2Schema = z
           });
         }
       }
-      if (telegramCount !== 1) {
+      if (telegramEndpointCount > 1) {
         ctx.addIssue({
           code: "custom",
           path: ["agents", agentIndex, "endpoints"],
-          message:
-            "Phase 2 runtime requires exactly one enabled Telegram endpoint per agent",
+          message: "an agent may configure at most one Telegram endpoint",
         });
       }
       if (
@@ -951,20 +949,35 @@ export function normalizeV2(config: ConfigV2): {
 } {
   const bots = config.agents.map((agent) => {
     const endpoint = agent.endpoints.find(
-      (candidate) => candidate.platform === "telegram" && candidate.enabled,
+      (candidate) => candidate.platform === "telegram",
     );
-    if (!endpoint || endpoint.platform !== "telegram") {
-      throw new Error(`agent '${agent.id}' has no enabled Telegram endpoint`);
-    }
+    const buzzEndpoint = agent.endpoints.find(
+      (candidate) => candidate.platform === "buzz",
+    );
     return {
       id: agent.id,
-      token: endpoint.token,
-      transport_override: endpoint.transport_override,
-      access_control: endpoint.allowed_user_ids
-        ? { allowed_user_ids: endpoint.allowed_user_ids }
-        : undefined,
-      commands: endpoint.commands,
-      reactions: endpoint.reactions,
+      // The legacy BotConfig remains the runner-host compatibility shape.
+      // Buzz-only agents never construct a TelegramClient, so this sentinel
+      // cannot be used for network authentication.
+      token:
+        endpoint?.platform === "telegram"
+          ? endpoint.token
+          : `disabled-buzz-only:${agent.id}`,
+      transport_override:
+        endpoint?.platform === "telegram"
+          ? endpoint.transport_override
+          : undefined,
+      access_control:
+        endpoint?.platform === "telegram" && endpoint.allowed_user_ids
+          ? { allowed_user_ids: endpoint.allowed_user_ids }
+          : undefined,
+      commands: endpoint?.platform === "telegram" ? endpoint.commands : [],
+      reactions:
+        endpoint?.platform === "telegram"
+          ? endpoint.reactions
+          : buzzEndpoint?.platform === "buzz"
+            ? buzzEndpoint.reactions
+            : { received_emoji: null },
       runner: agent.runner,
     };
   });
