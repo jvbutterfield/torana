@@ -1652,10 +1652,21 @@ retry, signed download, MIME/size validation, and SHA-256 verification. Real
 Codex and Claude Agent API request/response and same-session continuity passed
 4/4. The pinned local open/closed WebSocket, Rust CLI golden, typecheck,
 manifest, installed-binary checksum, release-artifact checksum, and provenance
-gates all passed. Remaining operator gates are the real Telegram sandbox and
-external open-relay E2Es, fresh cross-process Codex/Claude restart checks,
-24-hour mixed-platform soak, production `agent-team` config/version pin and
-canary, full-team rollout, rollback rehearsal, and 2.0.0 publication.
+gates all passed.
+
+The production `agent-team` canary also passed on Railway deployment
+`21917563-5a07-426f-9f25-795382a87847`, pinned to `torana@2.0.0-rc.1` and the
+Block Buzz CLI `desktop-v0.5.3` source. Jules's local Buzz Desktop runtime was
+stopped with launch-at-login disabled before activation. The remote
+`jules-buzz` endpoint became active, healthy, and connected while all five
+Telegram runners remained ready. An owner mention created exactly one Buzz
+conversation/session and one Jules turn, produced one visible reply, and left
+zero queued/running work and zero pending/dead outbox rows.
+
+Remaining operator gates are the real Telegram sandbox and external open-relay
+E2Es, fresh cross-process Codex/Claude restart checks, the 24-hour
+mixed-platform soak, full-team rollout, rollback rehearsal, and 2.0.0
+publication.
 
 ---
 
