@@ -45,6 +45,28 @@ are parsed in the default test suite with synthetic credentials.
 
 ## Soak and rollout
 
+### Live verification on 2026-08-02
+
+The configured Block hosted closed relay passed authenticated membership
+discovery, a signed publish, exact-event duplicate publication, intake readback,
+reconnect replay, and local event-ID deduplication. The hosted Blossom probe
+then uploaded a PNG and PDF, persisted and retried the identical signed event,
+downloaded both objects with signed authorization, and verified their byte
+sizes, MIME types, and SHA-256 hashes. No credential value was printed or
+copied out of Apple Keychain or the Buzz Desktop managed-agent record.
+
+Authenticated real-runner Agent API checks passed 4/4: Codex request/response
+plus same-session continuity, and Claude request/response plus same-session
+continuity. The pinned Buzz regression passed 10/10 across the open/closed
+WebSocket protocol tests and installed Rust CLI golden test; typecheck, command
+manifest parity, release archive checksum, installed CLI checksum, and artifact
+provenance also passed.
+
+The real Telegram sandbox regression remains pending because no
+`TELEGRAM_TEST_BOT_TOKEN` and `TELEGRAM_TEST_CHAT_ID` are configured. Production
+`agent-team` remains a separate rollout gate and must not be changed until its
+repository is the active writable workspace and the canary identity is approved.
+
 The mixed-platform harness uses five personas, Telegram plus cryptographically
 signed Buzz delivery, configurable realistic conversation counts, durable
 outbox assertions, and a one-to-one session-isolation invariant. Smoke it with:
@@ -59,7 +81,7 @@ bun test test/soak/buzz-platform.test.ts
 Omit the duration and interval overrides for the 24-hour release gate. Set
 `BUZZ_PLATFORM_SOAK_ARTIFACT_DIR` to retain the JSON summary.
 
-Production approval still requires the real Telegram regression E2E, real
-open- and closed-relay Buzz E2E, real Codex and Claude restart continuity, the
-24-hour soak, canary observation, full-team rollout, and rollback rehearsal.
-Do not tag or publish 2.0.0 until those gates are recorded.
+Production approval still requires the real Telegram regression E2E, a real
+external open-relay E2E, fresh cross-process Codex and Claude restart checks,
+the 24-hour soak, canary observation, full-team rollout, and rollback
+rehearsal. Do not tag or publish 2.0.0 until those gates are recorded.

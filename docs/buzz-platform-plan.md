@@ -1644,6 +1644,19 @@ E2Es, real Codex/Claude restart checks, 24-hour soak, canary/full-team rollout,
 rollback rehearsal, external `agent-team` version pins, and the 2.0.0 tag and
 publication remain operator gates.
 
+**Live gate update (2026-08-02 MDT):** the configured Block hosted closed
+relay passed authenticated discovery, signed publication, exact-event
+duplicate acknowledgement, intake readback, reconnect replay, and deduplication.
+The hosted media probe also passed signed PNG/PDF upload, exact signed-event
+retry, signed download, MIME/size validation, and SHA-256 verification. Real
+Codex and Claude Agent API request/response and same-session continuity passed
+4/4. The pinned local open/closed WebSocket, Rust CLI golden, typecheck,
+manifest, installed-binary checksum, release-artifact checksum, and provenance
+gates all passed. Remaining operator gates are the real Telegram sandbox and
+external open-relay E2Es, fresh cross-process Codex/Claude restart checks,
+24-hour mixed-platform soak, production `agent-team` config/version pin and
+canary, full-team rollout, rollback rehearsal, and 2.0.0 publication.
+
 ---
 
 ## 12. Test strategy
