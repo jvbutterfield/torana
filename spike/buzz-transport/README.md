@@ -15,6 +15,11 @@ bun run provenance:check
 
 The test relay covers NIP-42 authentication, strict owner-auth-tag injection, membership discovery, `#h`-scoped mention intake, threaded replies, reconnect overlap, signature verification, exact-event replay, and relay deduplication.
 
+The Rust CLI golden test runs when `buzz` is installed on `PATH` and is skipped
+on generic CI runners. The protocol and cryptographic tests remain mandatory;
+`provenance:check` verifies the pinned release artifact without requiring an
+installed Buzz app.
+
 ## Optional hosted-relay probe
 
 The live probe is read-only unless publishing is explicitly enabled:
