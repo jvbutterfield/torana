@@ -14,7 +14,7 @@ import type { ConversationRef, OutboundOperation } from "./platform/types.js";
 
 const log = logger("outbox");
 
-type SendCallback = (telegramMessageId: number) => void;
+type SendCallback = (externalMessageId: string) => void;
 
 /**
  * How long an `in_flight` outbox row stays excluded from re-pickup before
@@ -160,10 +160,12 @@ export class OutboxProcessor {
     botId: BotId,
     chatId: number,
     text: string,
-    onSent: SendCallback,
+    onSent: (telegramMessageId: number) => void,
   ): number {
     const id = this.queueSend(turnId, botId, chatId, text);
-    this.sendCallbacks.set(id, onSent);
+    this.sendCallbacks.set(id, (externalMessageId) => {
+      if (/^-?\d+$/.test(externalMessageId)) onSent(Number(externalMessageId));
+    });
     return id;
   }
 
@@ -196,7 +198,9 @@ export class OutboxProcessor {
       this.adapters.get(conversation.endpointId) ?? this.adapters.get(agentId);
     const prepared = adapter?.prepareOutbound?.(conversation, operation);
     const budget =
-      conversation.platform === "buzz" && operation.kind === "send"
+      conversation.platform === "buzz" &&
+      operation.kind === "send" &&
+      (turnId === null || !this.db.hasConversationalOutboxForTurn(turnId))
         ? this.replyBudgetExceeded(
             conversation.endpointId,
             this.db.resolveConversation(agentId, conversation).id,
@@ -219,6 +223,18 @@ export class OutboxProcessor {
       this.metrics.inc(agentId, "loop_budget_rejected");
       void this.alerts?.loopBudgetRejected(agentId, budget);
     }
+    return id;
+  }
+
+  queueOperationWithCallback(
+    turnId: number | null,
+    agentId: BotId,
+    conversation: ConversationRef,
+    operation: Extract<OutboundOperation, { kind: "send" }>,
+    onSent: SendCallback,
+  ): number {
+    const id = this.queueOperation(turnId, agentId, conversation, operation);
+    this.sendCallbacks.set(id, onSent);
     return id;
   }
 
@@ -372,13 +388,9 @@ export class OutboxProcessor {
         );
         if (operation.kind === "send" && result.ok) {
           const cb = this.sendCallbacks.get(row.id);
-          const callbackMessageId =
-            result.externalMessageId && /^-?\d+$/.test(result.externalMessageId)
-              ? Number(result.externalMessageId)
-              : undefined;
-          if (cb && callbackMessageId !== undefined) {
+          if (cb && result.externalMessageId) {
             this.sendCallbacks.delete(row.id);
-            cb(callbackMessageId);
+            cb(result.externalMessageId);
           }
         }
       } else if (!result.retriable) {

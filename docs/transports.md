@@ -1,6 +1,28 @@
-# Transports: webhook vs polling
+# Transports: Telegram and Buzz
 
-torana ships two transports out of the box. Either can be chosen globally via `transport.default_mode`, and per-bot via `transport_override.mode`.
+Torana ships Telegram webhook/polling transports and an authenticated Buzz
+WebSocket transport. `transport.default_mode` and `transport_override.mode`
+apply only to Telegram.
+
+## Buzz WebSocket
+
+Buzz endpoints authenticate to the configured relay, discover accessible
+channels, replay from a durable cursor, then maintain live channel and
+membership subscriptions. Outbound messages, edits, deletes, and reactions
+are signed before entering the durable outbox, so an uncertain retry republishes
+the same event ID. Typing and presence bypass the outbox and are dropped on
+failure; reconnect publishes a fresh online presence event.
+
+Use a unique endpoint private key and set `platforms.buzz.enabled: true` plus
+`agents[].endpoints[].enabled: true`. Run `torana doctor` before production to
+verify the relay, owner identity, attestation, discovery, and publish policy.
+
+The Block relay defaults to a 512 KiB WebSocket frame while Buzz message/edit
+content is capped separately. Torana defaults to `max_frame_bytes: 524288` and
+`message_max_bytes: 65536`, and byte-splits continuations without cutting UTF-8
+characters.
+
+## Telegram: when to use webhook or polling
 
 ## When to use what
 

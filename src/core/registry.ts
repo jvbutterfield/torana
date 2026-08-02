@@ -223,11 +223,46 @@ export class BotRegistry {
       args.inboundEventId,
       bot.id,
       buildBuzzPrompt(args.event, adapter),
+      adapter.config.rerunOnEdit,
     );
     if (turnId === null) return;
+    if (adapter.config.receivedEmoji) {
+      try {
+        this.outbox.queueOperation(null, bot.id, args.event.conversation, {
+          kind: "reaction_add",
+          externalMessageId:
+            args.event.externalMessageId ?? args.event.externalEventId,
+          emoji: adapter.config.receivedEmoji,
+        });
+      } catch (error) {
+        log.warn("Buzz acknowledgement reaction could not be queued", {
+          endpoint_id: args.endpointId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     this.metrics.inc(bot.id, "turns_queued");
     this.conversationScheduler?.wake();
     return "enqueued";
+  }
+
+  /** Apply a durable Buzz edit, delete, or reaction control event. */
+  handleRecordedBuzzControl(args: {
+    endpointId: string;
+    inboundEventId: number;
+    event: InboundEvent;
+  }): void {
+    const adapter = this.adapters.get(args.endpointId);
+    if (!(adapter instanceof BuzzAdapter)) {
+      throw new Error(`Buzz endpoint '${args.endpointId}' has no adapter`);
+    }
+    this.db.applyBuzzControlEvent({
+      inboundEventId: args.inboundEventId,
+      rerunOnEdit: adapter.config.rerunOnEdit,
+      includeReactionsInContext: adapter.config.includeReactionsInContext,
+      pendingMutationDays: 30,
+    });
+    this.conversationScheduler?.wake();
   }
 
   /** Dispatch the next queued turn for `botId` if the runner is idle. */

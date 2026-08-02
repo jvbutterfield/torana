@@ -60,6 +60,7 @@ export const DEFAULT_MUTATION_KINDS = [
   BUZZ_KINDS.streamEdit,
   BUZZ_KINDS.deletion,
   BUZZ_KINDS.nativeDelete,
+  BUZZ_KINDS.reaction,
 ] as const;
 
 export type OwnerAuthTag = ["auth", string, string, string];

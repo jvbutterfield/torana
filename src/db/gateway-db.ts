@@ -1099,6 +1099,225 @@ export class GatewayDB {
     });
   }
 
+  applyBuzzControlEvent(args: {
+    inboundEventId: number;
+    rerunOnEdit: boolean;
+    includeReactionsInContext: boolean;
+    pendingMutationDays: number;
+  }): "applied" | "pending" | "ignored" {
+    if (!this.normalizedSchema) return "ignored";
+    return this.transactionImmediate(() => {
+      const mutation = this.getBuzzMutation(args.inboundEventId);
+      if (!mutation) return "ignored";
+      if (mutation.event_kind === "reaction") {
+        this._db
+          .prepare("UPDATE inbound_events SET status_reason=? WHERE id=?")
+          .run(
+            args.includeReactionsInContext
+              ? "reaction_session_event"
+              : "reaction_ignored_by_configuration",
+            args.inboundEventId,
+          );
+        return "applied";
+      }
+      if (!mutation.target_external_event_id) return "ignored";
+      const target = this._db
+        .query(
+          `SELECT id, received_seq FROM inbound_events
+           WHERE endpoint_id=? AND external_event_id=?`,
+        )
+        .get(mutation.endpoint_id, mutation.target_external_event_id) as {
+        id: number;
+        received_seq: number;
+      } | null;
+      if (!target) {
+        this._db
+          .prepare(
+            `INSERT OR IGNORE INTO pending_event_mutations
+              (endpoint_id, target_external_event_id, mutation_event_id,
+               mutation_kind, received_seq, expires_at)
+             VALUES (?, ?, ?, ?, ?, datetime('now', ?))`,
+          )
+          .run(
+            mutation.endpoint_id,
+            mutation.target_external_event_id,
+            args.inboundEventId,
+            mutation.event_kind,
+            mutation.received_seq,
+            `+${args.pendingMutationDays} days`,
+          );
+        return "pending";
+      }
+      return this.applyBuzzMutationToTarget(mutation, target, args.rerunOnEdit);
+    });
+  }
+
+  private getBuzzMutation(inboundEventId: number): {
+    id: number;
+    endpoint_id: string;
+    target_external_event_id: string | null;
+    event_kind: string;
+    received_seq: number;
+    payload_json: string | null;
+  } | null {
+    return this._db
+      .query(
+        `SELECT id, endpoint_id, target_external_event_id, event_kind,
+                received_seq, payload_json
+         FROM inbound_events WHERE id=? AND platform='buzz'`,
+      )
+      .get(inboundEventId) as ReturnType<GatewayDB["getBuzzMutation"]>;
+  }
+
+  private applyPendingBuzzMutations(
+    endpointId: string,
+    targetExternalEventId: string,
+    rerunOnEdit: boolean,
+  ): void {
+    const target = this._db
+      .query(
+        `SELECT id, received_seq FROM inbound_events
+         WHERE endpoint_id=? AND external_event_id=?`,
+      )
+      .get(endpointId, targetExternalEventId) as {
+      id: number;
+      received_seq: number;
+    } | null;
+    if (!target) return;
+    const pending = this._db
+      .query(
+        `SELECT mutation_event_id FROM pending_event_mutations
+         WHERE endpoint_id=? AND target_external_event_id=?
+         ORDER BY received_seq, id`,
+      )
+      .all(endpointId, targetExternalEventId) as Array<{
+      mutation_event_id: number;
+    }>;
+    for (const row of pending) {
+      const mutation = this.getBuzzMutation(row.mutation_event_id);
+      if (mutation) {
+        this.applyBuzzMutationToTarget(mutation, target, rerunOnEdit, true);
+      }
+      this._db
+        .prepare(
+          "DELETE FROM pending_event_mutations WHERE mutation_event_id=?",
+        )
+        .run(row.mutation_event_id);
+    }
+  }
+
+  private applyBuzzMutationToTarget(
+    mutation: NonNullable<ReturnType<GatewayDB["getBuzzMutation"]>>,
+    target: { id: number; received_seq: number },
+    rerunOnEdit: boolean,
+    bufferedBeforeTarget = false,
+  ): "applied" | "ignored" {
+    if (!bufferedBeforeTarget && mutation.received_seq <= target.received_seq) {
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status_reason='stale_mutation' WHERE id=?",
+        )
+        .run(mutation.id);
+      return "ignored";
+    }
+    const turn = this._db
+      .query(
+        `SELECT id, status, agent_id, conversation_id, session_key,
+                prompt_markdown
+         FROM turns WHERE source_event_id=? ORDER BY id LIMIT 1`,
+      )
+      .get(target.id) as {
+      id: number;
+      status: string;
+      agent_id: string;
+      conversation_id: number;
+      session_key: string | null;
+      prompt_markdown: number;
+    } | null;
+
+    if (mutation.event_kind === "message_delete") {
+      if (turn?.status === "queued") {
+        this._db
+          .prepare(
+            `UPDATE turns SET status='dead', completed_at=datetime('now'),
+                    error_text='source message deleted'
+             WHERE id=? AND status='queued'`,
+          )
+          .run(turn.id);
+      }
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status='dead', status_reason=? WHERE id=?",
+        )
+        .run(`deleted_by:${mutation.id}`, target.id);
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status_reason='delete_applied' WHERE id=?",
+        )
+        .run(mutation.id);
+      return "applied";
+    }
+
+    if (mutation.event_kind !== "message_edit") return "ignored";
+    let content = "";
+    try {
+      const payload = JSON.parse(mutation.payload_json ?? "null") as {
+        content?: unknown;
+      } | null;
+      if (typeof payload?.content === "string") content = payload.content;
+    } catch {
+      // An invalid payload was already signature-checked before persistence.
+    }
+    if (turn?.status === "queued") {
+      this._db
+        .prepare(
+          `UPDATE turns SET prompt_text=?, prompt_revision_seq=?
+           WHERE id=? AND status='queued' AND prompt_revision_seq < ?`,
+        )
+        .run(content, mutation.received_seq, turn.id, mutation.received_seq);
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status_reason='queued_prompt_updated' WHERE id=?",
+        )
+        .run(mutation.id);
+      return "applied";
+    }
+    if (turn && rerunOnEdit) {
+      this._db
+        .prepare(
+          `INSERT INTO turns
+            (bot_id, agent_id, chat_id, conversation_id, session_key,
+             source_platform, source_event_id, retry_of_turn_id, prompt_text,
+             prompt_markdown, prompt_revision_seq)
+           VALUES (?, ?, 0, ?, ?, 'buzz', ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          turn.agent_id,
+          turn.agent_id,
+          turn.conversation_id,
+          turn.session_key,
+          mutation.id,
+          turn.id,
+          content,
+          turn.prompt_markdown,
+          mutation.received_seq,
+        );
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status='enqueued', status_reason='explicit_edit_rerun' WHERE id=?",
+        )
+        .run(mutation.id);
+      return "applied";
+    }
+    this._db
+      .prepare("UPDATE inbound_events SET status_reason=? WHERE id=?")
+      .run(
+        turn ? `edit_notice:${turn.status}` : "edit_notice:no_turn",
+        mutation.id,
+      );
+    return "applied";
+  }
+
   listBuzzEventsByStatus(
     endpointId: string,
     statuses: readonly string[],
@@ -1451,6 +1670,7 @@ export class GatewayDB {
     inboundEventId: number,
     agentId: BotId,
     promptText: string,
+    rerunOnEdit = false,
   ): number | null {
     if (!this.normalizedSchema) return null;
     return this.transactionImmediate(() => {
@@ -1495,6 +1715,19 @@ export class GatewayDB {
           "UPDATE inbound_events SET status='enqueued', status_reason=NULL WHERE id=? AND status='dispatched'",
         )
         .run(inboundEventId);
+      const source = this._db
+        .query(
+          "SELECT endpoint_id, external_event_id FROM inbound_events WHERE id=?",
+        )
+        .get(inboundEventId) as {
+        endpoint_id: string;
+        external_event_id: string;
+      };
+      this.applyPendingBuzzMutations(
+        source.endpoint_id,
+        source.external_event_id,
+        rerunOnEdit,
+      );
       return Number(result.lastInsertRowid);
     });
   }
@@ -1959,7 +2192,7 @@ export class GatewayDB {
   }): number {
     const row = this._db
       .query(
-        `SELECT COUNT(*) AS count FROM outbox
+        `SELECT COUNT(DISTINCT CASE WHEN turn_id IS NULL THEN -id ELSE turn_id END) AS count FROM outbox
          WHERE endpoint_id=? AND operation_kind IN ('send','forum_comment')
            AND created_at>=?
            ${args.conversationId === undefined ? "" : "AND conversation_id=?"}`,
@@ -1972,11 +2205,21 @@ export class GatewayDB {
     return Number(row.count);
   }
 
+  hasConversationalOutboxForTurn(turnId: number): boolean {
+    if (!this.normalizedSchema) return false;
+    return !!this._db
+      .query(
+        `SELECT 1 FROM outbox
+         WHERE turn_id=? AND operation_kind IN ('send','forum_comment') LIMIT 1`,
+      )
+      .get(turnId);
+  }
+
   countOutboxTrace(traceId: string): number {
     if (!this.normalizedSchema) return 0;
     const row = this._db
       .query(
-        `SELECT COUNT(*) AS count FROM outbox
+        `SELECT COUNT(DISTINCT CASE WHEN turn_id IS NULL THEN -id ELSE turn_id END) AS count FROM outbox
          WHERE json_valid(payload_json)
            AND json_extract(payload_json, '$.traceId')=?`,
       )
@@ -2245,6 +2488,7 @@ export class GatewayDB {
     turnId: number,
     updates: Partial<{
       active_telegram_message_id: number | null;
+      active_external_message_id: string | null;
       buffer_text: string;
       last_flushed_at: string;
       segment_index: number;

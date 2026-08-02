@@ -53,6 +53,11 @@ export interface BuzzTransportOptions {
     event: Event;
     normalizedEvent: InboundEvent;
   }) => Promise<"enqueued" | void> | "enqueued" | void;
+  onControl?: (args: {
+    endpointId: string;
+    inboundEventId: number;
+    event: InboundEvent;
+  }) => Promise<void> | void;
   adapters?: ReadonlyMap<string, PlatformAdapter>;
   clientFactory?: (
     options: ConstructorParameters<typeof BuzzRelayClient>[0],
@@ -104,6 +109,7 @@ class BuzzEndpointSupervisor {
   private normalized: BuzzNormalizedConfig;
   private alerts?: AlertManager;
   private onAccepted?: BuzzTransportOptions["onAccepted"];
+  private onControl?: BuzzTransportOptions["onControl"];
   private clientFactory: NonNullable<BuzzTransportOptions["clientFactory"]>;
   private random: () => number;
   private lifecyclePollMs: number;
@@ -137,6 +143,13 @@ class BuzzEndpointSupervisor {
     this.normalized = opts.normalized as BuzzNormalizedConfig;
     this.alerts = opts.alerts;
     this.onAccepted = opts.onAccepted;
+    this.onControl = opts.onControl;
+    this.adapter.setRateLimits({
+      edit: this.normalized.limits.buzz_edit_cadence_ms,
+      reaction: this.normalized.limits.reaction_min_interval_ms,
+      typing: this.normalized.limits.typing_min_interval_ms,
+      presence: this.normalized.limits.presence_min_interval_ms,
+    });
     this.clientFactory =
       opts.clientFactory ?? ((options) => new BuzzRelayClient(options));
     this.random = opts.random ?? Math.random;
@@ -151,6 +164,9 @@ class BuzzEndpointSupervisor {
 
   async stop(): Promise<void> {
     this.running = false;
+    await this.adapter
+      .signal(this.signalConversation(), { kind: "presence", state: "offline" })
+      .catch(() => false);
     for (const resolve of [...this.sleepResolvers]) resolve();
     this.client?.close();
     if (this.loopPromise) await this.loopPromise.catch(() => {});
@@ -189,7 +205,7 @@ class BuzzEndpointSupervisor {
           relayUrl: config.relayUrl,
           privateKey: config.privateKey,
           authTag: config.authTag,
-          maxFrameBytes: this.normalized.buzzPlatform.message_max_bytes,
+          maxFrameBytes: this.normalized.buzzPlatform.max_frame_bytes,
           waitMs: this.normalized.limits.relay_ok_wait_ms,
           onInvalidFrame: (reason) => {
             log.warn("Buzz relay frame rejected", {
@@ -201,10 +217,15 @@ class BuzzEndpointSupervisor {
         this.client = client;
         this.adapter.setPublisher((event) => this.publish(client, event));
         await client.connect();
+        this.adapter.resetEphemeralRateLimits();
         this.accessibleChannels = new Set(
           this.db.getEndpointState(this.endpointId)?.cursor.channels ?? [],
         );
         await this.refreshMemberships(client, true);
+        await this.adapter.signal(this.signalConversation(), {
+          kind: "presence",
+          state: "online",
+        });
         await this.recoverAcceptedEvents();
         this.subscribeMembership(client);
         this.failureCount = 0;
@@ -263,6 +284,25 @@ class BuzzEndpointSupervisor {
   }
 
   private async recoverAcceptedEvents(): Promise<void> {
+    for (const row of this.db.listBuzzEventsByStatus(this.endpointId, [
+      "control",
+    ])) {
+      let event: unknown;
+      try {
+        event = JSON.parse(row.payloadJson);
+      } catch {
+        continue;
+      }
+      if (!isValidInboundEvent(event)) continue;
+      const normalizedEvent = this.adapter.normalizeRecorded(event);
+      if (normalizedEvent) {
+        await this.onControl?.({
+          endpointId: this.endpointId,
+          inboundEventId: row.id,
+          event: normalizedEvent,
+        });
+      }
+    }
     const dispatched = this.db.listBuzzEventsByStatus(this.endpointId, [
       "dispatched",
     ]);
@@ -403,6 +443,7 @@ class BuzzEndpointSupervisor {
             BUZZ_KINDS.streamEdit,
             BUZZ_KINDS.deletion,
             BUZZ_KINDS.nativeDelete,
+            BUZZ_KINDS.reaction,
           ],
           since,
           limit,
@@ -440,6 +481,7 @@ class BuzzEndpointSupervisor {
             BUZZ_KINDS.streamEdit,
             BUZZ_KINDS.deletion,
             BUZZ_KINDS.nativeDelete,
+            BUZZ_KINDS.reaction,
           ],
           since: liveSince,
         }),
@@ -499,6 +541,12 @@ class BuzzEndpointSupervisor {
       } else if (recorded.status === "received") {
         await this.dispatchAccepted(recorded.id, raw as Event);
       }
+    } else if (decision.kind === "control" && recorded.kind === "inserted") {
+      await this.onControl?.({
+        endpointId: this.endpointId,
+        inboundEventId: recorded.id,
+        event: decision.event,
+      });
     }
     return decision.event.kind === "membership_change";
   }
@@ -600,6 +648,10 @@ class BuzzEndpointSupervisor {
           discoveryFilters(this.adapter.config.pubkey),
           this.subscriptionId(`heartbeat-${++this.heartbeatSequence}`),
         );
+        await this.adapter.signal(this.signalConversation(), {
+          kind: "presence",
+          state: "online",
+        });
         nextHeartbeatAt = Date.now() + heartbeatMs;
       }
       await this.sleep(
@@ -627,6 +679,20 @@ class BuzzEndpointSupervisor {
 
   private subscriptionId(suffix: string): string {
     return `torana-${this.endpointId}-${suffix}`.slice(0, 120);
+  }
+
+  private signalConversation(): import("../types.js").ConversationRef {
+    return {
+      platform: "buzz",
+      communityId: this.endpoint.communityId,
+      endpointId: this.endpointId,
+      channelId:
+        this.accessibleChannels.values().next().value ??
+        "00000000-0000-4000-8000-000000000000",
+      threadRootId: null,
+      workflowRunId: null,
+      type: "stream",
+    };
   }
 
   private channelSubscriptionId(channelId: string): string {
@@ -663,7 +729,7 @@ export async function probeBuzzEndpoint(args: {
     relayUrl: config.relayUrl,
     privateKey: config.privateKey,
     authTag: config.authTag,
-    maxFrameBytes: args.normalized.buzzPlatform.message_max_bytes,
+    maxFrameBytes: args.normalized.buzzPlatform.max_frame_bytes,
     waitMs: args.normalized.limits.relay_ok_wait_ms,
   });
   try {

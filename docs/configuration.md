@@ -4,8 +4,7 @@ All configuration lives in a single YAML file (default `./torana.yaml`). The sch
 
 > **Version key.** Config versions `1` and `2` are accepted. Version 1 remains
 > the compatibility format. Version 2 models agents, platform endpoints, and
-> session policy separately; both normalize to the same runtime behavior for
-> Telegram during Phase 2.
+> session policy separately. Version 2 is required for Buzz endpoints.
 
 ## Upgrading a v1 config
 
@@ -19,8 +18,53 @@ torana validate --config ./torana.v2.yaml
 The upgrade preserves the v1 agent-wide session behavior as
 `sessions.scope: legacy_agent`, maps every `bots[]` entry to an `agents[]`
 entry with a `<agent>-telegram` endpoint, and converts legacy alerts to
-`alerts.target`. Buzz endpoints are representable but must remain disabled
-until Phase 4.
+`alerts.target`. Buzz endpoints can now be enabled for authenticated channels,
+DMs, streaming replies, edits, deletes, reactions, typing, and presence.
+
+### Buzz endpoint controls
+
+Buzz uses the Block hosted relay over an authenticated WebSocket. Keep the
+private key and reusable owner-attestation tag in runtime secrets, not in the
+checked-in YAML.
+
+```yaml
+platforms:
+  buzz:
+    enabled: true
+    message_max_bytes: 65536
+    max_frame_bytes: 524288
+
+limits:
+  buzz_edit_cadence_ms: 2000
+  typing_min_interval_ms: 4000
+  reaction_min_interval_ms: 1000
+  presence_min_interval_ms: 30000
+
+agents:
+  - id: cato
+    endpoints:
+      - id: cato-buzz
+        platform: buzz
+        enabled: true
+        community_id: primary
+        relay_url: ${BUZZ_RELAY_URL}
+        private_key: ${BUZZ_PRIVATE_KEY_CATO}
+        auth_tag: ${BUZZ_AUTH_TAG_CATO}
+        owner_pubkey: ${BUZZ_OWNER_PUBKEY}
+        respond_to: owner_only
+        reactions: { received_emoji: "👀" } # null disables acknowledgements
+        rerun_on_edit: false
+        include_reactions_in_context: false
+        custom_emoji_palette:
+          ship_it: https://cdn.example/emoji/ship-it.png
+```
+
+`message_max_bytes` is the UTF-8 content ceiling. `max_frame_bytes` is the
+larger signed WebSocket envelope ceiling and must be at least 4096 bytes above
+the content ceiling. Edits and reactions are durable; typing and presence are
+best effort and are never replayed after restart. A custom emoji shortcode
+must have an HTTP(S) URL in `custom_emoji_palette` so the emitted NIP-30 tag is
+complete.
 
 In v2, Telegram-wide transport settings live under
 `platforms.telegram.delivery`; bot identity and credentials live under

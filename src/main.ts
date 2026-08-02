@@ -143,7 +143,7 @@ export async function startGateway(
   const outbox = new OutboxProcessor(config, db, adapters, metrics, alerts, {
     normalized,
   });
-  const streaming = new StreamManager(config, db, outbox, adapters);
+  const streaming = new StreamManager(config, db, outbox, adapters, normalized);
 
   // Build Bot instances.
   const bots: Bot[] = config.bots.map(
@@ -295,6 +295,12 @@ export async function startGateway(
           endpointId,
           inboundEventId,
           event: normalizedEvent,
+        }),
+      onControl: ({ endpointId, inboundEventId, event }) =>
+        registry.handleRecordedBuzzControl({
+          endpointId,
+          inboundEventId,
+          event,
         }),
     });
     transports.push(buzzTransport);

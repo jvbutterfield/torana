@@ -110,8 +110,19 @@ const PlatformsSchema = z
           .strict()
           .default({}),
         message_max_bytes: Int.min(1024).max(1_048_576).default(65_536),
+        max_frame_bytes: Int.min(65_536).max(16_777_216).default(524_288),
       })
       .strict()
+      .superRefine((value, ctx) => {
+        if (value.max_frame_bytes < value.message_max_bytes + 4096) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["max_frame_bytes"],
+            message:
+              "must be at least message_max_bytes + 4096 for the signed event envelope",
+          });
+        }
+      })
       .default({}),
   })
   .strict();
@@ -129,6 +140,7 @@ const LimitsV2Schema = z
     buzz_edit_cadence_ms: Int.min(100).default(2000),
     typing_min_interval_ms: Int.min(100).default(4000),
     presence_min_interval_ms: Int.min(100).default(30_000),
+    reaction_min_interval_ms: Int.min(100).default(1000),
     agent_reply_rate_per_conversation: z.string().default("6/60s"),
     agent_reply_rate_per_endpoint: z.string().default("60/60s"),
   })
@@ -250,6 +262,18 @@ const BuzzEndpointSchema = z
       )
       .default({}),
     allow_shared_identity: Bool.default(false),
+    reactions: BotReactionsSchema,
+    rerun_on_edit: Bool.default(false),
+    include_reactions_in_context: Bool.default(false),
+    custom_emoji_palette: z
+      .record(
+        z.string().regex(/^[a-z0-9_-]{1,64}$/),
+        z
+          .string()
+          .url()
+          .regex(/^https?:\/\//),
+      )
+      .default({}),
   })
   .strict();
 
@@ -772,6 +796,10 @@ export interface NormalizedBuzzRuntimeConfig {
   ownerPubkey: string | null;
   allowedPubkeys: string[];
   allowSharedIdentity: boolean;
+  receivedEmoji: string | null;
+  rerunOnEdit: boolean;
+  includeReactionsInContext: boolean;
+  customEmojiPalette: Record<string, string>;
   subscribe: BuzzEndpointConfig["subscribe"];
   triggers: BuzzEndpointConfig["triggers"];
   channelOverrides: Record<
@@ -920,6 +948,11 @@ export function normalizeV2(config: ConfigV2): {
                     : null,
                   allowedPubkeys: endpoint.allowed_pubkeys.map(normalizePubkey),
                   allowSharedIdentity: endpoint.allow_shared_identity,
+                  receivedEmoji: endpoint.reactions.received_emoji,
+                  rerunOnEdit: endpoint.rerun_on_edit,
+                  includeReactionsInContext:
+                    endpoint.include_reactions_in_context,
+                  customEmojiPalette: { ...endpoint.custom_emoji_palette },
                   subscribe: endpoint.subscribe,
                   triggers: endpoint.triggers,
                   channelOverrides: Object.fromEntries(
@@ -1066,6 +1099,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
         heartbeat_secs: 30,
       },
       message_max_bytes: 65_536,
+      max_frame_bytes: 524_288,
     },
     limits: {
       dispatch_wait_warn_ms: 30_000,
@@ -1079,6 +1113,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       buzz_edit_cadence_ms: 2000,
       typing_min_interval_ms: 4000,
       presence_min_interval_ms: 30_000,
+      reaction_min_interval_ms: 1000,
       agent_reply_rate_per_conversation: "6/60s",
       agent_reply_rate_per_endpoint: "60/60s",
     },

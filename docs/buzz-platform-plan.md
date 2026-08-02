@@ -314,6 +314,7 @@ platforms:
       replay_overlap_secs: 300
       heartbeat_secs: 30
     message_max_bytes: 65536
+    max_frame_bytes: 524288
 
 access_control:
   default_policy: deny
@@ -344,6 +345,7 @@ limits:
   buzz_edit_cadence_ms: 2000          # streaming edit rate for Buzz (Telegram stays 1500)
   typing_min_interval_ms: 4000
   presence_min_interval_ms: 30000
+  reaction_min_interval_ms: 1000
   agent_reply_rate_per_conversation: "6/60s"   # tag-independent loop backstop, §9.5
   agent_reply_rate_per_endpoint: "60/60s"      # fan-out backstop across conversations
 
@@ -399,6 +401,11 @@ agents:
         owner_pubkey: ${BUZZ_OWNER_PUBKEY}
         allowed_pubkeys: []       # required and non-empty when respond_to: allowlist
         subscribe: mentions_and_dms
+        reactions:
+          received_emoji: "👀"       # null disables acknowledgement reactions
+        rerun_on_edit: false
+        include_reactions_in_context: false
+        custom_emoji_palette: {}      # shortcode -> HTTPS URL
         triggers:
           feed:
             enabled: false
@@ -1323,7 +1330,10 @@ This is the first deployable Buzz release candidate.
 
 Buzz replies are signed once with Markdown content and the required `h`, NIP-10 `e`, `p`, trace, hop, and owner-auth tags, then the exact signed event and event ID are persisted before relay publication. Retry after an uncertain acknowledgement reuses the identical signed bytes, and relay event-ID confirmation treats an already-visible event as success. The authenticated live-WebSocket harness proves owner DM intake through threaded publication; unit and integration coverage also proves exact stream targeting, runner-final delivery, sibling one-hop delegation, channel/cross-platform session isolation, and local conversation reply suppression independent of trace tags. Prompt framing includes community, channel/DM, thread/reply, author, mentions, a `buzz://message` deep link, and the explicit transport-owned-delivery instruction. `imeta` is parsed as metadata only, files are never fetched before Phase 8, prompts label the skipped attachments, and `attachments_skipped_total` records them.
 
-The complete repository suite passes with 1,330 tests passed, 13 intentionally skipped, and zero failures; typecheck, lint, formatting, build, whitespace, and the Phase 0 protocol/typecheck/manifest/provenance regression gates also pass. Phase 5 is complete and Phase 6 is ready to implement.
+At the Phase 5 checkpoint, the complete repository suite passed with 1,330
+tests passed, 13 intentionally skipped, and zero failures; typecheck, lint,
+formatting, build, whitespace, and the Phase 0 protocol/typecheck/manifest/
+provenance regression gates also passed.
 
 ### Phase 6 — streaming, edits, deletion, reactions, emoji, and presence
 
@@ -1356,6 +1366,29 @@ Gate:
 - reactions can be disabled and do not trigger loops;
 - ephemeral failures never fail the underlying turn;
 - reconnect leaves the endpoint presence state correct.
+
+**Implementation evidence (2026-08-02):** Buzz now streams through the shared
+lazy-send manager: the first delta creates one durably signed kind-9 event,
+cadence updates create durably signed kind-40003 edits, and final output either
+stabilizes that event or emits UTF-8-safe continuation messages. Native GFM is
+preserved, content is byte-bounded independently from the signed WebSocket
+frame, and retries reuse the persisted event ID and signed bytes.
+
+Kind-40003 edits, kind-9005/NIP-09 tombstones, and kind-7 reactions enter the
+control-event path. Receive sequence is authoritative; pre-target mutations
+are buffered and replayed deterministically. Queued prompts can be revised,
+queued deleted sources become durable dead-letter records, executed prompts
+are never silently rewritten, and explicit `rerun_on_edit` remains disabled by
+default. Received acknowledgements enter the outbox only after enqueue commits;
+setting `received_emoji: null` disables them, and reactions never trigger a
+turn. NIP-30 custom emoji retain their shortcode and require a configured URL.
+
+Typing and presence are independently rate-limited, best-effort signed
+ephemeral events with no outbox rows. Clean shutdown sends offline, heartbeat
+refreshes online, and reconnect clears stale ephemeral rate state before
+publishing online. Focused Phase 6 tests cover byte boundaries, operation
+kinds/tags, custom emoji, mutation races, ephemeral failure isolation, and
+durable streaming; the unchanged Telegram streaming suite also passes.
 
 ### Phase 7 — forums, votes, workflows, and proactive triggers
 

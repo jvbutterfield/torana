@@ -29,7 +29,15 @@ import {
   signTemplate,
 } from "./protocol.js";
 
-const BUZZ_PHASE5_CAPABILITIES = new Set(["send", "presence"] as const);
+const BUZZ_PHASE6_CAPABILITIES = new Set([
+  "send",
+  "edit",
+  "delete",
+  "reaction_add",
+  "reaction_remove",
+  "typing",
+  "presence",
+] as const);
 const CHANNEL_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -52,6 +60,16 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
   readonly config: NormalizedBuzzRuntimeConfig;
   private channels = new Map<string, BuzzChannelMetadata>();
   private publisher: ((event: Event) => Promise<DeliveryResult>) | null = null;
+  private rateLimits = {
+    edit: 2000,
+    reaction: 1000,
+    typing: 4000,
+    presence: 30_000,
+  };
+  private lastPublished = new Map<
+    "edit" | "reaction" | "typing" | "presence",
+    number
+  >();
 
   constructor(endpoint: NormalizedEndpointConfig) {
     if (endpoint.platform !== "buzz" || !endpoint.buzz) {
@@ -63,7 +81,7 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
       agentId: endpoint.agentId,
       platform: "buzz",
       communityId: endpoint.communityId,
-      capabilities: BUZZ_PHASE5_CAPABILITIES,
+      capabilities: BUZZ_PHASE6_CAPABILITIES,
     };
   }
 
@@ -79,6 +97,15 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     publisher: ((event: Event) => Promise<DeliveryResult>) | null,
   ): void {
     this.publisher = publisher;
+  }
+
+  setRateLimits(limits: Partial<typeof this.rateLimits>): void {
+    this.rateLimits = { ...this.rateLimits, ...limits };
+  }
+
+  resetEphemeralRateLimits(): void {
+    this.lastPublished.delete("typing");
+    this.lastPublished.delete("presence");
   }
 
   normalizeInbound(raw: Event): InboundEvent | null {
@@ -250,29 +277,62 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     conversation: ConversationRef,
     operation: OutboundOperation,
   ): PreparedOutboundOperation {
-    if (operation.kind !== "send") {
+    const tags: string[][] = [["h", conversation.channelId]];
+    let kind: number;
+    let content: string;
+    if (operation.kind === "send") {
+      kind = BUZZ_KINDS.streamMessageV1;
+      content = operation.text;
+    } else if (operation.kind === "edit") {
+      kind = BUZZ_KINDS.streamEdit;
+      content = operation.text;
+      tags.push(["e", operation.externalMessageId]);
+    } else if (operation.kind === "delete") {
+      kind = BUZZ_KINDS.nativeDelete;
+      content = "";
+      tags.push(["e", operation.externalMessageId]);
+      if (operation.reason)
+        tags.push(["reason", operation.reason.slice(0, 256)]);
+    } else if (operation.kind === "reaction_add") {
+      kind = BUZZ_KINDS.reaction;
+      const reaction = normalizeReaction(
+        operation.emoji,
+        this.config.customEmojiPalette,
+      );
+      content = reaction.content;
+      tags.push(["e", operation.externalMessageId]);
+      if (reaction.custom) {
+        tags.push(["emoji", reaction.custom.name, reaction.custom.url]);
+      }
+    } else if (operation.kind === "reaction_remove") {
+      kind = BUZZ_KINDS.deletion;
+      content = "";
+      tags.push(["e", operation.externalMessageId]);
+    } else {
       return { payloadJson: JSON.stringify(operation) };
     }
-    const tags: string[][] = [["h", conversation.channelId]];
-    if (operation.replyTo) {
+    if (operation.kind === "send" && operation.replyTo) {
       const root = conversation.threadRootId;
       if (root && root !== operation.replyTo) {
         tags.push(["e", root, "", "root"]);
       }
       tags.push(["e", operation.replyTo, "", "reply"]);
     }
-    for (const pubkey of [...new Set(operation.mentions ?? [])]) {
+    for (const pubkey of [
+      ...new Set(operation.kind === "send" ? (operation.mentions ?? []) : []),
+    ]) {
       if (/^[0-9a-f]{64}$/.test(pubkey)) tags.push(["p", pubkey]);
     }
-    if (operation.traceId) tags.push(["torana-trace", operation.traceId]);
-    if (operation.hop !== undefined) {
+    if (operation.kind === "send" && operation.traceId)
+      tags.push(["torana-trace", operation.traceId]);
+    if (operation.kind === "send" && operation.hop !== undefined) {
       tags.push(["torana-hop", String(operation.hop)]);
     }
     const signed = signTemplate(
       {
-        kind: BUZZ_KINDS.streamMessageV1,
+        kind,
         created_at: Math.floor(Date.now() / 1000),
-        content: operation.text,
+        content,
         tags,
       },
       decodeSecret(this.config.privateKey),
@@ -290,11 +350,15 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     operation: OutboundOperation,
     prepared?: PreparedOutboundOperation,
   ): Promise<DeliveryResult> {
-    if (operation.kind !== "send") {
+    if (
+      !["send", "edit", "delete", "reaction_add", "reaction_remove"].includes(
+        operation.kind,
+      )
+    ) {
       return {
         ok: false,
         retriable: false,
-        description: `Buzz ${operation.kind} delivery begins after Phase 5`,
+        description: `Buzz ${operation.kind} delivery is not supported`,
       };
     }
     if (!prepared?.signedPayloadJson || !prepared.signedEventId) {
@@ -328,11 +392,69 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
         description: "Buzz relay is not connected",
       };
     }
-    return await this.publisher(event);
+    const rateKind =
+      operation.kind === "edit"
+        ? "edit"
+        : operation.kind === "reaction_add" ||
+            operation.kind === "reaction_remove"
+          ? "reaction"
+          : null;
+    if (rateKind) {
+      const retryAfterMs = this.remainingRateLimit(rateKind);
+      if (retryAfterMs > 0) {
+        return {
+          ok: false,
+          retriable: true,
+          description: `Buzz ${rateKind} rate limit`,
+          retryAfterMs,
+        };
+      }
+    }
+    const result = await this.publisher(event);
+    if (result.ok && rateKind) this.lastPublished.set(rateKind, Date.now());
+    return result;
   }
 
-  async signal(): Promise<boolean> {
-    return false;
+  async signal(
+    conversation: ConversationRef,
+    signal: import("../types.js").EphemeralSignal,
+  ): Promise<boolean> {
+    if (!this.publisher) return false;
+    const rateKind = signal.kind;
+    if (
+      !(signal.kind === "presence" && signal.state === "offline") &&
+      this.remainingRateLimit(rateKind) > 0
+    )
+      return false;
+    const tags: string[][] = [];
+    let content: string;
+    let kind: number;
+    if (signal.kind === "typing") {
+      if (!signal.active) return true;
+      kind = BUZZ_KINDS.typing;
+      content = "";
+      tags.push(["h", conversation.channelId]);
+      if (conversation.threadRootId) {
+        tags.push(["e", conversation.threadRootId, "", "reply"]);
+      }
+    } else {
+      kind = BUZZ_KINDS.presence;
+      content = signal.state;
+      tags.push(["status", signal.state]);
+    }
+    try {
+      const event = signTemplate(
+        { kind, created_at: Math.floor(Date.now() / 1000), content, tags },
+        decodeSecret(this.config.privateKey),
+        parseOwnerAuthTag(this.config.authTag ?? undefined),
+      );
+      const result = await this.publisher(event);
+      if (!result.ok) return false;
+      this.lastPublished.set(rateKind, Date.now());
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async materializeAttachments(_event: InboundEvent, _config: Config) {
@@ -352,6 +474,13 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     }
   }
 
+  private remainingRateLimit(
+    kind: "edit" | "reaction" | "typing" | "presence",
+  ): number {
+    const elapsed = Date.now() - (this.lastPublished.get(kind) ?? 0);
+    return Math.max(0, this.rateLimits[kind] - elapsed);
+  }
+
   private toInboundEvent(event: Event, channelId: string): InboundEvent {
     const explicitRoot = event.tags.find(
       (tag) => tag[0] === "e" && tag[3] === "root",
@@ -362,7 +491,8 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     const mutationTarget =
       event.kind === BUZZ_KINDS.streamEdit ||
       event.kind === BUZZ_KINDS.deletion ||
-      event.kind === BUZZ_KINDS.nativeDelete
+      event.kind === BUZZ_KINDS.nativeDelete ||
+      event.kind === BUZZ_KINDS.reaction
         ? (reply ?? firstTag(event, "e"))
         : null;
     const root = explicitRoot ?? reply ?? null;
@@ -375,7 +505,9 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
           : event.kind === BUZZ_KINDS.deletion ||
               event.kind === BUZZ_KINDS.nativeDelete
             ? "message_delete"
-            : "message";
+            : event.kind === BUZZ_KINDS.reaction
+              ? "reaction"
+              : "message";
     const conversation: ConversationRef = {
       platform: "buzz",
       communityId: this.endpoint.communityId,
@@ -450,4 +582,26 @@ function parseImetaAttachments(event: Event): RemoteAttachment[] {
     });
   }
   return result;
+}
+
+function normalizeReaction(
+  emoji: string,
+  palette: Readonly<Record<string, string>>,
+): { content: string; custom?: { name: string; url: string } } {
+  const value = emoji.trim();
+  const custom = value.match(/^:([A-Za-z0-9_-]{1,64}):$/);
+  if (!custom) {
+    if (!value || [...value].length > 64) {
+      throw new Error("Buzz reaction must contain 1-64 characters");
+    }
+    return { content: value };
+  }
+  const name = custom[1].toLowerCase();
+  const url = palette[name];
+  if (!url) {
+    throw new Error(
+      `Buzz custom emoji ':${name}:' requires a URL in custom_emoji_palette`,
+    );
+  }
+  return { content: `:${name}:`, custom: { name, url } };
 }
