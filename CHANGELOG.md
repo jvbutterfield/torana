@@ -29,6 +29,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   dependencies. The installed-Buzz CLI golden test remains mandatory when the
   binary is present and skips on generic runners; protocol, cryptographic, and
   relay tests remain mandatory everywhere.
+- The release dependency audit is clean: `js-yaml` is upgraded past its
+  quadratic merge-key advisory and vulnerable transitive `brace-expansion`
+  releases are overridden with the compatible patched version.
 
 ## [1.0.0-rc.9] - 2026-05-07
 
