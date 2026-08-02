@@ -29,7 +29,7 @@ function tmpDir(): string {
 const REPO_SKILLS = join(import.meta.dir, "..", "..", "skills");
 
 describe("installSkills (helper)", () => {
-  test("copies both skills to claude target with 0644", () => {
+  test("copies all skills to claude target with 0644", () => {
     const claude = tmpDir();
     const r = installSkills({
       hosts: ["claude"],
@@ -38,14 +38,16 @@ describe("installSkills (helper)", () => {
     });
     const ask = join(claude, "torana-ask", "SKILL.md");
     const send = join(claude, "torana-send", "SKILL.md");
+    const buzz = join(claude, "torana-buzz", "SKILL.md");
     expect(existsSync(ask)).toBe(true);
     expect(existsSync(send)).toBe(true);
+    expect(existsSync(buzz)).toBe(true);
     expect(statSync(ask).mode & 0o777).toBe(0o644);
     expect(r.actions.every((a) => a.action === "copied")).toBe(true);
-    expect(r.actions).toHaveLength(2);
+    expect(r.actions).toHaveLength(3);
   });
 
-  test("both hosts → 4 actions (2 skills × 2 hosts)", () => {
+  test("both hosts → 6 actions (3 skills × 2 hosts)", () => {
     const claude = tmpDir();
     const codex = tmpDir();
     const r = installSkills({
@@ -54,7 +56,7 @@ describe("installSkills (helper)", () => {
       codexTarget: codex,
       sourceDir: REPO_SKILLS,
     });
-    expect(r.actions).toHaveLength(4);
+    expect(r.actions).toHaveLength(6);
     const hosts = new Set(r.actions.map((a) => a.host));
     expect(hosts.has("claude")).toBe(true);
     expect(hosts.has("codex")).toBe(true);
@@ -168,7 +170,8 @@ describe("torana skills CLI", () => {
     expect(r.exitCode).toBe(0);
     expect(existsSync(join(claude, "torana-ask", "SKILL.md"))).toBe(true);
     expect(existsSync(join(claude, "torana-send", "SKILL.md"))).toBe(true);
-    expect(r.stdout.join("\n")).toMatch(/2 copied/);
+    expect(existsSync(join(claude, "torana-buzz", "SKILL.md"))).toBe(true);
+    expect(r.stdout.join("\n")).toMatch(/3 copied/);
   });
 
   test("install without --host exits 2", async () => {

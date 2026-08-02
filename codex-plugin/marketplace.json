@@ -2,7 +2,7 @@
   "plugins": [
     {
       "name": "torana",
-      "version": "1.0.0-rc.6",
+      "version": "1.0.0-rc.10",
       "description": "Call torana-hosted agents (ask) and send external materials into user chats.",
       "homepage": "https://github.com/jvbutterfield/torana",
       "source": {

@@ -485,10 +485,14 @@ describe("Phase 4 Buzz config and policy", () => {
         channels: [CHANNEL_A],
         authenticated: true as const,
       }),
+      buzzCliProbe: () => ({
+        path: "/test/buzz",
+        sha256: loaded.normalized.buzzPlatform!.cli_sha256,
+      }),
     });
     const phase4 = Object.fromEntries(
       result.checks
-        .filter((check) => /^C0(1[6-9]|2[0-3])$/.test(check.id))
+        .filter((check) => /^C0(1[6-9]|2[0-4])$/.test(check.id))
         .map((check) => [check.id, check.status]),
     );
     expect(phase4).toMatchObject({
@@ -498,7 +502,8 @@ describe("Phase 4 Buzz config and policy", () => {
       C019: "ok",
       C020: "ok",
       C021: "ok",
-      C023: "warn",
+      C023: "ok",
+      C024: "ok",
     });
     db.close();
   });
@@ -592,10 +597,15 @@ describe("Phase 4 Buzz relay integration", () => {
     );
     await outbox.drain(1_000);
     await waitFor(
-      () => relay.messages.length === 2,
+      () =>
+        relay.messages.some(
+          (event) => event.content === "authenticated DM reply",
+        ),
       "threaded reply published",
     );
-    const reply = relay.messages.find((event) => event.id !== inbound.id)!;
+    const reply = relay.messages.find(
+      (event) => event.content === "authenticated DM reply",
+    )!;
     expect(verifyEvent(reply)).toBe(true);
     expect(reply.content).toBe("authenticated DM reply");
     expect(reply.tags).toContainEqual(["h", CHANNEL_A]);

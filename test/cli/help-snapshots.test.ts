@@ -9,6 +9,7 @@ import { ASK_HELP } from "../../src/cli/ask.js";
 import { SEND_HELP } from "../../src/cli/send.js";
 import { CONFIG_HELP } from "../../src/cli/config.js";
 import { SKILLS_HELP } from "../../src/cli/skills.js";
+import { BUZZ_HELP } from "../../src/cli/buzz.js";
 
 describe("ask --help", () => {
   test("declares exit-code table invariants (2, 3, 4, 5, 6, 7)", () => {
@@ -69,5 +70,13 @@ describe("skills --help", () => {
   test("shows both install paths (CLAUDE_CONFIG_DIR, XDG_DATA_HOME)", () => {
     expect(SKILLS_HELP).toContain("CLAUDE_CONFIG_DIR");
     expect(SKILLS_HELP).toContain("XDG_DATA_HOME");
+  });
+});
+
+describe("buzz --help", () => {
+  test("documents typed stdin and endpoint credential isolation", () => {
+    expect(BUZZ_HELP).toContain("typed Buzz broker request");
+    expect(BUZZ_HELP).toContain("stdin");
+    expect(BUZZ_HELP).toContain("cannot supply");
   });
 });

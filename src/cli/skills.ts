@@ -13,8 +13,8 @@ import {
 
 const SKILLS_HELP = `Usage: torana skills <subcommand>
 
-Install the torana-ask / torana-send skill packages into Claude Code or
-Codex skill directories.
+Install the torana-ask, torana-send, and torana-buzz skill packages into
+Claude Code or Codex skill directories.
 
 Subcommands:
   install --host=<claude|codex>[,host...]   Install skill packages

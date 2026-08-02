@@ -27,7 +27,7 @@ describe("skill parity (real repo)", () => {
         .join("; ");
       throw new Error(`parity drift: ${detail}`);
     }
-    expect(r.entries.length).toBe(2);
+    expect(r.entries.length).toBe(3);
     for (const e of r.entries) {
       expect(e.drift).toBeNull();
       expect(e.sourceHash.length).toBe(64);

@@ -453,7 +453,7 @@ Rules:
 7. Existing `version: 1` files remain valid. The loader converts each v1 `bots[]` entry into one agent with one Telegram endpoint and `sessions.scope: legacy_agent`.
 8. Provide `torana config upgrade --from v1 --to v2` to print a reviewable v2 file. Never overwrite the operator's file automatically.
 9. `platforms.buzz.enabled: false` (the default) forces every Buzz endpoint to the operational `disabled` state: no connection, subscription, dispatch, or publish. Per-endpoint `enabled: false` does the same for one endpoint while leaving its cursor, queued work, outbox rows, and sessions intact (§14.3). Disabling is reversible and therefore does **not** itself dead-letter pending work. Runtime lifecycle has three persisted states: `active` accepts and delivers work; `draining` stops intake/cursor advancement and proactive triggers while already accepted turns and outbox rows continue; `disabled` stops both intake and delivery. Transitioning from `draining` to `disabled` requires an empty accepted-work/outbox backlog or an explicit `--dead-letter-pending` acknowledgement.
-10. `tools.buzz` is **validated but not enforced** before Phase 9. Until the broker ships, no runner has Buzz credentials, so the policy has nothing to gate. Doctor emits an informational notice saying so.
+10. `tools.buzz` is enforced by the Phase 9 endpoint-scoped broker. Runners receive only a short-lived session capability by default; the broker retains credentials, selects the endpoint, constructs the pinned CLI arguments, and applies the configured command/resource policy before execution. The raw-key escape hatch requires the explicit acknowledgements in §10.3.
 11. `sessions.aliases[]` entries have `{name, agent_id}` and are declarations, not inferred bindings. An endpoint or channel may select `session_scope: alias:<name>` only when the declaration belongs to the same agent. The effective session key is `alias:<agent_id>:<name>`; cross-agent aliases are rejected.
 12. Feed, workflow, and heartbeat triggers are disabled unless their endpoint-level `triggers.*.enabled` flag is true. Feed polling and heartbeats require an interval; heartbeats also require an explicit target channel and prompt. Workflow event kinds come from the pinned Phase 0 manifest rather than free-form defaults.
 13. `reconnect_alert_after_secs` never stops reconnect attempts. It marks the endpoint unhealthy and alerts while probes continue at the configured capped backoff; recovery is automatic when a probe succeeds.
@@ -1508,6 +1508,37 @@ Gate:
 - the default runner environment contains no raw Buzz private key or auth tag;
 - broker path/argument tricks cannot escape the configured command/resource policy;
 - all output-contract and exit-code behavior is documented.
+
+Implementation evidence: Torana now starts one local credential broker for
+configured Buzz tool policies, using a mode-0600 Unix socket and capability
+files on Unix and loopback HTTP with the same short-lived bearer contract on
+Windows. Capabilities are bound to the current runner session and exactly one
+allowed endpoint; Buzz-origin turns use their ingress endpoint while Telegram
+and Agent API turns require an explicit default. The normal runner environment
+contains no Buzz private key, auth tag, or relay URL. The broker verifies the
+configured CLI checksum at startup, discovers each command's exact flags from
+the pinned CLI, builds argv without a shell, applies strict request/input/output
+and timeout limits, verifies channel membership and referenced signed events,
+limits edit/delete to endpoint-owned messages, and stages only bounded regular
+files or symlink-free packs from approved roots. Output paths, credential and
+relay overrides, unknown fields/options, malformed event references, and policy
+denials stop before CLI execution.
+
+The shared `torana-buzz` skill ships byte-identically for Claude and Codex and
+uses `torana buzz call` typed JSON only; final conversational replies remain on
+Torana's transport-owned outbox. Named `read_only`, `collaborate`, and
+`maintainer` profiles plus exact custom allowlists cover the pinned manifest;
+destructive/admin commands require explicit acknowledgement. Doctor C023
+reports broker enforcement or the acknowledged raw-key bypass, and C024 checks
+the configured binary checksum plus CLI/broker/skill compatibility. Tests cover
+a representative operation from all 21 pinned CLI groups, endpoint binding,
+credential isolation, command/option/resource policy, file and argument escape
+attempts, raw `mem get` bytes, CLI exit codes, runner session wiring, skill
+installation/parity, and the official current-format Codex plugin manifest.
+The complete repository suite passes with 1,362 tests passed, 13 intentionally
+skipped, and zero failures; typecheck, lint, formatting, build, whitespace,
+plugin validation, and the Phase 0 transport test/typecheck/manifest/provenance
+regression gates also pass. Phase 9 is complete; Phase 10 is ready to implement.
 
 ### Phase 10 — observability, administration, and reliability
 

@@ -43,6 +43,7 @@ import {
   BuzzTransport,
   type BuzzEndpointHealth,
 } from "./platform/buzz/transport.js";
+import { BuzzCredentialBroker } from "./broker/buzz-broker.js";
 import { DataDirLock } from "./data-dir-lock.js";
 
 const log = logger("main");
@@ -144,6 +145,7 @@ export async function startGateway(
     normalized,
   });
   const streaming = new StreamManager(config, db, outbox, adapters, normalized);
+  const buzzBroker = new BuzzCredentialBroker({ config, normalized });
 
   // Build Bot instances.
   const bots: Bot[] = config.bots.map(
@@ -157,6 +159,7 @@ export async function startGateway(
         outbox,
         metrics,
         alerts,
+        buzzBroker,
       }),
   );
 
@@ -326,6 +329,7 @@ export async function startGateway(
   // This guarantees that every accepted event has an active durable dispatch
   // owner from the moment its enqueue transaction commits.
   try {
+    buzzBroker.start();
     await registry.startAll();
     await Promise.all(
       transports.map((t) =>
@@ -335,6 +339,7 @@ export async function startGateway(
       ),
     );
   } catch (error) {
+    await buzzBroker.stop();
     releaseDataDirLock();
     process.off("exit", releaseDataDirLock);
     throw error;
@@ -477,6 +482,7 @@ export async function startGateway(
 
         // 3. Stop main runners with per-runner grace.
         await registry.stopAll(runnerGraceMs);
+        await buzzBroker.stop();
 
         // 4. Server + DB.
         await server.stop();

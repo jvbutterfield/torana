@@ -24,6 +24,10 @@ import {
   publicKey,
   verifyOwnerAuthTag,
 } from "../platform/buzz/protocol.js";
+import {
+  DANGEROUS_BUZZ_COMMANDS,
+  isKnownBuzzCommand,
+} from "../broker/buzz-policy.js";
 
 const Int = z.coerce.number().int();
 const Bool = z
@@ -94,6 +98,13 @@ const PlatformsSchema = z
     buzz: z
       .object({
         enabled: Bool.default(false),
+        cli_path: z.string().min(1).default("buzz"),
+        cli_sha256: z
+          .string()
+          .regex(/^[0-9a-f]{64}$/)
+          .default(
+            "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
+          ),
         reconnect: z
           .object({
             base_ms: Int.min(100).default(1000),
@@ -280,8 +291,11 @@ const BuzzEndpointSchema = z
 const BuzzToolsSchema = z
   .object({
     policy: z
-      .enum(["read_only", "collaborate", "maintainer"])
+      .enum(["read_only", "collaborate", "maintainer", "custom"])
       .default("collaborate"),
+    allowed_commands: z
+      .array(z.string().regex(/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,2}$/))
+      .default([]),
     default_endpoint_id: EndpointId.optional(),
     allowed_endpoint_ids: z.array(EndpointId).default([]),
     expose_private_key_to_runner: Bool.default(false),
@@ -622,7 +636,79 @@ export const ConfigV2Schema = z
           .map((endpoint) => endpoint.id),
       );
       const buzzTools = agent.tools?.buzz;
+      for (const reserved of [
+        "BUZZ_PRIVATE_KEY",
+        "BUZZ_AUTH_TAG",
+        "BUZZ_RELAY_URL",
+        "TORANA_BUZZ_CAPABILITY_DIR",
+        "TORANA_SESSION_ID",
+      ]) {
+        if (
+          reserved in agent.runner.env ||
+          reserved in (agent.runner.secrets ?? {})
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["agents", agentIndex, "runner", "env", reserved],
+            message: `${reserved} is reserved for Torana's Buzz broker`,
+          });
+        }
+      }
       if (buzzTools) {
+        if (
+          buzzTools.policy === "custom" &&
+          buzzTools.allowed_commands.length === 0
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["agents", agentIndex, "tools", "buzz", "allowed_commands"],
+            message: "custom policy requires at least one allowed command",
+          });
+        }
+        if (
+          buzzTools.policy !== "custom" &&
+          buzzTools.allowed_commands.length > 0
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["agents", agentIndex, "tools", "buzz", "allowed_commands"],
+            message: "allowed_commands is only valid with policy: custom",
+          });
+        }
+        for (const [
+          commandIndex,
+          command,
+        ] of buzzTools.allowed_commands.entries()) {
+          if (!isKnownBuzzCommand(command)) {
+            ctx.addIssue({
+              code: "custom",
+              path: [
+                "agents",
+                agentIndex,
+                "tools",
+                "buzz",
+                "allowed_commands",
+                commandIndex,
+              ],
+              message: `unknown command '${command}' in pinned Buzz CLI manifest`,
+            });
+          } else if (
+            DANGEROUS_BUZZ_COMMANDS.has(command) &&
+            !buzzTools.acknowledge_dangerous
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: [
+                "agents",
+                agentIndex,
+                "tools",
+                "buzz",
+                "acknowledge_dangerous",
+              ],
+              message: `dangerous command '${command}' requires acknowledge_dangerous: true`,
+            });
+          }
+        }
         for (const [
           allowedIndex,
           endpointId,
@@ -674,6 +760,23 @@ export const ConfigV2Schema = z
             ],
             message:
               "expose_private_key_to_runner requires acknowledge_dangerous: true",
+          });
+        }
+        if (
+          buzzTools.expose_private_key_to_runner &&
+          !buzzTools.default_endpoint_id
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: [
+              "agents",
+              agentIndex,
+              "tools",
+              "buzz",
+              "default_endpoint_id",
+            ],
+            message:
+              "expose_private_key_to_runner requires one explicit default endpoint",
           });
         }
       }
@@ -832,7 +935,8 @@ export interface NormalizedConfigModel {
   retention?: ConfigV2["retention"];
   buzzTools?: Array<{
     agentId: string;
-    policy: "read_only" | "collaborate" | "maintainer";
+    policy: "read_only" | "collaborate" | "maintainer" | "custom";
+    allowedCommands: string[];
     defaultEndpointId: string | null;
     allowedEndpointIds: string[];
     exposePrivateKeyToRunner: boolean;
@@ -1003,6 +1107,7 @@ export function normalizeV2(config: ConfigV2): {
               {
                 agentId: agent.id,
                 policy: tools.policy,
+                allowedCommands: [...tools.allowed_commands],
                 defaultEndpointId: tools.default_endpoint_id ?? null,
                 allowedEndpointIds: [...tools.allowed_endpoint_ids],
                 exposePrivateKeyToRunner: tools.expose_private_key_to_runner,
@@ -1092,6 +1197,9 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
     },
     buzzPlatform: {
       enabled: false,
+      cli_path: "buzz",
+      cli_sha256:
+        "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
       reconnect: { base_ms: 1000, cap_ms: 30_000 },
       subscription: {
         historical_limit: 500,

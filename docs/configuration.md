@@ -31,6 +31,9 @@ checked-in YAML.
 platforms:
   buzz:
     enabled: true
+    cli_path: buzz
+    # Exact checksum of the pinned Buzz 0.5.3 binary in this image/host.
+    cli_sha256: 1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee
     message_max_bytes: 65536
     max_frame_bytes: 524288
 
@@ -57,6 +60,11 @@ agents:
         include_reactions_in_context: false
         custom_emoji_palette:
           ship_it: https://cdn.example/emoji/ship-it.png
+    tools:
+      buzz:
+        policy: collaborate
+        default_endpoint_id: cato-buzz
+        allowed_endpoint_ids: [cato-buzz]
 ```
 
 `message_max_bytes` is the UTF-8 content ceiling. `max_frame_bytes` is the
@@ -65,6 +73,55 @@ the content ceiling. Edits and reactions are durable; typing and presence are
 best effort and are never replayed after restart. A custom emoji shortcode
 must have an HTTP(S) URL in `custom_emoji_palette` so the emitted NIP-30 tag is
 complete.
+
+### Buzz CLI broker and policies
+
+Torana 2 runs workspace actions through a local credential broker. During an
+active runner turn, the `torana-buzz` skill sends a typed request to a private
+Unix socket (loopback HTTP on Windows). The short-lived capability is bound to
+one endpoint. The runner normally receives neither `BUZZ_PRIVATE_KEY` nor
+`BUZZ_AUTH_TAG`; Torana injects those only into the pinned `buzz` subprocess.
+
+Available policies are:
+
+- `read_only`: stable read commands only.
+- `collaborate` (default): ordinary messages, reactions, joins/leaves, notes,
+  memory updates, uploads, issues, patches, pull requests, and social actions.
+- `maintainer`: adds channel/canvas/emoji/repository/workflow maintenance, but
+  still excludes high-risk administration.
+- `custom`: exactly the entries in `allowed_commands`.
+
+High-risk custom entries such as `channels.delete`, `workflows.approve`,
+moderation mutations, agent management, and `repos.protect.set|remove` also
+require `acknowledge_dangerous: true`. Unknown commands fail closed. A channel
+operation is denied when the bound endpoint is not a member, and message edits
+or deletes are limited to events authored by that endpoint.
+
+The escape hatch `expose_private_key_to_runner: true` requires both an explicit
+`default_endpoint_id` and `acknowledge_dangerous: true`. It bypasses broker
+policy because the runner can invoke Buzz directly, so use it only inside a
+separately isolated Torana installation.
+
+### Pinned Buzz CLI installation
+
+The supported command manifest comes from Block Buzz tag `desktop-v0.5.3`,
+commit `3a96acea09b4a9e3f02c3a26cfb0607d2ccacf42`. On Apple Silicon, the verified
+release archive is `Buzz_0.5.3_aarch64.app.tar.gz` with SHA-256
+`aa4673e16fbdf0f37b770d7fb28e33abb70169e3d6c0702d074decaf76d6711f`;
+the bundled `buzz` executable has the default checksum shown above.
+
+For Linux images, build `buzz-cli` from that exact tag with the committed
+`Cargo.lock`, copy only the resulting `buzz` binary into the runtime image, and
+set `platforms.buzz.cli_sha256` to the checksum calculated during the image
+build. Do not use a floating `main` build. At startup the broker refuses a byte
+mismatch, and `torana doctor` C024 reports CLI checksum plus broker/skill
+manifest compatibility.
+
+Install the shared skills for both supported runners with:
+
+```sh
+torana skills install --host=claude,codex
+```
 
 In v2, Telegram-wide transport settings live under
 `platforms.telegram.delivery`; bot identity and credentials live under

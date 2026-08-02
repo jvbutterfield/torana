@@ -18,6 +18,21 @@ runner.
 
 Pick one per bot in your YAML. Different bots in the same gateway can use different runners — see [Hybrid configurations](#hybrid-configurations) below.
 
+## Buzz workspace tools
+
+With a v2 `tools.buzz` policy, Claude Code, Codex, and compatible command
+runners receive `TORANA_SESSION_ID` plus the location of a short-lived broker
+capability file. They do not receive the Buzz private key or owner auth tag.
+The `torana-buzz` skill calls `torana buzz call`; Torana selects the configured
+endpoint, validates the exact pinned CLI command and flags, applies membership,
+event-ownership, file, input, output, and timeout limits, then invokes Buzz with
+the endpoint credentials in a minimal subprocess environment.
+
+One Torana installation remains one trust domain. The broker is a policy
+chokepoint for normal operation, not a sandbox against a runner that already
+has arbitrary host access. Use separate containers or VMs when personas need a
+hard security boundary.
+
 ## claude-code
 
 ```yaml

@@ -16,6 +16,7 @@ import type { OutboxProcessor } from "../outbox.js";
 import type { Metrics } from "../metrics.js";
 import type { AlertManager } from "../alerts.js";
 import type { PlatformAdapter } from "../platform/capabilities.js";
+import type { BuzzCredentialBroker } from "../broker/buzz-broker.js";
 
 export interface BotOptions {
   config: Config;
@@ -28,6 +29,7 @@ export interface BotOptions {
   alerts: AlertManager;
   /** Test-only: inject a pre-built runner instead of instantiating from config. */
   runner?: AgentRunner;
+  buzzBroker?: BuzzCredentialBroker;
 }
 
 export type ManagedTurnOutcome =
@@ -53,6 +55,7 @@ export class Bot {
   private stopping = false;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private managedTurns = new Map<number, (reason: string) => void>();
+  private buzzBroker?: BuzzCredentialBroker;
 
   constructor(opts: BotOptions) {
     this.config = opts.config;
@@ -64,6 +67,7 @@ export class Bot {
     this.metrics = opts.metrics;
     this.alerts = opts.alerts;
     this.log = logger("bot", { bot_id: opts.botConfig.id });
+    this.buzzBroker = opts.buzzBroker;
     this.runner = opts.runner ?? this.instantiateRunner();
 
     this.runner.on("ready", () => this.onRunnerReady());
@@ -173,6 +177,13 @@ export class Bot {
   ): boolean {
     const delivery = this.db.getTurnDeliveryContext(turnId);
     const isBuzz = delivery?.conversation.platform === "buzz";
+    if (delivery) {
+      this.buzzBroker?.issueCapability({
+        agentId: this.botConfig.id,
+        sessionId: session.id,
+        conversation: delivery.conversation,
+      });
+    }
     const attachments = attachmentPaths.map((path) => ({
       kind: "document" as const,
       path,
@@ -186,6 +197,7 @@ export class Bot {
       terminal = true;
       for (const unsub of unsubs) unsub();
       this.managedTurns.delete(turnId);
+      this.buzzBroker?.revokeCapability(session.id);
       onTerminal(outcome);
     };
     unsubs.push(
@@ -254,6 +266,7 @@ export class Bot {
     if (!result.accepted) {
       for (const unsub of unsubs) unsub();
       this.managedTurns.delete(turnId);
+      this.buzzBroker?.revokeCapability(session.id);
       this.streaming.cancelTurn(this.botConfig.id, turnId);
       this.log.warn("conversation session rejected turn", {
         session_key: sessionKey,
@@ -412,7 +425,13 @@ export class Bot {
   }
 
   private instantiateRunner(): AgentRunner {
-    const runnerConfig = this.botConfig.runner;
+    const configured = this.botConfig.runner;
+    const brokerEnv =
+      this.buzzBroker?.runnerEnvironment(this.botConfig.id) ?? {};
+    const runnerConfig = {
+      ...configured,
+      env: { ...configured.env, ...brokerEnv },
+    } as typeof configured;
     const logDir = `${this.config.gateway.data_dir}/logs`;
     if (runnerConfig.type === "claude-code") {
       // freshSession defaults to true in the runner, which is the right

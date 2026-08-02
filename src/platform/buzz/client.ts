@@ -126,7 +126,12 @@ export class BuzzRelayClient {
       ownerAuthTag: this.ownerAuthTag,
     });
     const accepted = this.waitForOk(auth.id);
-    this.send(["AUTH", auth]);
+    try {
+      this.send(["AUTH", auth]);
+    } catch (error) {
+      this.cancelOkWaiter(auth.id);
+      throw error;
+    }
     const result = await accepted;
     if (!result.accepted) {
       this.close();
@@ -151,9 +156,16 @@ export class BuzzRelayClient {
       }, this.waitMs);
       this.queries.set(subscriptionId, { events: [], resolve, reject, timer });
     });
-    this.send(["REQ", subscriptionId, ...filters]);
     try {
+      this.send(["REQ", subscriptionId, ...filters]);
       return await result;
+    } catch (error) {
+      const query = this.queries.get(subscriptionId);
+      if (query) {
+        clearTimeout(query.timer);
+        this.queries.delete(subscriptionId);
+      }
+      throw error;
     } finally {
       if (this.socket?.readyState === WebSocket.OPEN) {
         this.send(["CLOSE", subscriptionId]);
@@ -185,7 +197,12 @@ export class BuzzRelayClient {
 
   async publish(event: Event): Promise<{ accepted: boolean; message: string }> {
     const result = this.waitForOk(event.id);
-    this.send(["EVENT", event]);
+    try {
+      this.send(["EVENT", event]);
+    } catch (error) {
+      this.cancelOkWaiter(event.id);
+      throw error;
+    }
     return await result;
   }
 
@@ -217,6 +234,13 @@ export class BuzzRelayClient {
       }, this.waitMs);
       this.okWaiters.set(eventId, { resolve, reject, timer });
     });
+  }
+
+  private cancelOkWaiter(eventId: string): void {
+    const waiter = this.okWaiters.get(eventId);
+    if (!waiter) return;
+    clearTimeout(waiter.timer);
+    this.okWaiters.delete(eventId);
   }
 
   private send(frame: RelayFrame): void {

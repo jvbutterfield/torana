@@ -37,6 +37,7 @@ import { runTurns } from "./cli/turns.js";
 import { runBots } from "./cli/bots.js";
 import { runConfig } from "./cli/config.js";
 import { runSkills } from "./cli/skills.js";
+import { runBuzz } from "./cli/buzz.js";
 import {
   defaultProfilesPath,
   loadProfiles,
@@ -54,6 +55,7 @@ const AGENT_API_SUBCOMMANDS = new Set([
   "bots",
   "config",
   "skills",
+  "buzz",
 ]);
 
 interface ParsedArgs {
@@ -484,6 +486,7 @@ Agent-API client commands (require --server + --token, env equivalents, or a pro
   bots list                  List bots permitted by the configured token
   config <sub>               Manage the CLI profile store (~/.config/torana/config.toml)
   skills install --host=H    Install skill packages into Claude Code / Codex
+  buzz call                   Execute one typed, endpoint-scoped Buzz broker request
 
 Gateway options:
   --config, -c <path>   Path to torana.yaml (defaults to $TORANA_CONFIG or ./torana.yaml)
@@ -509,7 +512,7 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
     const cmd = chain[0]!;
 
     // `ask` and `send` take a single chain element; `turns` and `bots`
-    // require an action token (`get`, `list`). `config` and `skills` are
+    // require an action token (`get`, `list`). `config`, `skills`, and `buzz` are
     // local-only — they don't contact the API and shouldn't demand creds.
     switch (cmd) {
       case "config": {
@@ -522,6 +525,12 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
       case "skills": {
         const inner = chain.slice(1).concat(rest);
         const r = await runSkills(inner);
+        return emit(r);
+      }
+
+      case "buzz": {
+        const inner = chain.slice(1).concat(rest);
+        const r = await runBuzz(inner);
         return emit(r);
       }
 

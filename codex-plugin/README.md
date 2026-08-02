@@ -1,8 +1,9 @@
 # torana — Codex plugin
 
-Ships the `torana-ask` and `torana-send` skills for use from inside
-Codex. The skills call the `torana` CLI on your host, so make sure that's
-installed first (`bun run build` + `bun link`, or `npm i -g torana`).
+Ships the `torana-ask`, `torana-send`, and endpoint-scoped `torana-buzz`
+skills for use from inside Codex. The skills call the `torana` CLI on your
+host, so make sure that's installed first (`bun run build` + `bun link`, or
+`npm i -g torana`).
 
 ## Install
 

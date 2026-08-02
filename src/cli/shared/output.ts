@@ -17,6 +17,8 @@ export interface Rendered {
   stderr: string[];
   /** Exit code to terminate with. */
   exitCode: number;
+  /** Optional byte-exact stdout for commands such as `buzz mem get`. */
+  rawStdout?: Uint8Array;
 }
 
 export function renderJson(value: unknown, exitCode: number): Rendered {
@@ -62,6 +64,7 @@ export function formatTable(header: string[], rows: string[][]): string[] {
  * caller can `process.exit(code)`.
  */
 export function emit(r: Rendered): number {
+  if (r.rawStdout) process.stdout.write(r.rawStdout);
   for (const line of r.stdout) process.stdout.write(line + "\n");
   for (const line of r.stderr) process.stderr.write(line + "\n");
   return r.exitCode;

@@ -1,14 +1,33 @@
 {
   "name": "torana",
-  "version": "1.0.0-rc.6",
-  "description": "Call torana-hosted agents (ask) and send external materials into user chats.",
+  "version": "1.0.0-rc.10",
+  "description": "Call Torana-hosted agents, deliver external materials, and operate endpoint-scoped Buzz workspaces.",
+  "author": {
+    "name": "Jason Butterfield",
+    "email": "jbutterfield@gmail.com",
+    "url": "https://github.com/jvbutterfield"
+  },
   "homepage": "https://github.com/jvbutterfield/torana",
-  "skills": {
-    "torana-ask": {
-      "path": "skills/torana-ask"
-    },
-    "torana-send": {
-      "path": "skills/torana-send"
-    }
+  "repository": "https://github.com/jvbutterfield/torana",
+  "license": "MIT",
+  "keywords": ["agents", "buzz", "codex", "gateway", "torana"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Torana",
+    "shortDescription": "Operate Torana agents and Buzz workspaces.",
+    "longDescription": "Call agents hosted by Torana, send files into their conversations, and use policy-scoped Buzz workspace actions without exposing signing keys.",
+    "developerName": "Jason Butterfield",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Agent collaboration",
+      "External delivery",
+      "Buzz workspace actions"
+    ],
+    "websiteURL": "https://github.com/jvbutterfield/torana",
+    "defaultPrompt": [
+      "Ask a Torana-hosted agent for help.",
+      "Send a file to a Torana conversation.",
+      "Work with the current Buzz workspace."
+    ]
   }
 }

@@ -6,8 +6,9 @@
 // — several overlap with zod schema rules on purpose so the operator still
 // sees a useful message if a config arrived here by an unusual path.
 
-import { existsSync, statSync } from "node:fs";
-import { resolve, isAbsolute } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { delimiter, resolve, isAbsolute } from "node:path";
 import { platform } from "node:os";
 import { Database } from "bun:sqlite";
 
@@ -24,6 +25,7 @@ import {
   parseOwnerAuthTag,
 } from "./platform/buzz/protocol.js";
 import { redactString } from "./log.js";
+import { BUZZ_CLI_PIN } from "./broker/buzz-policy.js";
 
 export interface DoctorCheck {
   id: string;
@@ -46,6 +48,8 @@ export interface DoctorOptions {
   normalized?: NormalizedConfigModel;
   /** Test override for live Buzz relay checks. */
   buzzProbe?: typeof probeBuzzEndpoint;
+  /** Test override for the pinned local Buzz CLI checksum probe. */
+  buzzCliProbe?: (cliPath: string) => { path: string; sha256: string } | null;
 }
 
 export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
@@ -651,13 +655,67 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     for (const tools of opts.normalized.buzzTools) {
       checks.push({
         id: "C023",
-        status: "warn",
-        detail: `agent '${tools.agentId}': tools.buzz policy '${tools.policy}' is validated but not enforced until Phase 9; runners receive no Buzz credential`,
+        status: tools.exposePrivateKeyToRunner ? "warn" : "ok",
+        detail: tools.exposePrivateKeyToRunner
+          ? `agent '${tools.agentId}': raw Buzz key exposure is enabled and bypasses broker policy '${tools.policy}'`
+          : `agent '${tools.agentId}': tools.buzz policy '${tools.policy}' is enforced by the endpoint-scoped broker; runners receive no raw Buzz credential`,
+      });
+    }
+  }
+
+  const buzzToolsConfigured = Boolean(opts.normalized?.buzzTools?.length);
+  if (!buzzToolsConfigured) {
+    checks.push({
+      id: "C024",
+      status: "skip",
+      detail: "Buzz CLI compatibility is not required without tools.buzz",
+    });
+  } else {
+    const configuredHash = opts.normalized?.buzzPlatform?.cli_sha256;
+    const cliPath = opts.normalized?.buzzPlatform?.cli_path ?? "buzz";
+    const cliProbe = opts.buzzCliProbe
+      ? opts.buzzCliProbe(cliPath)
+      : (() => {
+          const path = findExecutable(cliPath);
+          return path
+            ? {
+                path,
+                sha256: createHash("sha256")
+                  .update(readFileSync(path))
+                  .digest("hex"),
+              }
+            : null;
+        })();
+    if (!cliProbe) {
+      checks.push({
+        id: "C024",
+        status: "fail",
+        detail: `pinned Buzz CLI '${cliPath}' was not found on PATH`,
+      });
+    } else {
+      const actual = cliProbe.sha256;
+      checks.push({
+        id: "C024",
+        status: actual === configuredHash ? "ok" : "fail",
+        detail:
+          actual === configuredHash
+            ? `Buzz CLI ${BUZZ_CLI_PIN.applicationVersion}, broker manifest v${BUZZ_CLI_PIN.manifestSchemaVersion}, and torana-buzz skill protocol v1 are compatible`
+            : `Buzz CLI '${cliProbe.path}' checksum does not match platforms.buzz.cli_sha256`,
       });
     }
   }
 
   return { checks };
+}
+
+function findExecutable(input: string): string | null {
+  if (isAbsolute(input)) return existsSync(input) ? input : null;
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = resolve(directory, input);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 // --- Remote checks (R001..R003) for `torana doctor --profile X`.

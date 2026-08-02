@@ -23,14 +23,16 @@ describe("codex-plugin/.codex-plugin/plugin.json", () => {
     expect(parsed.version).toMatch(/^\d+\.\d+\.\d+(-rc\.\d+)?$/);
   });
 
-  test("declares both skills with correct paths", () => {
-    expect(parsed.skills["torana-ask"].path).toBe("skills/torana-ask");
-    expect(parsed.skills["torana-send"].path).toBe("skills/torana-send");
+  test("declares the current plugin skill root", () => {
+    expect(parsed.skills).toBe("./skills/");
   });
 
-  test("has description + homepage (Codex surfaces these in the UI)", () => {
+  test("has current publisher and interface metadata", () => {
     expect(typeof parsed.description).toBe("string");
     expect(parsed.description.length).toBeGreaterThan(20);
+    expect(parsed.author.name).toBe("Jason Butterfield");
+    expect(parsed.interface.displayName).toBe("Torana");
+    expect(parsed.interface.capabilities).toContain("Buzz workspace actions");
     expect(typeof parsed.homepage).toBe("string");
     expect(parsed.homepage).toMatch(/^https?:\/\//);
   });
@@ -68,7 +70,7 @@ describe("codex-plugin/marketplace.json", () => {
 });
 
 describe("skills SKILL.md frontmatter", () => {
-  for (const skill of ["torana-ask", "torana-send"]) {
+  for (const skill of ["torana-ask", "torana-send", "torana-buzz"]) {
     test(`${skill}: frontmatter declares allow_implicit_invocation: true`, () => {
       const text = readFileSync(
         join(REPO_ROOT, "skills", skill, "SKILL.md"),

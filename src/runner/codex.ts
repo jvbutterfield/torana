@@ -268,6 +268,7 @@ export class CodexRunner implements AgentRunner {
 
     const args = this.buildSideArgs(entry, images);
     const env = this.buildEnv();
+    env.TORANA_SESSION_ID = sessionId;
     let proc: Subprocess<"pipe", "pipe", "pipe">;
     try {
       proc = this.spawnImpl({

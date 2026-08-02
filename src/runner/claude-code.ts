@@ -255,13 +255,15 @@ export class ClaudeCodeRunner implements AgentRunner {
         entry.restored ? "--resume" : "--session-id",
         entry.claudeUuid,
       ];
+      const env = this.buildEnv();
+      env.TORANA_SESSION_ID = sessionId;
       entry.proc = this.spawnImpl({
         cmd: argv,
         cwd: this.config.cwd ?? process.cwd(),
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",
-        env: this.buildEnv(),
+        env,
       }) as Subprocess<"pipe", "pipe", "pipe">;
       entry.logStream = createWriteStream(
         resolve(this.logDir, `${this.botId}.side.${sessionId}.log`),
