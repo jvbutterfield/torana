@@ -1,6 +1,6 @@
 {
   "name": "torana",
-  "version": "1.0.0-rc.10",
+  "version": "2.0.0-rc.1",
   "description": "Call Torana-hosted agents, deliver external materials, and operate endpoint-scoped Buzz workspaces.",
   "author": {
     "name": "Jason Butterfield",

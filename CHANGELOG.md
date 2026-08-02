@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.1] - 2026-08-02
+
 ### Added
 
 - Config v2 multi-platform agents with Telegram, Buzz-only, and combined
@@ -28,7 +30,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Config v2 requires schema v5. Use the rc.10 compatibility bridge to migrate
   and retain that tested binary/config pair as the lossless rollback target.
-- The 2.0.0 tag and package publication remain blocked on the real-relay,
+- The stable 2.0.0 tag and package publication remain blocked on the real-relay,
   restart-continuity, 24-hour soak, canary, and rollback gates.
 
 ## [1.0.0-rc.10] - 2026-08-01
