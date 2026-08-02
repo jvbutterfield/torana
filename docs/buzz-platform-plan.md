@@ -1150,6 +1150,8 @@ Huddles and any feature without a stable CLI/event contract are not release bloc
 
 Every phase must be independently reviewable. Do not mix the database migration, platform abstraction, and Buzz protocol implementation into one commit.
 
+**Progress-accounting rule:** immediately after each phase passes its gate, update the document status, add dated completion evidence beneath that phase, and append a concise refinement-log entry. Commit that plan update with the phase (or as the immediately following documentation commit) before implementation of the next phase begins.
+
 ### Phase 0 — protocol spike and locked decisions
 
 **Purpose:** eliminate unknowns before touching the production path.
