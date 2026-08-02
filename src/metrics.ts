@@ -15,6 +15,8 @@ export interface BotCounters {
   worker_startup_failures: number;
   outbound_send_failures: number;
   outbound_edit_failures: number;
+  attachments_skipped_total: number;
+  loop_budget_rejected: number;
   /** @deprecated Use outbound_send_failures. Retained for one release. */
   telegram_send_failures: number;
   /** @deprecated Use outbound_edit_failures. Retained for one release. */
@@ -100,6 +102,8 @@ function zeroCounters(): BotCounters {
     worker_startup_failures: 0,
     outbound_send_failures: 0,
     outbound_edit_failures: 0,
+    attachments_skipped_total: 0,
+    loop_budget_rejected: 0,
     telegram_send_failures: 0,
     telegram_edit_failures: 0,
   };
@@ -409,6 +413,23 @@ export class Metrics {
       );
       lines.push(
         `torana_outbound_failures_total{agent_id="${agentId}",operation="edit"} ${counters.outbound_edit_failures}`,
+      );
+    }
+
+    lines.push(
+      "# HELP attachments_skipped_total Buzz attachments intentionally not retrieved before Phase 8.",
+    );
+    lines.push("# TYPE attachments_skipped_total counter");
+    lines.push(
+      "# HELP loop_budget_rejected_total Outbound replies suppressed by local loop budgets.",
+    );
+    lines.push("# TYPE loop_budget_rejected_total counter");
+    for (const [agentId, counters] of this.counters) {
+      lines.push(
+        `attachments_skipped_total{agent_id="${agentId}"} ${counters.attachments_skipped_total}`,
+      );
+      lines.push(
+        `loop_budget_rejected_total{agent_id="${agentId}"} ${counters.loop_budget_rejected}`,
       );
     }
 

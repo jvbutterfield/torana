@@ -28,6 +28,19 @@ export interface ConversationSessionRow {
   last_error: string | null;
 }
 
+export interface BuzzCursorPoint {
+  created_at: number;
+  event_id: string;
+}
+
+export interface BuzzCursorState {
+  version: 1;
+  subscriptions: Record<string, BuzzCursorPoint>;
+  channels?: string[];
+}
+
+export type EndpointLifecycleState = "active" | "draining" | "disabled";
+
 /**
  * Lock down the DB file + its WAL / SHM siblings to 0600 (owner rw, nobody
  * else). The DB contains every bot token (stored verbatim so we can call
@@ -64,7 +77,6 @@ export class GatewayDB {
   private endpointByAgentPlatform = new Map<string, string>();
   private sessionScopeByAgent = new Map<string, string>();
   private sessionScopeOverrides = new Map<string, string>();
-  private enabledEndpointIds = new Set<string>();
   private stmts!: {
     insertUpdate: Statement;
     getUpdateStatus: Statement;
@@ -307,7 +319,8 @@ export class GatewayDB {
         SELECT o.id, o.turn_id, o.bot_id, o.agent_id, o.chat_id, o.kind,
                o.telegram_message_id, o.payload_json, o.status, o.attempt_count,
                o.endpoint_id, o.platform, o.conversation_id, o.operation_kind,
-               o.external_message_id, c.external_conversation_id,
+               o.external_message_id, o.signed_payload_json, o.signed_event_id,
+               c.community_id, c.external_conversation_id,
                c.thread_root_id, c.workflow_run_id, c.conversation_type
         FROM outbox o
         JOIN conversations c ON c.id = o.conversation_id
@@ -323,6 +336,8 @@ export class GatewayDB {
                NULL AS conversation_id,
                kind AS operation_kind,
                CAST(telegram_message_id AS TEXT) AS external_message_id,
+               NULL AS signed_payload_json, NULL AS signed_event_id,
+               NULL AS community_id,
                CAST(chat_id AS TEXT) AS external_conversation_id,
                NULL AS thread_root_id,
                NULL AS workflow_run_id,
@@ -615,17 +630,28 @@ export class GatewayDB {
   /** Persist configured endpoints before intake; safe to call on every boot. */
   syncNormalizedConfig(model: NormalizedConfigModel): void {
     if (!this.normalizedSchema) return;
-    this.enabledEndpointIds.clear();
     this.sessionScopeOverrides.clear();
     const upsert = this._db.prepare(`
       INSERT INTO endpoints
-        (endpoint_id, agent_id, platform, external_identity, lifecycle_state)
-      VALUES (?, ?, ?, ?, ?)
+        (endpoint_id, agent_id, platform, external_identity, lifecycle_state,
+         state_reason)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(endpoint_id) DO UPDATE SET
         agent_id=excluded.agent_id,
         platform=excluded.platform,
         external_identity=excluded.external_identity,
-        lifecycle_state=excluded.lifecycle_state,
+        lifecycle_state=CASE
+          WHEN excluded.lifecycle_state='disabled' THEN 'disabled'
+          WHEN endpoints.lifecycle_state='disabled'
+               AND endpoints.state_reason='config_disabled' THEN 'active'
+          ELSE endpoints.lifecycle_state
+        END,
+        state_reason=CASE
+          WHEN excluded.lifecycle_state='disabled' THEN 'config_disabled'
+          WHEN endpoints.lifecycle_state='disabled'
+               AND endpoints.state_reason='config_disabled' THEN NULL
+          ELSE endpoints.state_reason
+        END,
         updated_at=datetime('now')
     `);
     this.transaction(() => {
@@ -636,6 +662,7 @@ export class GatewayDB {
           endpoint.platform,
           endpoint.externalIdentity,
           endpoint.enabled ? "active" : "disabled",
+          endpoint.enabled ? null : "config_disabled",
         );
         this.endpointByAgentPlatform.set(
           `${endpoint.agentId}:${endpoint.platform}`,
@@ -653,7 +680,6 @@ export class GatewayDB {
             scope,
           );
         }
-        if (endpoint.enabled) this.enabledEndpointIds.add(endpoint.id);
       }
     });
   }
@@ -813,6 +839,326 @@ export class GatewayDB {
       id: number;
       status: string;
     } | null;
+  }
+
+  getEndpointState(endpointId: string): {
+    endpointId: string;
+    agentId: string;
+    platform: string;
+    externalIdentity: string | null;
+    lifecycleState: EndpointLifecycleState;
+    stateReason: string | null;
+    cursor: BuzzCursorState;
+  } | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        `SELECT endpoint_id, agent_id, platform, external_identity,
+                lifecycle_state, state_reason, cursor_json
+         FROM endpoints WHERE endpoint_id=?`,
+      )
+      .get(endpointId) as {
+      endpoint_id: string;
+      agent_id: string;
+      platform: string;
+      external_identity: string | null;
+      lifecycle_state: EndpointLifecycleState;
+      state_reason: string | null;
+      cursor_json: string | null;
+    } | null;
+    if (!row) return null;
+    return {
+      endpointId: row.endpoint_id,
+      agentId: row.agent_id,
+      platform: row.platform,
+      externalIdentity: row.external_identity,
+      lifecycleState: row.lifecycle_state,
+      stateReason: row.state_reason,
+      cursor: parseBuzzCursor(row.cursor_json),
+    };
+  }
+
+  listExternalEndpoints(): Array<{
+    endpointId: string;
+    agentId: string;
+    platform: string;
+    lifecycleState: EndpointLifecycleState;
+    stateReason: string | null;
+    externalIdentity: string | null;
+  }> {
+    if (!this.normalizedSchema) return [];
+    const rows = this._db
+      .query(
+        `SELECT endpoint_id, agent_id, platform, lifecycle_state,
+                state_reason, external_identity
+         FROM endpoints WHERE platform != 'agent_api' ORDER BY endpoint_id`,
+      )
+      .all() as Array<{
+      endpoint_id: string;
+      agent_id: string;
+      platform: string;
+      lifecycle_state: EndpointLifecycleState;
+      state_reason: string | null;
+      external_identity: string | null;
+    }>;
+    return rows.map((row) => ({
+      endpointId: row.endpoint_id,
+      agentId: row.agent_id,
+      platform: row.platform,
+      lifecycleState: row.lifecycle_state,
+      stateReason: row.state_reason,
+      externalIdentity: row.external_identity,
+    }));
+  }
+
+  setEndpointLifecycle(
+    endpointId: string,
+    state: EndpointLifecycleState,
+    reason: string | null,
+  ): boolean {
+    if (!this.normalizedSchema) return false;
+    const result = this._db
+      .prepare(
+        `UPDATE endpoints SET lifecycle_state=?, state_reason=?,
+              updated_at=datetime('now') WHERE endpoint_id=?`,
+      )
+      .run(state, reason, endpointId);
+    return result.changes === 1;
+  }
+
+  endpointBacklog(endpointId: string): {
+    queued: number;
+    running: number;
+    outbox: number;
+  } {
+    if (!this.normalizedSchema) return { queued: 0, running: 0, outbox: 0 };
+    const turns = this._db
+      .query(
+        `SELECT
+           SUM(CASE WHEN t.status='queued' THEN 1 ELSE 0 END) AS queued,
+           SUM(CASE WHEN t.status='running' THEN 1 ELSE 0 END) AS running
+         FROM turns t JOIN conversations c ON c.id=t.conversation_id
+         WHERE c.endpoint_id=? AND t.status IN ('queued','running')`,
+      )
+      .get(endpointId) as { queued: number | null; running: number | null };
+    const outbox = this._db
+      .query(
+        `SELECT COUNT(*) AS count FROM outbox WHERE endpoint_id=?
+         AND status IN ('pending','retrying','in_flight')`,
+      )
+      .get(endpointId) as { count: number };
+    return {
+      queued: Number(turns.queued ?? 0),
+      running: Number(turns.running ?? 0),
+      outbox: Number(outbox.count),
+    };
+  }
+
+  deadLetterEndpointPending(endpointId: string, reason: string): void {
+    if (!this.normalizedSchema) return;
+    this.transactionImmediate(() => {
+      this._db
+        .prepare(
+          `UPDATE turns SET status='dead', completed_at=datetime('now'),
+                  error_text=?
+           WHERE status='queued' AND conversation_id IN
+             (SELECT id FROM conversations WHERE endpoint_id=?)`,
+        )
+        .run(reason, endpointId);
+      this._db
+        .prepare(
+          `UPDATE inbound_events SET status='dead', status_reason=?
+           WHERE id IN (SELECT source_event_id FROM turns
+             WHERE status='dead' AND conversation_id IN
+               (SELECT id FROM conversations WHERE endpoint_id=?))`,
+        )
+        .run(reason, endpointId);
+      this._db
+        .prepare(
+          `UPDATE outbox SET status='dead', last_error=? WHERE endpoint_id=?
+           AND status IN ('pending','retrying','in_flight')`,
+        )
+        .run(reason, endpointId);
+    });
+  }
+
+  setBuzzChannels(endpointId: string, channels: readonly string[]): void {
+    if (!this.normalizedSchema) return;
+    const state = this.getEndpointState(endpointId);
+    if (!state) throw new Error(`unknown endpoint '${endpointId}'`);
+    const cursor: BuzzCursorState = {
+      ...state.cursor,
+      channels: [...new Set(channels)].sort(),
+    };
+    this._db
+      .prepare(
+        "UPDATE endpoints SET cursor_json=?, updated_at=datetime('now') WHERE endpoint_id=?",
+      )
+      .run(JSON.stringify(cursor), endpointId);
+  }
+
+  checkpointBuzzCursor(
+    endpointId: string,
+    scope: string,
+    createdAt: number,
+    eventId: string,
+  ): boolean {
+    if (!this.normalizedSchema) return false;
+    return this.transactionImmediate(() => {
+      const row = this._db
+        .query("SELECT lifecycle_state FROM endpoints WHERE endpoint_id=?")
+        .get(endpointId) as { lifecycle_state: EndpointLifecycleState } | null;
+      if (row?.lifecycle_state !== "active") return false;
+      this.advanceBuzzCursor(endpointId, scope, createdAt, eventId);
+      return true;
+    });
+  }
+
+  archiveEndpointChannel(endpointId: string, channelId: string): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        `UPDATE conversations SET archived=1
+         WHERE endpoint_id=? AND external_conversation_id=?`,
+      )
+      .run(endpointId, channelId);
+  }
+
+  recordBuzzInbound(args: {
+    event: InboundEvent;
+    status: "received" | "control" | "rejected";
+    statusReason?: string | null;
+    cursorScope: string;
+  }):
+    | { kind: "inserted"; id: number; receivedSeq: number }
+    | { kind: "duplicate"; id: number; status: string } {
+    if (!this.normalizedSchema)
+      throw new Error("Buzz intake requires normalized schema v5");
+    return this.transactionImmediate(() => {
+      const existing = this.getInboundEventStatus(
+        args.event.endpointId,
+        args.event.externalEventId,
+      );
+      if (existing)
+        return { kind: "duplicate", id: existing.id, status: existing.status };
+
+      const conversation = args.event.conversation
+        ? this.resolveConversation(
+            args.event.agentId,
+            args.event.conversation,
+            args.event.sender.id,
+          )
+        : null;
+      const seq = this._db
+        .query(
+          `UPDATE endpoints
+           SET next_received_seq=next_received_seq+1,
+               updated_at=datetime('now')
+           WHERE endpoint_id=? AND lifecycle_state='active'
+           RETURNING next_received_seq`,
+        )
+        .get(args.event.endpointId) as { next_received_seq: number } | null;
+      if (!seq) throw new Error("endpoint_not_active");
+      const payloadJson = JSON.stringify(args.event.raw);
+      const result = this._db
+        .prepare(
+          `INSERT INTO inbound_events
+            (endpoint_id, platform, external_event_id, external_message_id,
+             target_external_event_id, workflow_run_id, conversation_id,
+             sender_id, event_kind, reply_to_external_id, payload_json,
+             payload_sha256, received_seq, status, status_reason)
+           VALUES (?, 'buzz', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          args.event.endpointId,
+          args.event.externalEventId,
+          args.event.externalMessageId,
+          args.event.targetExternalEventId,
+          args.event.workflowRunId,
+          conversation?.id ?? null,
+          args.event.sender.id,
+          args.event.kind,
+          args.event.replyTo,
+          payloadJson,
+          createHash("sha256").update(payloadJson).digest("hex"),
+          seq.next_received_seq,
+          args.status,
+          args.statusReason ?? null,
+        );
+      this.advanceBuzzCursor(
+        args.event.endpointId,
+        args.cursorScope,
+        args.event.occurredAt,
+        args.event.externalEventId,
+      );
+      return {
+        kind: "inserted",
+        id: Number(result.lastInsertRowid),
+        receivedSeq: seq.next_received_seq,
+      };
+    });
+  }
+
+  listBuzzEventsByStatus(
+    endpointId: string,
+    statuses: readonly string[],
+  ): Array<{ id: number; status: string; payloadJson: string }> {
+    if (!this.normalizedSchema || statuses.length === 0) return [];
+    const placeholders = statuses.map(() => "?").join(",");
+    return this._db
+      .query(
+        `SELECT id, status, payload_json AS payloadJson FROM inbound_events
+         WHERE endpoint_id=? AND platform='buzz'
+           AND status IN (${placeholders}) ORDER BY received_seq`,
+      )
+      .all(endpointId, ...statuses) as Array<{
+      id: number;
+      status: string;
+      payloadJson: string;
+    }>;
+  }
+
+  transitionInboundEvent(
+    id: number,
+    from: string,
+    to: string,
+    reason: string | null = null,
+  ): boolean {
+    if (!this.normalizedSchema) return false;
+    const result = this._db
+      .prepare(
+        "UPDATE inbound_events SET status=?, status_reason=? WHERE id=? AND status=?",
+      )
+      .run(to, reason, id, from);
+    return result.changes === 1;
+  }
+
+  private advanceBuzzCursor(
+    endpointId: string,
+    scope: string,
+    createdAt: number,
+    eventId: string,
+  ): void {
+    const state = this.getEndpointState(endpointId);
+    if (!state) throw new Error(`unknown endpoint '${endpointId}'`);
+    const current = state.cursor.subscriptions[scope];
+    if (
+      current &&
+      (current.created_at > createdAt ||
+        (current.created_at === createdAt && current.event_id >= eventId))
+    ) {
+      return;
+    }
+    const cursor: BuzzCursorState = {
+      ...state.cursor,
+      subscriptions: {
+        ...state.cursor.subscriptions,
+        [scope]: { created_at: createdAt, event_id: eventId },
+      },
+    };
+    this._db
+      .prepare("UPDATE endpoints SET cursor_json=? WHERE endpoint_id=?")
+      .run(JSON.stringify(cursor), endpointId);
   }
 
   private insertNormalizedInbound(
@@ -1100,6 +1446,59 @@ export class GatewayDB {
     return Number(result.lastInsertRowid);
   }
 
+  /** Create a durable turn from a Buzz event already recorded by relay intake. */
+  enqueueRecordedBuzzTurn(
+    inboundEventId: number,
+    agentId: BotId,
+    promptText: string,
+  ): number | null {
+    if (!this.normalizedSchema) return null;
+    return this.transactionImmediate(() => {
+      const row = this._db
+        .query(
+          `SELECT ie.conversation_id, ie.received_seq, ie.status, c.session_key
+           FROM inbound_events ie
+           JOIN conversations c ON c.id=ie.conversation_id
+           WHERE ie.id=? AND ie.endpoint_id IN
+             (SELECT endpoint_id FROM endpoints WHERE agent_id=?)`,
+        )
+        .get(inboundEventId, agentId) as {
+        conversation_id: number;
+        received_seq: number;
+        status: string;
+        session_key: string | null;
+      } | null;
+      if (!row || row.status !== "dispatched") return null;
+      const existing = this._db
+        .query("SELECT id FROM turns WHERE source_event_id=?")
+        .get(inboundEventId) as { id: number } | null;
+      if (existing) return existing.id;
+      const result = this._db
+        .prepare(
+          `INSERT INTO turns
+            (bot_id, agent_id, chat_id, source_update_id, conversation_id,
+             session_key, source_platform, source_event_id, prompt_text,
+             prompt_markdown, prompt_revision_seq)
+           VALUES (?, ?, 0, NULL, ?, ?, 'buzz', ?, ?, 1, ?)`,
+        )
+        .run(
+          agentId,
+          agentId,
+          row.conversation_id,
+          row.session_key,
+          inboundEventId,
+          promptText,
+          row.received_seq,
+        );
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status='enqueued', status_reason=NULL WHERE id=? AND status='dispatched'",
+        )
+        .run(inboundEventId);
+      return Number(result.lastInsertRowid);
+    });
+  }
+
   startTurn(turnId: number, workerGeneration: number): void {
     this.stmts.startTurn.run(workerGeneration, turnId);
   }
@@ -1123,13 +1522,15 @@ export class GatewayDB {
       .query(
         "SELECT source_update_id FROM turns WHERE id=? AND status='queued'",
       )
-      .get(turnId) as { source_update_id: number } | null;
+      .get(turnId) as { source_update_id: number | null } | null;
     if (!row) return false;
     this._db
       .prepare(
         "UPDATE turns SET status='dead', completed_at=datetime('now'), error_text=? WHERE id=? AND status='queued'",
       )
       .run(reason, turnId);
+    this.setTurnSourceEventStatus(turnId, "dead");
+    if (row.source_update_id === null) return true;
     this.setUpdateStatus(row.source_update_id, "dead");
     const update = this._db
       .query(
@@ -1233,6 +1634,17 @@ export class GatewayDB {
   }
 
   getTurnText(turnId: number): string | null {
+    if (this.normalizedSchema) {
+      const normalized = this._db
+        .query("SELECT prompt_text FROM turns WHERE id=?")
+        .get(turnId) as { prompt_text: string | null } | null;
+      if (
+        normalized?.prompt_text !== null &&
+        normalized?.prompt_text !== undefined
+      ) {
+        return normalized.prompt_text;
+      }
+    }
     const row = this.stmts.getTurnText.get(turnId) as {
       payload_json: string;
     } | null;
@@ -1268,6 +1680,83 @@ export class GatewayDB {
       source_update_id: number;
     } | null;
     return row?.source_update_id ?? null;
+  }
+
+  setTurnSourceEventStatus(turnId: number, status: string): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        `UPDATE inbound_events SET status=?
+         WHERE id=(SELECT source_event_id FROM turns WHERE id=?)`,
+      )
+      .run(status, turnId);
+  }
+
+  getTurnDeliveryContext(turnId: number): {
+    agentId: BotId;
+    conversation: ConversationRef;
+    sourceEventId: string;
+    senderId: string;
+    traceId: string | null;
+    hop: number;
+  } | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        `SELECT t.agent_id, c.platform, c.community_id, c.endpoint_id,
+                c.external_conversation_id, c.thread_root_id,
+                c.workflow_run_id, c.conversation_type,
+                ie.external_event_id, ie.sender_id, ie.payload_json
+         FROM turns t
+         JOIN conversations c ON c.id=t.conversation_id
+         JOIN inbound_events ie ON ie.id=t.source_event_id
+         WHERE t.id=?`,
+      )
+      .get(turnId) as {
+      agent_id: BotId;
+      platform: ConversationRef["platform"];
+      community_id: string | null;
+      endpoint_id: string;
+      external_conversation_id: string;
+      thread_root_id: string;
+      workflow_run_id: string;
+      conversation_type: ConversationRef["type"];
+      external_event_id: string;
+      sender_id: string;
+      payload_json: string | null;
+    } | null;
+    if (!row) return null;
+    let traceId: string | null = null;
+    let hop = 0;
+    try {
+      const payload = JSON.parse(row.payload_json ?? "null") as {
+        tags?: string[][];
+      } | null;
+      for (const tag of payload?.tags ?? []) {
+        if (tag[0] === "torana-trace" && tag[1]) traceId = tag[1];
+        if (tag[0] === "torana-hop" && /^\d+$/.test(tag[1] ?? "")) {
+          hop = Number(tag[1]);
+        }
+      }
+    } catch {
+      // Missing diagnostic tags never block delivery; the local budget does.
+    }
+    return {
+      agentId: row.agent_id,
+      conversation: {
+        platform: row.platform,
+        communityId: row.community_id,
+        endpointId: row.endpoint_id,
+        channelId: row.external_conversation_id,
+        threadRootId: row.thread_root_id || null,
+        workflowRunId: row.workflow_run_id || null,
+        type: row.conversation_type,
+      },
+      sourceEventId: row.external_event_id,
+      senderId: row.sender_id,
+      traceId,
+      hop,
+    };
   }
 
   requeueTurn(turnId: number): void {
@@ -1455,6 +1944,46 @@ export class GatewayDB {
     this.stmts.markOutboxFailed.run(error, id);
   }
 
+  markOutboxDead(id: number, error: string): void {
+    this._db
+      .prepare(
+        "UPDATE outbox SET status='dead', last_error=? WHERE id=? AND status='pending'",
+      )
+      .run(error, id);
+  }
+
+  countRecentConversationalOutbox(args: {
+    endpointId: string;
+    conversationId?: number;
+    since: string;
+  }): number {
+    const row = this._db
+      .query(
+        `SELECT COUNT(*) AS count FROM outbox
+         WHERE endpoint_id=? AND operation_kind IN ('send','forum_comment')
+           AND created_at>=?
+           ${args.conversationId === undefined ? "" : "AND conversation_id=?"}`,
+      )
+      .get(
+        args.endpointId,
+        args.since,
+        ...(args.conversationId === undefined ? [] : [args.conversationId]),
+      ) as { count: number };
+    return Number(row.count);
+  }
+
+  countOutboxTrace(traceId: string): number {
+    if (!this.normalizedSchema) return 0;
+    const row = this._db
+      .query(
+        `SELECT COUNT(*) AS count FROM outbox
+         WHERE json_valid(payload_json)
+           AND json_extract(payload_json, '$.traceId')=?`,
+      )
+      .get(traceId) as { count: number };
+    return Number(row.count);
+  }
+
   /**
    * Schedule a Retry-After-respecting retry. Does NOT bump attempt_count —
    * a server-asked cooldown should not consume the retry budget that
@@ -1499,6 +2028,9 @@ export class GatewayDB {
     conversation_id: number | null;
     operation_kind: string;
     external_message_id: string | null;
+    signed_payload_json: string | null;
+    signed_event_id: string | null;
+    community_id: string | null;
     external_conversation_id: string;
     thread_root_id: string | null;
     workflow_run_id: string | null;
@@ -1513,10 +2045,18 @@ export class GatewayDB {
     const rows = this.stmts.getPendingOutbox.all() as ReturnType<
       GatewayDB["getPendingOutbox"]
     >;
-    if (!this.normalizedSchema || this.enabledEndpointIds.size === 0) {
-      return rows;
-    }
-    return rows.filter((row) => this.enabledEndpointIds.has(row.endpoint_id));
+    if (!this.normalizedSchema) return rows;
+    const deliverable = new Set(
+      (
+        this._db
+          .query(
+            `SELECT endpoint_id FROM endpoints
+             WHERE lifecycle_state IN ('active', 'draining')`,
+          )
+          .all() as Array<{ endpoint_id: string }>
+      ).map((row) => row.endpoint_id),
+    );
+    return rows.filter((row) => deliverable.has(row.endpoint_id));
   }
 
   getOutboxRow(
@@ -2486,6 +3026,34 @@ export class GatewayDB {
     this._db.close();
     log.info("database closed");
   }
+}
+
+function parseBuzzCursor(raw: string | null): BuzzCursorState {
+  if (!raw) return { version: 1, subscriptions: {} };
+  try {
+    const value = JSON.parse(raw) as Partial<BuzzCursorState>;
+    if (
+      value.version === 1 &&
+      value.subscriptions &&
+      typeof value.subscriptions === "object"
+    ) {
+      return {
+        version: 1,
+        subscriptions: value.subscriptions,
+        ...(Array.isArray(value.channels)
+          ? {
+              channels: value.channels.filter(
+                (item) => typeof item === "string",
+              ),
+            }
+          : {}),
+      };
+    }
+  } catch {
+    // Treat malformed legacy cursor data as empty; doctor will surface relay
+    // replay state once the endpoint reconnects.
+  }
+  return { version: 1, subscriptions: {} };
 }
 
 function legacyDecimalOrNull(value: string): number | null {

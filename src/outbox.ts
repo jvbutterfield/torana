@@ -1,6 +1,7 @@
 import { logger } from "./log.js";
 import { nextBackoffMs } from "./backoff.js";
 import type { BotId, Config } from "./config/schema.js";
+import type { NormalizedConfigModel } from "./config/v2.js";
 import type { GatewayDB } from "./db/gateway-db.js";
 import type { Metrics } from "./metrics.js";
 import type { AlertManager } from "./alerts.js";
@@ -43,6 +44,10 @@ export class OutboxProcessor {
    */
   private processingBots = new Set<BotId>();
   private inFlightGraceSecs: number;
+  private replyRates: {
+    conversation: { count: number; windowMs: number };
+    endpoint: { count: number; windowMs: number };
+  } | null;
 
   constructor(
     config: Config,
@@ -50,7 +55,10 @@ export class OutboxProcessor {
     endpoints: ReadonlyMap<BotId, PlatformAdapter>,
     metrics: Metrics,
     alerts: AlertManager | null = null,
-    opts: { inFlightGraceSecs?: number } = {},
+    opts: {
+      inFlightGraceSecs?: number;
+      normalized?: NormalizedConfigModel;
+    } = {},
   ) {
     this.config = config;
     this.db = db;
@@ -58,6 +66,16 @@ export class OutboxProcessor {
     this.metrics = metrics;
     this.alerts = alerts;
     this.inFlightGraceSecs = opts.inFlightGraceSecs ?? IN_FLIGHT_GRACE_SECS;
+    this.replyRates = opts.normalized?.limits
+      ? {
+          conversation: parseRate(
+            opts.normalized.limits.agent_reply_rate_per_conversation,
+          ),
+          endpoint: parseRate(
+            opts.normalized.limits.agent_reply_rate_per_endpoint,
+          ),
+        }
+      : null;
   }
 
   /**
@@ -174,12 +192,52 @@ export class OutboxProcessor {
     operation: OutboundOperation,
     prebuiltPayloadJson?: string,
   ): number {
-    return this.db.insertOutboundOperation({
+    const adapter =
+      this.adapters.get(conversation.endpointId) ?? this.adapters.get(agentId);
+    const prepared = adapter?.prepareOutbound?.(conversation, operation);
+    const budget =
+      conversation.platform === "buzz" && operation.kind === "send"
+        ? this.replyBudgetExceeded(
+            conversation.endpointId,
+            this.db.resolveConversation(agentId, conversation).id,
+          )
+        : null;
+    const id = this.db.insertOutboundOperation({
       turnId,
       agentId,
       conversation,
       operation,
-      payloadJson: prebuiltPayloadJson,
+      payloadJson:
+        prebuiltPayloadJson ??
+        prepared?.payloadJson ??
+        JSON.stringify(operation),
+      signedPayloadJson: prepared?.signedPayloadJson,
+      signedEventId: prepared?.signedEventId,
+    });
+    if (budget) {
+      this.db.markOutboxDead(id, `loop budget exceeded: ${budget}`);
+      this.metrics.inc(agentId, "loop_budget_rejected");
+      void this.alerts?.loopBudgetRejected(agentId, budget);
+    }
+    return id;
+  }
+
+  queueFinalResponse(turnId: number, text: string): number | null {
+    const context = this.db.getTurnDeliveryContext(turnId);
+    if (!context || context.conversation.platform !== "buzz" || !text.trim()) {
+      return null;
+    }
+    const traceId =
+      context.traceId ??
+      `torana:${context.conversation.endpointId}:${context.sourceEventId}`;
+    return this.queueOperation(turnId, context.agentId, context.conversation, {
+      kind: "send",
+      text,
+      files: [],
+      replyTo: context.sourceEventId,
+      mentions: [context.senderId],
+      traceId,
+      hop: context.hop + 1,
     });
   }
 
@@ -256,7 +314,8 @@ export class OutboxProcessor {
   private async processOne(
     row: ReturnType<GatewayDB["getPendingOutbox"]>[number],
   ): Promise<void> {
-    const adapter = this.adapters.get(row.agent_id);
+    const adapter =
+      this.adapters.get(row.endpoint_id) ?? this.adapters.get(row.agent_id);
     if (!adapter) {
       log.error("no endpoint for agent", { agent_id: row.agent_id });
       this.db.markOutboxFailed(row.id, "no messaging endpoint");
@@ -267,7 +326,7 @@ export class OutboxProcessor {
       Record<string, unknown>;
     const conversation: ConversationRef = {
       platform: row.platform,
-      communityId: null,
+      communityId: row.community_id,
       endpointId: row.endpoint_id,
       channelId: row.external_conversation_id,
       threadRootId: row.thread_root_id,
@@ -301,7 +360,11 @@ export class OutboxProcessor {
     this.db.markOutboxInFlight(row.id, this.inFlightGraceSecs);
 
     try {
-      const result = await adapter.deliver(conversation, operation);
+      const result = await adapter.deliver(conversation, operation, {
+        payloadJson: row.payload_json,
+        signedPayloadJson: row.signed_payload_json,
+        signedEventId: row.signed_event_id,
+      });
       if (result.ok || (!result.ok && result.notModified)) {
         this.db.markOutboxSent(
           row.id,
@@ -326,6 +389,36 @@ export class OutboxProcessor {
     } catch (err) {
       this.handleFailure(row, err instanceof Error ? err.message : String(err));
     }
+  }
+
+  private replyBudgetExceeded(
+    endpointId: string,
+    conversationId: number,
+  ): "conversation" | "endpoint" | null {
+    if (!this.replyRates) return null;
+    const since = (windowMs: number) =>
+      new Date(Date.now() - windowMs)
+        .toISOString()
+        .slice(0, 19)
+        .replace("T", " ");
+    if (
+      this.db.countRecentConversationalOutbox({
+        endpointId,
+        conversationId,
+        since: since(this.replyRates.conversation.windowMs),
+      }) >= this.replyRates.conversation.count
+    ) {
+      return "conversation";
+    }
+    if (
+      this.db.countRecentConversationalOutbox({
+        endpointId,
+        since: since(this.replyRates.endpoint.windowMs),
+      }) >= this.replyRates.endpoint.count
+    ) {
+      return "endpoint";
+    }
+    return null;
   }
 
   private handleFailure(
@@ -407,6 +500,17 @@ export class OutboxProcessor {
       void this.alerts.outboxFailures(metricAgentId, nextAttemptCount);
     }
   }
+}
+
+function parseRate(value: string): { count: number; windowMs: number } {
+  const match = value.match(/^(\d+)\/(\d+)(ms|s|m|h)$/);
+  if (!match) throw new Error(`invalid rate limit '${value}'`);
+  const count = Number(match[1]);
+  const amount = Number(match[2]);
+  const unit = match[3];
+  const multiplier =
+    unit === "ms" ? 1 : unit === "s" ? 1000 : unit === "m" ? 60_000 : 3_600_000;
+  return { count, windowMs: amount * multiplier };
 }
 
 function materializeOperation(

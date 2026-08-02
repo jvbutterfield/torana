@@ -68,6 +68,7 @@ interface ParsedArgs {
   profile: string | null;
   migrationTo: number | null;
   confirmShared: boolean;
+  deadLetterPending: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -85,6 +86,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     profile: null,
     migrationTo: null,
     confirmShared: false,
+    deadLetterPending: false,
   };
 
   for (let i = isHelpFlag ? 0 : 1; i < argv.length; i += 1) {
@@ -99,6 +101,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.dryRun = true;
     } else if (a === "--confirm-shared") {
       args.confirmShared = true;
+    } else if (a === "--dead-letter-pending") {
+      args.deadLetterPending = true;
     } else if (a === "--to") {
       const next = argv[++i];
       if (!next) throw new Error("--to requires a schema version");
@@ -249,6 +253,7 @@ async function main(argv: string[]): Promise<void> {
           config,
           configPath: path,
           sourceConfigVersion: normalized.sourceVersion,
+          normalized,
         });
       }
       if (args.format === "json") {
@@ -293,6 +298,114 @@ async function main(argv: string[]): Promise<void> {
         db.resetConversationSession(sessionKey);
         console.log(
           `reset session '${sessionKey}' (${bindings} conversation binding${bindings === 1 ? "" : "s"}); the next turn starts fresh`,
+        );
+      } finally {
+        db.close();
+      }
+      return;
+    }
+    case "endpoints": {
+      const action = argv[1];
+      const endpointId = argv[2] && !argv[2]!.startsWith("-") ? argv[2]! : null;
+      if (
+        !action ||
+        !["status", "drain", "disable", "resume"].includes(action) ||
+        (action !== "status" && !endpointId)
+      ) {
+        throw new Error(
+          "usage: torana endpoints <status [id]|drain id|disable id|resume id> [--dead-letter-pending] [--config <path>]",
+        );
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, normalized, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const db = new GatewayDB(config.gateway.db_path!);
+      try {
+        if (action === "status") {
+          const rows = db
+            .listExternalEndpoints()
+            .filter((row) => !endpointId || row.endpointId === endpointId)
+            .map((row) => ({
+              ...row,
+              backlog: db.endpointBacklog(row.endpointId),
+            }));
+          if (endpointId && rows.length === 0) {
+            throw new Error(`endpoint '${endpointId}' not found`);
+          }
+          if (args.format === "json")
+            console.log(JSON.stringify(rows, null, 2));
+          else {
+            for (const row of rows) {
+              const backlog = row.backlog;
+              console.log(
+                `${row.endpointId}\t${row.platform}\t${row.lifecycleState}\tqueued=${backlog.queued} running=${backlog.running} outbox=${backlog.outbox}${row.stateReason ? `\treason=${row.stateReason}` : ""}`,
+              );
+            }
+          }
+          return;
+        }
+
+        const current = db.getEndpointState(endpointId!);
+        if (!current) throw new Error(`endpoint '${endpointId}' not found`);
+        if (current.platform !== "buzz") {
+          throw new Error(
+            "Phase 4 lifecycle commands apply only to Buzz endpoints",
+          );
+        }
+        if (action === "drain") {
+          if (current.lifecycleState !== "active") {
+            throw new Error(
+              `endpoint '${endpointId}' must be active before draining (current: ${current.lifecycleState})`,
+            );
+          }
+          db.setEndpointLifecycle(endpointId!, "draining", "operator_drain");
+          console.log(
+            `endpoint '${endpointId}' is draining; intake has stopped`,
+          );
+          return;
+        }
+        if (action === "resume") {
+          const configured = normalized.endpoints.find(
+            (endpoint) => endpoint.id === endpointId,
+          );
+          if (!configured?.enabled) {
+            throw new Error(
+              `endpoint '${endpointId}' is disabled by configuration; enable the Buzz platform and endpoint first`,
+            );
+          }
+          db.setEndpointLifecycle(endpointId!, "active", null);
+          console.log(`endpoint '${endpointId}' resumed`);
+          return;
+        }
+
+        if (current.lifecycleState !== "draining") {
+          throw new Error(
+            `endpoint '${endpointId}' must be draining before it can be disabled`,
+          );
+        }
+        const backlog = db.endpointBacklog(endpointId!);
+        if (backlog.running > 0) {
+          throw new Error(
+            `endpoint '${endpointId}' still has ${backlog.running} running turn(s); wait for them to finish before disabling`,
+          );
+        }
+        if (
+          (backlog.queued > 0 || backlog.outbox > 0) &&
+          !args.deadLetterPending
+        ) {
+          throw new Error(
+            `endpoint '${endpointId}' still has queued=${backlog.queued}, outbox=${backlog.outbox}; wait or rerun with --dead-letter-pending`,
+          );
+        }
+        if (args.deadLetterPending) {
+          db.deadLetterEndpointPending(
+            endpointId!,
+            "operator disabled endpoint with --dead-letter-pending",
+          );
+        }
+        db.setEndpointLifecycle(endpointId!, "disabled", "operator_disabled");
+        console.log(
+          `endpoint '${endpointId}' disabled${args.deadLetterPending ? "; pending work dead-lettered" : ""}`,
         );
       } finally {
         db.close();
@@ -358,6 +471,10 @@ Gateway commands:
   validate     Offline config check (no Telegram, no DB)
   migrate      Apply pending DB migrations (--dry-run to preview)
   sessions reset <key>  Clear a conversation session (shared sessions require --confirm-shared)
+  endpoints status [id]  Show persisted endpoint lifecycle and backlog
+  endpoints drain <id>   Stop Buzz intake while accepted work drains
+  endpoints disable <id> Disable a drained Buzz endpoint
+  endpoints resume <id>  Resume a configured Buzz endpoint
   version      Print package + runtime version
 
 Agent-API client commands (require --server + --token, env equivalents, or a profile):
@@ -579,7 +696,13 @@ function redactForPrint(config: unknown, parentKey?: string): unknown {
           : v;
       continue;
     }
-    if (k === "token" || k === "secret") {
+    if (
+      k === "token" ||
+      k === "secret" ||
+      k === "secret_ref" ||
+      k === "private_key" ||
+      k === "auth_tag"
+    ) {
       out[k] =
         typeof v === "string" && v.length > 0
           ? `<redacted:${v.length} chars>`

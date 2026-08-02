@@ -16,6 +16,7 @@ export type AlertKind =
   | "mailboxBacklog"
   | "outboxFailures"
   | "attachmentDiskFull"
+  | "loopBudgetRejected"
   | "webhookSetFailed";
 
 export class AlertManager {
@@ -136,6 +137,17 @@ export class AlertManager {
       "attachmentDiskFull",
       null,
       `⚠️ attachment storage full — new uploads rejected until sweeper runs`,
+    );
+  }
+
+  async loopBudgetRejected(
+    botId: BotId,
+    scope: "conversation" | "endpoint",
+  ): Promise<void> {
+    await this.emit(
+      "loopBudgetRejected",
+      botId,
+      `⚠️ agent ${botId}: Buzz reply suppressed by ${scope} loop budget`,
     );
   }
 

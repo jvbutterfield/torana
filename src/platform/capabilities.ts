@@ -36,13 +36,24 @@ export interface MaterializedAttachments {
   errors: string[];
 }
 
+export interface PreparedOutboundOperation {
+  payloadJson?: string;
+  signedPayloadJson?: string | null;
+  signedEventId?: string | null;
+}
+
 export interface PlatformAdapter<RawInbound = unknown> {
   readonly endpoint: MessagingEndpoint;
   normalizeInbound(raw: RawInbound): InboundEvent | null;
   deliver(
     conversation: ConversationRef,
     operation: OutboundOperation,
+    prepared?: PreparedOutboundOperation,
   ): Promise<DeliveryResult>;
+  prepareOutbound?(
+    conversation: ConversationRef,
+    operation: OutboundOperation,
+  ): PreparedOutboundOperation;
   signal(
     conversation: ConversationRef,
     signal: EphemeralSignal,

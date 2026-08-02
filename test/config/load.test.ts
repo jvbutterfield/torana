@@ -46,7 +46,7 @@ describe("config/load", () => {
     expect(loaded.config.bots[0]?.token).toBe(v1.bots[0]?.token);
   });
 
-  test("v2 rejects duplicate endpoint ids and enabled Buzz endpoints", () => {
+  test("v2 rejects duplicate endpoint ids and malformed Buzz keys", () => {
     const v1 = makeTestConfig([
       makeTestBotConfig("alpha"),
       makeTestBotConfig("beta"),
@@ -63,7 +63,7 @@ describe("config/load", () => {
     });
     expect(() =>
       loadConfigFromString(yaml.dump(upgraded), { skipInterpolation: true }),
-    ).toThrow(/globally unique|Phase 4/);
+    ).toThrow(/globally unique|private key/);
   });
 
   test("accepts a minimal polling config", () => {

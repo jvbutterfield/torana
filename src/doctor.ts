@@ -12,9 +12,18 @@ import { platform } from "node:os";
 import { Database } from "bun:sqlite";
 
 import type { Config } from "./config/schema.js";
+import type { NormalizedConfigModel } from "./config/v2.js";
 import { TelegramClient } from "./telegram/client.js";
 import { planMigration } from "./db/migrate.js";
 import { runnerSupportsSideSessions } from "./runner/types.js";
+import { dataDirLockAvailable } from "./data-dir-lock.js";
+import { probeBuzzEndpoint } from "./platform/buzz/transport.js";
+import {
+  BUZZ_KINDS,
+  ownerAuthTagAllowsEvent,
+  parseOwnerAuthTag,
+} from "./platform/buzz/protocol.js";
+import { redactString } from "./log.js";
 
 export interface DoctorCheck {
   id: string;
@@ -33,6 +42,10 @@ export interface DoctorOptions {
   fetchImpl?: typeof fetch;
   /** Original public config version before normalization. */
   sourceConfigVersion?: 1 | 2;
+  /** Platform-neutral v1/v2 metadata, including secret-bearing Buzz runtime config. */
+  normalized?: NormalizedConfigModel;
+  /** Test override for live Buzz relay checks. */
+  buzzProbe?: typeof probeBuzzEndpoint;
 }
 
 export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
@@ -495,6 +508,151 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
         id: "C015",
         status: "skip",
         detail: `db permission check skipped: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  const buzzEndpoints =
+    opts.normalized?.endpoints.filter(
+      (endpoint) => endpoint.platform === "buzz" && endpoint.buzz,
+    ) ?? [];
+  const buzzOperational =
+    opts.normalized?.buzzPlatform?.enabled &&
+    buzzEndpoints.some((endpoint) => endpoint.enabled);
+
+  // C016 — single-writer data-directory lock. Required before relay intake.
+  if (!buzzOperational) {
+    checks.push({
+      id: "C016",
+      status: "skip",
+      detail: "no enabled Buzz endpoint requires the gateway lock",
+    });
+  } else {
+    const lock = dataDirLockAvailable(config.gateway.data_dir);
+    checks.push({
+      id: "C016",
+      status: lock.available ? "ok" : "fail",
+      detail: lock.detail,
+    });
+  }
+
+  const sharedIdentities = new Map<string, number>();
+  for (const endpoint of buzzEndpoints) {
+    const buzz = endpoint.buzz!;
+    sharedIdentities.set(
+      buzz.pubkey,
+      (sharedIdentities.get(buzz.pubkey) ?? 0) + 1,
+    );
+    checks.push({
+      id: "C017",
+      status: "ok",
+      detail: `Buzz endpoint '${endpoint.id}': key derives pubkey ${buzz.pubkey.slice(0, 12)}…`,
+    });
+
+    let ownerStatus: DoctorCheck["status"] = "ok";
+    let ownerDetail = buzz.ownerPubkey
+      ? `owner ${buzz.ownerPubkey.slice(0, 12)}… resolved`
+      : "no owner configured";
+    if (buzz.respondTo === "owner_only" && !buzz.ownerPubkey) {
+      ownerStatus = "fail";
+      ownerDetail = "owner_only has no resolvable owner";
+    }
+    if (buzz.authTag) {
+      const tag = parseOwnerAuthTag(buzz.authTag)!;
+      if (buzz.ownerPubkey && tag[1] !== buzz.ownerPubkey) {
+        ownerStatus = "fail";
+        ownerDetail = "auth-tag owner does not match configured owner";
+      }
+    }
+    checks.push({
+      id: "C019",
+      status: ownerStatus,
+      detail: `Buzz endpoint '${endpoint.id}': ${ownerDetail}`,
+    });
+
+    if (!endpoint.enabled || !opts.normalized?.buzzPlatform?.enabled) {
+      checks.push({
+        id: "C018",
+        status: "skip",
+        detail: `Buzz endpoint '${endpoint.id}' is disabled; relay auth not probed`,
+      });
+      checks.push({
+        id: "C020",
+        status: "skip",
+        detail: `Buzz endpoint '${endpoint.id}' is disabled; membership not discovered`,
+      });
+    } else {
+      try {
+        const probe = await (opts.buzzProbe ?? probeBuzzEndpoint)({
+          endpoint,
+          normalized: opts.normalized,
+        });
+        checks.push({
+          id: "C018",
+          status: "ok",
+          detail: `Buzz endpoint '${endpoint.id}': relay authentication succeeded`,
+        });
+        checks.push({
+          id: "C020",
+          status: probe.channels.length > 0 ? "ok" : "warn",
+          detail: `Buzz endpoint '${endpoint.id}': discovered ${probe.channels.length} accessible channel(s)`,
+        });
+      } catch (error) {
+        const detail = redactString(
+          error instanceof Error ? error.message : String(error),
+        );
+        checks.push({
+          id: "C018",
+          status: "fail",
+          detail: `Buzz endpoint '${endpoint.id}': relay authentication failed: ${detail}`,
+        });
+        checks.push({
+          id: "C020",
+          status: "fail",
+          detail: `Buzz endpoint '${endpoint.id}': membership discovery unavailable because authentication failed`,
+        });
+      }
+    }
+
+    const tag = buzz.authTag ? parseOwnerAuthTag(buzz.authTag) : undefined;
+    const publishAllowed =
+      !tag ||
+      ownerAuthTagAllowsEvent(tag, {
+        kind: BUZZ_KINDS.streamMessageV1,
+        created_at: Math.floor(Date.now() / 1000),
+      });
+    checks.push({
+      id: "C021",
+      status: publishAllowed ? "ok" : "fail",
+      detail: `Buzz endpoint '${endpoint.id}': ${
+        publishAllowed
+          ? "local signing policy authorizes core message kind 9 (doctor does not publish a message)"
+          : "owner auth policy rejects core message kind 9"
+      }`,
+    });
+  }
+
+  for (const [pubkey, count] of sharedIdentities) {
+    if (count < 2) continue;
+    checks.push({
+      id: "C022",
+      status: "warn",
+      detail: `${count} Buzz endpoints share identity ${pubkey.slice(0, 12)}…; self-event rejection and ordering are process-wide`,
+    });
+  }
+
+  if (!opts.normalized?.buzzTools?.length) {
+    checks.push({
+      id: "C023",
+      status: "skip",
+      detail: "no tools.buzz policy configured",
+    });
+  } else {
+    for (const tools of opts.normalized.buzzTools) {
+      checks.push({
+        id: "C023",
+        status: "warn",
+        detail: `agent '${tools.agentId}': tools.buzz policy '${tools.policy}' is validated but not enforced until Phase 9; runners receive no Buzz credential`,
       });
     }
   }

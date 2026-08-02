@@ -89,6 +89,11 @@ export type OutboundOperation =
       text: string;
       files: LocalAttachment[];
       replyTo?: string;
+      /** Platform-native recipients to tag on a generated reply. */
+      mentions?: string[];
+      /** Cooperative diagnostic metadata; local rate limits remain authoritative. */
+      traceId?: string;
+      hop?: number;
     }
   | { kind: "edit"; externalMessageId: string; text: string }
   | { kind: "delete"; externalMessageId: string; reason?: string }

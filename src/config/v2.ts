@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Config } from "./schema.js";
 import {
@@ -16,6 +15,15 @@ import {
   StreamingSchema,
   WorkerTuningSchema,
 } from "./schema.js";
+import {
+  BUZZ_KINDS,
+  decodeSecret,
+  normalizePubkey,
+  ownerAuthTagAllowsEvent,
+  parseOwnerAuthTag,
+  publicKey,
+  verifyOwnerAuthTag,
+} from "../platform/buzz/protocol.js";
 
 const Int = z.coerce.number().int();
 const Bool = z
@@ -35,6 +43,21 @@ const SessionScope = z
     /^(conversation|legacy_agent|ephemeral|channel|thread|alias:[a-z][a-z0-9_-]{0,47})$/,
     "invalid session scope",
   );
+const RelayUrl = z
+  .string()
+  .url()
+  .superRefine((value, ctx) => {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") {
+      ctx.addIssue({ code: "custom", message: "relay URL must use ws or wss" });
+    }
+    if (parsed.username || parsed.password) {
+      ctx.addIssue({
+        code: "custom",
+        message: "relay URL must not contain credentials",
+      });
+    }
+  });
 
 const TelegramDeliverySchema = z
   .object({
@@ -71,11 +94,60 @@ const PlatformsSchema = z
     buzz: z
       .object({
         enabled: Bool.default(false),
+        reconnect: z
+          .object({
+            base_ms: Int.min(100).default(1000),
+            cap_ms: Int.min(100).default(30_000),
+          })
+          .strict()
+          .default({}),
+        subscription: z
+          .object({
+            historical_limit: Int.min(1).max(5000).default(500),
+            replay_overlap_secs: Int.min(0).max(86_400).default(300),
+            heartbeat_secs: Int.min(5).max(300).default(30),
+          })
+          .strict()
+          .default({}),
+        message_max_bytes: Int.min(1024).max(1_048_576).default(65_536),
       })
-      .passthrough()
-      .default({ enabled: false }),
+      .strict()
+      .default({}),
   })
   .strict();
+
+const LimitsV2Schema = z
+  .object({
+    dispatch_wait_warn_ms: Int.min(1000).default(30_000),
+    max_queue_depth_per_conversation: Int.min(1).default(50),
+    max_queue_depth_per_agent: Int.min(1).default(500),
+    inbound_event_rate_per_endpoint: z.string().default("600/60s"),
+    relay_publish_timeout_ms: Int.min(100).default(10_000),
+    relay_ok_wait_ms: Int.min(100).default(5000),
+    reconnect_alert_after_secs: Int.min(1).default(900),
+    broker_call_timeout_ms: Int.min(100).default(30_000),
+    buzz_edit_cadence_ms: Int.min(100).default(2000),
+    typing_min_interval_ms: Int.min(100).default(4000),
+    presence_min_interval_ms: Int.min(100).default(30_000),
+    agent_reply_rate_per_conversation: z.string().default("6/60s"),
+    agent_reply_rate_per_endpoint: z.string().default("60/60s"),
+  })
+  .strict()
+  .default({});
+
+const RetentionV2Schema = z
+  .object({
+    database_size_cap_bytes: Int.min(1).default(4_294_967_296),
+    inbound_payload_days: Int.min(0).default(30),
+    inbound_event_days: Int.min(1).default(90),
+    terminal_turn_days: Int.min(1).default(90),
+    sent_outbox_days: Int.min(1).default(14),
+    dead_outbox_days: Int.min(1).default(90),
+    signed_sent_payload_hours: Int.min(1).default(24),
+    pending_mutation_days: Int.min(1).default(30),
+  })
+  .strict()
+  .default({});
 
 const SessionsSchema = z
   .object({
@@ -125,7 +197,7 @@ const BuzzEndpointSchema = z
     platform: z.literal("buzz"),
     enabled: Bool.default(false),
     community_id: z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/),
-    relay_url: z.string().url(),
+    relay_url: RelayUrl,
     private_key: z.string().min(1),
     auth_tag: z.string().optional(),
     respond_to: z
@@ -133,9 +205,65 @@ const BuzzEndpointSchema = z
       .default("owner_only"),
     owner_pubkey: z.string().optional(),
     allowed_pubkeys: z.array(z.string()).default([]),
+    subscribe: z
+      .enum(["mentions_and_dms", "all_channels"])
+      .default("mentions_and_dms"),
+    triggers: z
+      .object({
+        feed: z
+          .object({
+            enabled: Bool.default(false),
+            modes: z.array(z.enum(["mentions", "needs_action"])).default([]),
+            interval_secs: Int.min(1).optional(),
+          })
+          .strict()
+          .default({}),
+        workflows: z
+          .object({
+            enabled: Bool.default(false),
+            event_kinds: z.array(Int).default([]),
+          })
+          .strict()
+          .default({}),
+        heartbeat: z
+          .object({
+            enabled: Bool.default(false),
+            interval_secs: Int.min(1).optional(),
+            target_channel: z.string().uuid().optional(),
+            prompt: z.string().min(1).optional(),
+          })
+          .strict()
+          .default({}),
+      })
+      .strict()
+      .default({}),
+    channel_overrides: z
+      .record(
+        z.string().uuid(),
+        z
+          .object({
+            require_mention: Bool.optional(),
+            session_scope: SessionScope.optional(),
+            kinds: z.array(Int).optional(),
+          })
+          .strict(),
+      )
+      .default({}),
     allow_shared_identity: Bool.default(false),
   })
-  .passthrough();
+  .strict();
+
+const BuzzToolsSchema = z
+  .object({
+    policy: z
+      .enum(["read_only", "collaborate", "maintainer"])
+      .default("collaborate"),
+    default_endpoint_id: EndpointId.optional(),
+    allowed_endpoint_ids: z.array(EndpointId).default([]),
+    expose_private_key_to_runner: Bool.default(false),
+    acknowledge_dangerous: Bool.default(false),
+  })
+  .strict();
 
 const AgentSchema = z
   .object({
@@ -149,7 +277,7 @@ const AgentSchema = z
         ]),
       )
       .min(1),
-    tools: z.record(z.string(), z.unknown()).optional(),
+    tools: z.object({ buzz: BuzzToolsSchema.optional() }).strict().optional(),
   })
   .strict();
 
@@ -183,6 +311,8 @@ export const ConfigV2Schema = z
       })
       .strict(),
     sessions: SessionsSchema,
+    limits: LimitsV2Schema,
+    retention: RetentionV2Schema,
     alerts: AlertsV2Schema.optional(),
     worker_tuning: WorkerTuningSchema,
     streaming: StreamingSchema,
@@ -198,6 +328,10 @@ export const ConfigV2Schema = z
   .superRefine((config, ctx) => {
     const agentIds = new Set<string>();
     const endpointIds = new Set<string>();
+    const buzzIdentities = new Map<
+      string,
+      Array<{ agentIndex: number; endpointIndex: number; shared: boolean }>
+    >();
     const aliases = new Map(
       config.sessions.aliases.map((a) => [a.name, a.agent_id]),
     );
@@ -230,13 +364,6 @@ export const ConfigV2Schema = z
         endpointIds.add(endpoint.id);
         if (endpoint.platform === "telegram" && endpoint.enabled)
           telegramCount += 1;
-        if (endpoint.platform === "buzz" && endpoint.enabled) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["agents", agentIndex, "endpoints", endpointIndex, "enabled"],
-            message: "Buzz endpoints must remain disabled until Phase 4",
-          });
-        }
         if (endpoint.platform === "telegram") {
           for (const [chatId, override] of Object.entries(
             endpoint.chat_overrides,
@@ -275,6 +402,255 @@ export const ConfigV2Schema = z
               });
             }
           }
+        } else {
+          const basePath = ["agents", agentIndex, "endpoints", endpointIndex];
+          let endpointPubkey: string | null = null;
+          try {
+            endpointPubkey = publicKey(decodeSecret(endpoint.private_key));
+            const identities = buzzIdentities.get(endpointPubkey) ?? [];
+            identities.push({
+              agentIndex,
+              endpointIndex,
+              shared: endpoint.allow_shared_identity,
+            });
+            buzzIdentities.set(endpointPubkey, identities);
+          } catch (error) {
+            ctx.addIssue({
+              code: "custom",
+              path: [...basePath, "private_key"],
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+
+          let ownerPubkey: string | null = null;
+          if (endpoint.owner_pubkey) {
+            try {
+              ownerPubkey = normalizePubkey(endpoint.owner_pubkey);
+            } catch (error) {
+              ctx.addIssue({
+                code: "custom",
+                path: [...basePath, "owner_pubkey"],
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          const normalizedAllowlist: string[] = [];
+          for (const [
+            pubkeyIndex,
+            pubkey,
+          ] of endpoint.allowed_pubkeys.entries()) {
+            try {
+              normalizedAllowlist.push(normalizePubkey(pubkey));
+            } catch (error) {
+              ctx.addIssue({
+                code: "custom",
+                path: [...basePath, "allowed_pubkeys", pubkeyIndex],
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          if (endpoint.respond_to === "owner_only" && !ownerPubkey) {
+            ctx.addIssue({
+              code: "custom",
+              path: [...basePath, "owner_pubkey"],
+              message: "owner_only requires owner_pubkey",
+            });
+          }
+          if (
+            endpoint.respond_to === "allowlist" &&
+            normalizedAllowlist.length === 0
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: [...basePath, "allowed_pubkeys"],
+              message: "allowlist requires at least one allowed pubkey",
+            });
+          }
+          if (
+            (endpoint.respond_to === "anyone" ||
+              endpoint.respond_to === "nobody") &&
+            endpoint.allowed_pubkeys.length > 0
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: [...basePath, "allowed_pubkeys"],
+              message: `${endpoint.respond_to} rejects an unused allowlist`,
+            });
+          }
+
+          if (endpoint.auth_tag && endpointPubkey) {
+            try {
+              const tag = parseOwnerAuthTag(endpoint.auth_tag)!;
+              if (!verifyOwnerAuthTag(tag, endpointPubkey)) {
+                throw new Error(
+                  "auth tag signature does not authorize this endpoint key",
+                );
+              }
+              if (ownerPubkey && tag[1] !== ownerPubkey) {
+                throw new Error("auth tag owner does not match owner_pubkey");
+              }
+              if (
+                !ownerAuthTagAllowsEvent(tag, {
+                  kind: BUZZ_KINDS.streamMessageV1,
+                  created_at: Math.floor(Date.now() / 1000),
+                })
+              ) {
+                throw new Error(
+                  "auth tag does not authorize core reply kind 9",
+                );
+              }
+            } catch (error) {
+              ctx.addIssue({
+                code: "custom",
+                path: [...basePath, "auth_tag"],
+                message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+
+          if (
+            endpoint.triggers.feed.enabled &&
+            endpoint.triggers.feed.interval_secs === undefined
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: [...basePath, "triggers", "feed", "interval_secs"],
+              message: "enabled feed trigger requires interval_secs",
+            });
+          }
+          if (endpoint.triggers.workflows.enabled) {
+            if (endpoint.triggers.workflows.event_kinds.length === 0) {
+              ctx.addIssue({
+                code: "custom",
+                path: [...basePath, "triggers", "workflows", "event_kinds"],
+                message: "enabled workflow trigger requires event_kinds",
+              });
+            }
+            const workflowKinds = new Set<number>([
+              BUZZ_KINDS.workflowTriggered,
+              BUZZ_KINDS.workflowStepStarted,
+              BUZZ_KINDS.workflowStepCompleted,
+              BUZZ_KINDS.workflowStepFailed,
+              BUZZ_KINDS.workflowCompleted,
+              BUZZ_KINDS.workflowFailed,
+              BUZZ_KINDS.workflowCancelled,
+              BUZZ_KINDS.workflowApprovalRequested,
+              BUZZ_KINDS.workflowApprovalGranted,
+              BUZZ_KINDS.workflowApprovalDenied,
+            ]);
+            for (const [
+              kindIndex,
+              kind,
+            ] of endpoint.triggers.workflows.event_kinds.entries()) {
+              if (workflowKinds.has(kind)) continue;
+              ctx.addIssue({
+                code: "custom",
+                path: [
+                  ...basePath,
+                  "triggers",
+                  "workflows",
+                  "event_kinds",
+                  kindIndex,
+                ],
+                message: `event kind ${kind} is not a pinned workflow notification kind`,
+              });
+            }
+          }
+          if (endpoint.triggers.heartbeat.enabled) {
+            for (const field of [
+              "interval_secs",
+              "target_channel",
+              "prompt",
+            ] as const) {
+              if (endpoint.triggers.heartbeat[field] !== undefined) continue;
+              ctx.addIssue({
+                code: "custom",
+                path: [...basePath, "triggers", "heartbeat", field],
+                message: `enabled heartbeat trigger requires ${field}`,
+              });
+            }
+          }
+
+          for (const [channelId, override] of Object.entries(
+            endpoint.channel_overrides,
+          )) {
+            const alias = override.session_scope?.startsWith("alias:")
+              ? override.session_scope.slice(6)
+              : null;
+            if (alias && aliases.get(alias) !== agent.id) {
+              ctx.addIssue({
+                code: "custom",
+                path: [
+                  ...basePath,
+                  "channel_overrides",
+                  channelId,
+                  "session_scope",
+                ],
+                message: `alias '${alias}' is not declared for agent '${agent.id}'`,
+              });
+            }
+          }
+        }
+      }
+      const buzzEndpointIds = new Set(
+        agent.endpoints
+          .filter((endpoint) => endpoint.platform === "buzz")
+          .map((endpoint) => endpoint.id),
+      );
+      const buzzTools = agent.tools?.buzz;
+      if (buzzTools) {
+        for (const [
+          allowedIndex,
+          endpointId,
+        ] of buzzTools.allowed_endpoint_ids.entries()) {
+          if (buzzEndpointIds.has(endpointId)) continue;
+          ctx.addIssue({
+            code: "custom",
+            path: [
+              "agents",
+              agentIndex,
+              "tools",
+              "buzz",
+              "allowed_endpoint_ids",
+              allowedIndex,
+            ],
+            message: `Buzz tools endpoint '${endpointId}' is not owned by agent '${agent.id}'`,
+          });
+        }
+        if (
+          buzzTools.default_endpoint_id &&
+          !buzzTools.allowed_endpoint_ids.includes(
+            buzzTools.default_endpoint_id,
+          )
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: [
+              "agents",
+              agentIndex,
+              "tools",
+              "buzz",
+              "default_endpoint_id",
+            ],
+            message: "default_endpoint_id must also be allowed",
+          });
+        }
+        if (
+          buzzTools.expose_private_key_to_runner &&
+          !buzzTools.acknowledge_dangerous
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: [
+              "agents",
+              agentIndex,
+              "tools",
+              "buzz",
+              "acknowledge_dangerous",
+            ],
+            message:
+              "expose_private_key_to_runner requires acknowledge_dangerous: true",
+          });
         }
       }
       if (telegramCount !== 1) {
@@ -298,6 +674,33 @@ export const ConfigV2Schema = z
             "explicit v2 durable session scopes require resume_model: stable_session_id; otherwise use sessions.scope: ephemeral",
         });
       }
+    }
+    for (const [pubkey, identities] of buzzIdentities) {
+      if (identities.length < 2 || identities.every((item) => item.shared))
+        continue;
+      for (const identity of identities) {
+        ctx.addIssue({
+          code: "custom",
+          path: [
+            "agents",
+            identity.agentIndex,
+            "endpoints",
+            identity.endpointIndex,
+            "allow_shared_identity",
+          ],
+          message: `Buzz identity ${pubkey.slice(0, 12)}… is reused; every sharing endpoint must set allow_shared_identity: true`,
+        });
+      }
+    }
+    if (
+      config.platforms.buzz.reconnect.base_ms >
+      config.platforms.buzz.reconnect.cap_ms
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["platforms", "buzz", "reconnect", "base_ms"],
+        message: "must be <= cap_ms",
+      });
     }
     for (const [index, alias] of config.sessions.aliases.entries()) {
       if (!agentIds.has(alias.agent_id)) {
@@ -355,6 +758,31 @@ export const ConfigV2Schema = z
   });
 
 export type ConfigV2 = z.infer<typeof ConfigV2Schema>;
+export type BuzzEndpointConfig = Extract<
+  ConfigV2["agents"][number]["endpoints"][number],
+  { platform: "buzz" }
+>;
+
+export interface NormalizedBuzzRuntimeConfig {
+  relayUrl: string;
+  privateKey: string;
+  authTag: string | null;
+  pubkey: string;
+  respondTo: BuzzEndpointConfig["respond_to"];
+  ownerPubkey: string | null;
+  allowedPubkeys: string[];
+  allowSharedIdentity: boolean;
+  subscribe: BuzzEndpointConfig["subscribe"];
+  triggers: BuzzEndpointConfig["triggers"];
+  channelOverrides: Record<
+    string,
+    {
+      requireMention?: boolean;
+      sessionScope?: string;
+      kinds?: number[];
+    }
+  >;
+}
 
 export interface NormalizedEndpointConfig {
   id: string;
@@ -364,12 +792,24 @@ export interface NormalizedEndpointConfig {
   communityId: string | null;
   externalIdentity: string | null;
   sessionScopes?: Record<string, string>;
+  buzz?: NormalizedBuzzRuntimeConfig;
 }
 
 export interface NormalizedConfigModel {
   sourceVersion: 1 | 2;
   endpoints: NormalizedEndpointConfig[];
   sessions: ConfigV2["sessions"];
+  buzzPlatform?: ConfigV2["platforms"]["buzz"];
+  limits?: ConfigV2["limits"];
+  retention?: ConfigV2["retention"];
+  buzzTools?: Array<{
+    agentId: string;
+    policy: "read_only" | "collaborate" | "maintainer";
+    defaultEndpointId: string | null;
+    allowedEndpointIds: string[];
+    exposePrivateKeyToRunner: boolean;
+    acknowledgeDangerous: boolean;
+  }>;
   alertsTarget?: { endpointId: string; externalConversationId: string };
 }
 
@@ -438,15 +878,16 @@ export function normalizeV2(config: ConfigV2): {
           id: endpoint.id,
           agentId: agent.id,
           platform: endpoint.platform,
-          enabled: endpoint.enabled,
+          enabled:
+            endpoint.enabled &&
+            (endpoint.platform === "telegram"
+              ? config.platforms.telegram.enabled
+              : config.platforms.buzz.enabled),
           communityId:
             endpoint.platform === "buzz" ? endpoint.community_id : null,
           externalIdentity:
             endpoint.platform === "buzz"
-              ? createHash("sha256")
-                  .update(endpoint.private_key)
-                  .digest("hex")
-                  .slice(0, 64)
+              ? publicKey(decodeSecret(endpoint.private_key))
               : null,
           sessionScopes:
             endpoint.platform === "telegram"
@@ -458,7 +899,50 @@ export function normalizeV2(config: ConfigV2): {
                         : [],
                   ),
                 )
-              : {},
+              : Object.fromEntries(
+                  Object.entries(endpoint.channel_overrides).flatMap(
+                    ([id, override]) =>
+                      override.session_scope
+                        ? [[id, override.session_scope]]
+                        : [],
+                  ),
+                ),
+          ...(endpoint.platform === "buzz"
+            ? {
+                buzz: {
+                  relayUrl: endpoint.relay_url,
+                  privateKey: endpoint.private_key,
+                  authTag: endpoint.auth_tag ?? null,
+                  pubkey: publicKey(decodeSecret(endpoint.private_key)),
+                  respondTo: endpoint.respond_to,
+                  ownerPubkey: endpoint.owner_pubkey
+                    ? normalizePubkey(endpoint.owner_pubkey)
+                    : null,
+                  allowedPubkeys: endpoint.allowed_pubkeys.map(normalizePubkey),
+                  allowSharedIdentity: endpoint.allow_shared_identity,
+                  subscribe: endpoint.subscribe,
+                  triggers: endpoint.triggers,
+                  channelOverrides: Object.fromEntries(
+                    Object.entries(endpoint.channel_overrides).map(
+                      ([channelId, override]) => [
+                        channelId,
+                        {
+                          ...(override.require_mention === undefined
+                            ? {}
+                            : { requireMention: override.require_mention }),
+                          ...(override.session_scope
+                            ? { sessionScope: override.session_scope }
+                            : {}),
+                          ...(override.kinds
+                            ? { kinds: [...override.kinds] }
+                            : {}),
+                        },
+                      ],
+                    ),
+                  ),
+                },
+              }
+            : {}),
         })),
         {
           id: `${agent.id}-agent-api`,
@@ -470,7 +954,30 @@ export function normalizeV2(config: ConfigV2): {
           sessionScopes: {},
         },
       ]),
-      sessions: config.sessions,
+      sessions: {
+        ...config.sessions,
+        max_queue_depth_per_conversation:
+          config.limits.max_queue_depth_per_conversation,
+        max_queue_depth_per_agent: config.limits.max_queue_depth_per_agent,
+      },
+      buzzPlatform: config.platforms.buzz,
+      limits: config.limits,
+      retention: config.retention,
+      buzzTools: config.agents.flatMap((agent) => {
+        const tools = agent.tools?.buzz;
+        return tools
+          ? [
+              {
+                agentId: agent.id,
+                policy: tools.policy,
+                defaultEndpointId: tools.default_endpoint_id ?? null,
+                allowedEndpointIds: [...tools.allowed_endpoint_ids],
+                exposePrivateKeyToRunner: tools.expose_private_key_to_runner,
+                acknowledgeDangerous: tools.acknowledge_dangerous,
+              },
+            ]
+          : [];
+      }),
       alertsTarget: config.alerts?.target
         ? {
             endpointId: config.alerts.target.endpoint_id,
@@ -550,6 +1057,41 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       overflow: "queue",
       aliases: [],
     },
+    buzzPlatform: {
+      enabled: false,
+      reconnect: { base_ms: 1000, cap_ms: 30_000 },
+      subscription: {
+        historical_limit: 500,
+        replay_overlap_secs: 300,
+        heartbeat_secs: 30,
+      },
+      message_max_bytes: 65_536,
+    },
+    limits: {
+      dispatch_wait_warn_ms: 30_000,
+      max_queue_depth_per_conversation: 50,
+      max_queue_depth_per_agent: 500,
+      inbound_event_rate_per_endpoint: "600/60s",
+      relay_publish_timeout_ms: 10_000,
+      relay_ok_wait_ms: 5000,
+      reconnect_alert_after_secs: 900,
+      broker_call_timeout_ms: 30_000,
+      buzz_edit_cadence_ms: 2000,
+      typing_min_interval_ms: 4000,
+      presence_min_interval_ms: 30_000,
+      agent_reply_rate_per_conversation: "6/60s",
+      agent_reply_rate_per_endpoint: "60/60s",
+    },
+    retention: {
+      database_size_cap_bytes: 4_294_967_296,
+      inbound_payload_days: 30,
+      inbound_event_days: 90,
+      terminal_turn_days: 90,
+      sent_outbox_days: 14,
+      dead_outbox_days: 90,
+      signed_sent_payload_hours: 24,
+      pending_mutation_days: 30,
+    },
     alertsTarget:
       config.alerts?.via_bot && config.alerts.chat_id !== undefined
         ? {
@@ -578,6 +1120,8 @@ export function upgradeV1Object(config: Config): Record<string, unknown> {
       allowed_user_ids: config.access_control.allowed_user_ids,
     },
     sessions: model.sessions,
+    limits: model.limits,
+    retention: model.retention,
     ...(model.alertsTarget
       ? {
           alerts: {

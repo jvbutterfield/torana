@@ -171,6 +171,8 @@ export class Bot {
     attachmentPaths: string[],
     onTerminal: (outcome: ManagedTurnOutcome) => void,
   ): boolean {
+    const delivery = this.db.getTurnDeliveryContext(turnId);
+    const isBuzz = delivery?.conversation.platform === "buzz";
     const attachments = attachmentPaths.map((path) => ({
       kind: "document" as const,
       path,
@@ -188,41 +190,63 @@ export class Bot {
     };
     unsubs.push(
       session.on("text_delta", (ev) => {
-        if (String(ev.turnId) === tid) {
+        if (String(ev.turnId) === tid && !isBuzz) {
           this.streaming.appendText(this.botConfig.id, ev.text, turnId);
         }
       }),
       session.on("done", (ev) => {
         if (String(ev.turnId) !== tid) return;
-        this.db.completeTurn(turnId);
-        void this.streaming.finalizeTurn(
-          this.botConfig.id,
-          ev.finalText ?? "",
-          turnId,
-        );
+        const finalText = ev.finalText ?? "";
+        if (isBuzz) {
+          this.db.transaction(() => {
+            this.outbox.queueFinalResponse(turnId, finalText);
+            this.db.setTurnFinalText(
+              turnId,
+              finalText,
+              null,
+              ev.durationMs ?? null,
+            );
+            this.db.setTurnSourceEventStatus(turnId, "processed");
+          });
+        } else {
+          this.db.completeTurn(turnId);
+          void this.streaming.finalizeTurn(
+            this.botConfig.id,
+            finalText,
+            turnId,
+          );
+        }
         this.metrics.inc(this.botConfig.id, "turns_completed");
         const srcId = this.db.getTurnSourceUpdateId(turnId);
         if (srcId !== null) this.db.setUpdateStatus(srcId, "processed");
+        this.db.setTurnSourceEventStatus(turnId, "processed");
         cleanup({ kind: "completed" });
       }),
       session.on("error", (ev) => {
         if (String(ev.turnId) !== tid) return;
-        this.db.completeTurn(turnId, ev.message);
-        void this.streaming.finalizeTurn(
-          this.botConfig.id,
-          ev.message || "An error occurred.",
-          turnId,
-        );
+        const display = ev.message || "An error occurred.";
+        if (isBuzz) {
+          this.db.transaction(() => {
+            this.outbox.queueFinalResponse(turnId, display);
+            this.db.completeTurn(turnId, ev.message);
+            this.db.setTurnSourceEventStatus(turnId, "processed");
+          });
+        } else {
+          this.db.completeTurn(turnId, ev.message);
+          void this.streaming.finalizeTurn(this.botConfig.id, display, turnId);
+        }
         this.metrics.inc(this.botConfig.id, "turns_failed");
         const srcId = this.db.getTurnSourceUpdateId(turnId);
         if (srcId !== null) this.db.setUpdateStatus(srcId, "processed");
+        this.db.setTurnSourceEventStatus(turnId, "processed");
         cleanup({ kind: "failed", reason: ev.message });
       }),
       session.on("fatal", (ev) => {
         this.db.interruptTurn(turnId, `runner_${ev.code ?? "unknown"}`);
         const srcId = this.db.getTurnSourceUpdateId(turnId);
         if (srcId !== null) this.db.setUpdateStatus(srcId, "interrupted");
-        this.streaming.cancelTurn(this.botConfig.id, turnId);
+        this.db.setTurnSourceEventStatus(turnId, "interrupted");
+        if (!isBuzz) this.streaming.cancelTurn(this.botConfig.id, turnId);
         cleanup({
           kind: "interrupted",
           reason: `runner_${ev.code ?? "unknown"}`,
@@ -234,18 +258,19 @@ export class Bot {
       this.db.interruptTurn(turnId, reason);
       const srcId = this.db.getTurnSourceUpdateId(turnId);
       if (srcId !== null) this.db.setUpdateStatus(srcId, "interrupted");
-      this.streaming.cancelTurn(this.botConfig.id, turnId);
+      this.db.setTurnSourceEventStatus(turnId, "interrupted");
+      if (!isBuzz) this.streaming.cancelTurn(this.botConfig.id, turnId);
       cleanup({
         kind: reason === "cancelled by operator" ? "cancelled" : "interrupted",
         reason,
       });
     });
-    this.streaming.startTurn(this.botConfig.id, turnId, chatId);
+    if (!isBuzz) this.streaming.startTurn(this.botConfig.id, turnId, chatId);
     const result = session.sendTurn(tid, text, attachments);
     if (!result.accepted) {
       for (const unsub of unsubs) unsub();
       this.managedTurns.delete(turnId);
-      this.streaming.cancelTurn(this.botConfig.id, turnId);
+      if (!isBuzz) this.streaming.cancelTurn(this.botConfig.id, turnId);
       this.log.warn("conversation session rejected turn", {
         session_key: sessionKey,
         turn_id: turnId,
@@ -255,6 +280,7 @@ export class Bot {
     }
     const gen = this.db.incrementWorkerGeneration(this.botConfig.id);
     this.db.startTurn(turnId, gen);
+    this.db.setTurnSourceEventStatus(turnId, "dispatched");
     this.metrics.inc(this.botConfig.id, "turns_dispatched");
     return true;
   }

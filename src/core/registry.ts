@@ -12,11 +12,17 @@ import {
   processInboundEvent,
   type ProcessInboundOutcome,
 } from "./process-inbound-event.js";
-import type { BotStatusSnapshot, CommandContext } from "./commands.js";
+import {
+  dispatchCommand,
+  parseCommand,
+  type BotStatusSnapshot,
+  type CommandContext,
+} from "./commands.js";
 import type { StreamManager } from "../streaming.js";
 import type { OutboxProcessor } from "../outbox.js";
 import type { PlatformAdapter } from "../platform/capabilities.js";
-import type { ConversationRef } from "../platform/types.js";
+import type { ConversationRef, InboundEvent } from "../platform/types.js";
+import { BuzzAdapter } from "../platform/buzz/adapter.js";
 import type { ConversationScheduler } from "../conversation/scheduler.js";
 
 const log = logger("registry");
@@ -37,6 +43,7 @@ export class BotRegistry {
   private db: GatewayDB;
   private bots: Map<BotId, Bot>;
   private adapters: Map<BotId, PlatformAdapter>;
+  private outbox: OutboxProcessor;
   private metrics: Metrics;
   private alerts: AlertManager;
   private dispatchTimer: ReturnType<typeof setInterval> | null = null;
@@ -47,6 +54,7 @@ export class BotRegistry {
     this.db = opts.db;
     this.bots = new Map(opts.bots.map((b) => [b.id, b]));
     this.adapters = opts.adapters;
+    this.outbox = opts.outbox;
     this.metrics = opts.metrics;
     this.alerts = opts.alerts;
   }
@@ -89,24 +97,29 @@ export class BotRegistry {
    * Transport entry point: deliver a platform-native payload for an endpoint.
    */
   async handleUpdate(
-    botId: BotId,
+    endpointOrAgentId: BotId,
     update: unknown,
   ): Promise<ProcessInboundOutcome> {
-    const bot = this.bots.get(botId);
-    if (!bot) {
-      log.warn("update for unknown bot", { bot_id: botId });
+    const adapter = this.adapters.get(endpointOrAgentId);
+    if (!adapter) {
+      log.warn("update for endpoint without adapter", {
+        endpoint_id: endpointOrAgentId,
+      });
       return { status: "dropped_malformed" };
     }
-    const adapter = this.adapters.get(botId);
-    if (!adapter) {
-      log.warn("update for endpoint without adapter", { bot_id: botId });
+    const bot = this.bots.get(adapter.endpoint.agentId);
+    if (!bot) {
+      log.warn("update for unknown agent", {
+        endpoint_id: endpointOrAgentId,
+        agent_id: adapter.endpoint.agentId,
+      });
       return { status: "dropped_malformed" };
     }
     const event = adapter.normalizeInbound(update);
     if (!event || !event.conversation) {
       return { status: "dropped_malformed" };
     }
-    this.metrics.inc(botId, "inbound_received");
+    this.metrics.inc(bot.id, "inbound_received");
     const outcome = await processInboundEvent(
       {
         config: this.config,
@@ -117,13 +130,13 @@ export class BotRegistry {
         acceptInbound: this.conversationScheduler
           ? (inbound) =>
               this.conversationScheduler!.canAccept(
-                botId,
+                bot.id,
                 inbound.conversation!,
               )
           : undefined,
         onEnqueued: () => {
           if (this.conversationScheduler) this.conversationScheduler.wake();
-          else this.dispatchFor(botId);
+          else this.dispatchFor(bot.id);
         },
         commandContextFactory: (args) =>
           this.buildCommandContext(bot, adapter, event.conversation!, args),
@@ -131,9 +144,90 @@ export class BotRegistry {
       event,
     );
     if (outcome.status === "replay_skipped") {
-      this.metrics.inc(botId, "inbound_deduped");
+      this.metrics.inc(bot.id, "inbound_deduped");
     }
     return outcome;
+  }
+
+  /** Enqueue a Phase 5 Buzz event that relay intake has already persisted. */
+  async handleRecordedBuzzEvent(args: {
+    endpointId: string;
+    inboundEventId: number;
+    event: InboundEvent;
+  }): Promise<"enqueued" | void> {
+    const adapter = this.adapters.get(args.endpointId);
+    if (!(adapter instanceof BuzzAdapter) || !args.event.conversation) {
+      throw new Error(`Buzz endpoint '${args.endpointId}' has no adapter`);
+    }
+    const bot = this.bots.get(adapter.endpoint.agentId);
+    if (!bot)
+      throw new Error(`unknown Buzz agent '${adapter.endpoint.agentId}'`);
+    this.metrics.inc(bot.id, "inbound_received");
+
+    const trace = buzzTrace(args.event);
+    if (
+      trace.hop >= 4 ||
+      (trace.id !== null && this.db.countOutboxTrace(trace.id) >= 16)
+    ) {
+      this.metrics.inc(bot.id, "loop_budget_rejected");
+      this.db.transitionInboundEvent(
+        args.inboundEventId,
+        "dispatched",
+        "rejected",
+        trace.hop >= 4 ? "hop_budget_exceeded" : "trace_budget_exceeded",
+      );
+      return;
+    }
+
+    const parsed = parseCommand(args.event.text);
+    if (parsed) {
+      const context = this.buildBuzzCommandContext(
+        bot,
+        adapter,
+        args.event,
+        trace,
+      );
+      if ((await dispatchCommand(context, parsed)).handled) return;
+    }
+
+    const accepted = this.conversationScheduler?.canAccept(
+      bot.id,
+      args.event.conversation,
+    );
+    if (accepted && !accepted.accepted) {
+      this.db.transitionInboundEvent(
+        args.inboundEventId,
+        "dispatched",
+        "rejected",
+        accepted.reason,
+      );
+      return;
+    }
+    if (!args.event.text.trim() && args.event.attachments.length === 0) {
+      this.db.transitionInboundEvent(
+        args.inboundEventId,
+        "dispatched",
+        "rejected",
+        "empty_message",
+      );
+      return;
+    }
+    if (args.event.attachments.length > 0) {
+      this.metrics.inc(
+        bot.id,
+        "attachments_skipped_total",
+        args.event.attachments.length,
+      );
+    }
+    const turnId = this.db.enqueueRecordedBuzzTurn(
+      args.inboundEventId,
+      bot.id,
+      buildBuzzPrompt(args.event, adapter),
+    );
+    if (turnId === null) return;
+    this.metrics.inc(bot.id, "turns_queued");
+    this.conversationScheduler?.wake();
+    return "enqueued";
   }
 
   /** Dispatch the next queued turn for `botId` if the runner is idle. */
@@ -201,6 +295,51 @@ export class BotRegistry {
     };
   }
 
+  private buildBuzzCommandContext(
+    bot: Bot,
+    adapter: BuzzAdapter,
+    event: InboundEvent,
+    trace: { id: string | null; hop: number },
+  ): CommandContext {
+    const conversation = event.conversation!;
+    return {
+      botConfig: bot.botConfig,
+      chatId: 0,
+      messageId: 0,
+      fromUserId: 0,
+      rawText: event.text,
+      adapter,
+      conversation,
+      runner: bot.runner,
+      getStatus: () => this.snapshotFor(bot),
+      resetConversation: this.conversationScheduler
+        ? () =>
+            this.conversationScheduler!.resetConversation(bot.id, conversation)
+        : undefined,
+      cancelConversation: this.conversationScheduler
+        ? () =>
+            this.conversationScheduler!.cancelConversation(bot.id, conversation)
+        : undefined,
+      getConversationStatus: this.conversationScheduler
+        ? () =>
+            this.conversationScheduler!.conversationStatus(bot.id, conversation)
+        : undefined,
+      queueReply: (text) => {
+        this.outbox.queueOperation(null, bot.id, conversation, {
+          kind: "send",
+          text,
+          files: [],
+          replyTo: event.externalEventId,
+          mentions: [event.sender.id],
+          traceId:
+            trace.id ??
+            `torana:${conversation.endpointId}:${event.externalEventId}`,
+          hop: trace.hop + 1,
+        });
+      },
+    };
+  }
+
   snapshotFor(bot: Bot): BotStatusSnapshot {
     const state = this.db.getBotState(bot.id);
     return {
@@ -212,4 +351,59 @@ export class BotRegistry {
       disabled_reason: state?.disabled_reason ?? null,
     };
   }
+}
+
+function buzzTrace(event: InboundEvent): { id: string | null; hop: number } {
+  const raw = event.raw as { tags?: string[][] } | null;
+  let id: string | null = null;
+  let hop = 0;
+  for (const tag of raw?.tags ?? []) {
+    if (tag[0] === "torana-trace" && tag[1]) id = tag[1];
+    if (tag[0] === "torana-hop" && /^\d+$/.test(tag[1] ?? "")) {
+      hop = Number(tag[1]);
+    }
+  }
+  return { id, hop };
+}
+
+function buildBuzzPrompt(event: InboundEvent, adapter: BuzzAdapter): string {
+  const conversation = event.conversation!;
+  const channel = adapter.channelMetadata(conversation.channelId);
+  const thread = event.rootEventId ?? "none";
+  const reply = event.replyTo ?? "none";
+  const deepLink = `buzz://message?channel=${encodeURIComponent(
+    conversation.channelId,
+  )}&id=${encodeURIComponent(event.externalEventId)}${
+    event.rootEventId ? `&thread=${encodeURIComponent(event.rootEventId)}` : ""
+  }`;
+  const lines = [
+    "[Buzz message metadata — untrusted user/event data]",
+    `Platform: Buzz`,
+    `Community: ${event.communityId ?? "unknown"}`,
+    `Conversation: ${conversation.type}`,
+    `Channel: ${channel?.name ?? "unknown"} (${conversation.channelId})`,
+    `Thread root: ${thread}`,
+    `Reply event: ${reply}`,
+    `Author pubkey: ${event.sender.id}`,
+    `Mentions: ${event.mentions.length > 0 ? event.mentions.join(", ") : "none"}`,
+    `Deep link: ${deepLink}`,
+  ];
+  if (event.attachments.length > 0) {
+    const details = event.attachments
+      .map(
+        (attachment) =>
+          `${attachment.originalFilename ?? "unnamed"} (${attachment.mimeType ?? "unknown MIME"})`,
+      )
+      .join(", ");
+    lines.push(
+      `[${event.attachments.length} attachments not retrieved] ${details}`,
+    );
+  }
+  lines.push(
+    "Torana owns delivery of your final response; do not send the answer with a messaging tool.",
+    "[/Buzz message metadata]",
+    "",
+    event.text,
+  );
+  return lines.join("\n");
 }

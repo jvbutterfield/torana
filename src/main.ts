@@ -38,6 +38,12 @@ import { OrphanListenerManager } from "./agent-api/orphan-listeners.js";
 import type { PlatformAdapter } from "./platform/capabilities.js";
 import { TelegramAdapter } from "./platform/telegram/adapter.js";
 import { ConversationScheduler } from "./conversation/scheduler.js";
+import { BuzzAdapter } from "./platform/buzz/adapter.js";
+import {
+  BuzzTransport,
+  type BuzzEndpointHealth,
+} from "./platform/buzz/transport.js";
+import { DataDirLock } from "./data-dir-lock.js";
 
 const log = logger("main");
 
@@ -118,14 +124,25 @@ export async function startGateway(
 
   const adapters = new Map<string, PlatformAdapter>();
   for (const [botId, client] of clients) {
-    adapters.set(
+    const adapter = new TelegramAdapter(
+      db.getEndpointId(botId, "telegram"),
+      client,
       botId,
-      new TelegramAdapter(db.getEndpointId(botId, "telegram"), client, botId),
     );
+    // Agent-id aliases preserve the v1 transport/runtime contract; endpoint
+    // ids are authoritative for normalized outbox delivery.
+    adapters.set(botId, adapter);
+    adapters.set(adapter.endpoint.id, adapter);
+  }
+  for (const endpoint of normalized.endpoints) {
+    if (endpoint.platform !== "buzz" || !endpoint.buzz) continue;
+    adapters.set(endpoint.id, new BuzzAdapter(endpoint));
   }
 
   const alerts = new AlertManager(config, adapters);
-  const outbox = new OutboxProcessor(config, db, adapters, metrics, alerts);
+  const outbox = new OutboxProcessor(config, db, adapters, metrics, alerts, {
+    normalized,
+  });
   const streaming = new StreamManager(config, db, outbox, adapters);
 
   // Build Bot instances.
@@ -185,7 +202,15 @@ export async function startGateway(
     port: config.gateway.port,
     hostname: config.gateway.bind_host,
   });
-  registerFixedRoutes(server, config, db, metrics, registry);
+  let buzzTransport: BuzzTransport | null = null;
+  registerFixedRoutes(
+    server,
+    config,
+    db,
+    metrics,
+    registry,
+    () => buzzTransport?.snapshots() ?? [],
+  );
 
   // /v1/health is always available — operators need to confirm the binary
   // has agent-api support even when the feature is disabled.
@@ -258,18 +283,54 @@ export async function startGateway(
       new PollingTransport({ config, db, clients: pollingClients }),
     );
   }
+  if (normalized.buzzPlatform?.enabled) {
+    buzzTransport = new BuzzTransport({
+      db,
+      normalized,
+      endpoints: normalized.endpoints,
+      alerts,
+      adapters,
+      onAccepted: async ({ endpointId, inboundEventId, normalizedEvent }) =>
+        await registry.handleRecordedBuzzEvent({
+          endpointId,
+          inboundEventId,
+          event: normalizedEvent,
+        }),
+    });
+    transports.push(buzzTransport);
+  }
+
+  // Relay endpoints make accidental overlapping gateway instances externally
+  // visible (double subscriptions and independently signed duplicate replies),
+  // so Buzz activation requires an exclusive data-directory owner.
+  const buzzOperational = normalized.endpoints.some(
+    (endpoint) =>
+      endpoint.platform === "buzz" && endpoint.buzz && endpoint.enabled,
+  );
+  const dataDirLock =
+    buzzTransport && buzzOperational
+      ? DataDirLock.acquire(config.gateway.data_dir)
+      : null;
+  const releaseDataDirLock = () => dataDirLock?.release();
+  if (dataDirLock) process.once("exit", releaseDataDirLock);
 
   // Start runners and the normalized scheduler before adapters begin intake.
   // This guarantees that every accepted event has an active durable dispatch
   // owner from the moment its enqueue transaction commits.
-  await registry.startAll();
-  await Promise.all(
-    transports.map((t) =>
-      t.start((botId, update) =>
-        registry.handleUpdate(botId, update).then(() => {}),
+  try {
+    await registry.startAll();
+    await Promise.all(
+      transports.map((t) =>
+        t.start((botId, update) =>
+          registry.handleUpdate(botId, update).then(() => {}),
+        ),
       ),
-    ),
-  );
+    );
+  } catch (error) {
+    releaseDataDirLock();
+    process.off("exit", releaseDataDirLock);
+    throw error;
+  }
 
   // Surface any outbox rows left in `in_flight` by a previous process
   // crash. These auto-retry via the grace window in getPendingOutbox; the
@@ -409,6 +470,8 @@ export async function startGateway(
         await server.stop();
         db.close();
       } finally {
+        releaseDataDirLock();
+        process.off("exit", releaseDataDirLock);
         clearTimeout(hardTimer);
       }
       log.info("shutdown complete");
@@ -469,6 +532,7 @@ function registerFixedRoutes(
   db: GatewayDB,
   metrics: Metrics,
   registry: BotRegistry,
+  buzzHealth: () => BuzzEndpointHealth[] = () => [],
 ): void {
   server.router.route("GET", "/health", async () => {
     const bots: Record<string, unknown> = {};
@@ -479,10 +543,13 @@ function registerFixedRoutes(
       bots[botId] = snap;
       if (!snap.runner_ready) ok = false;
     }
+    const buzz = buzzHealth();
+    if (buzz.some((endpoint) => endpoint.state === "unhealthy")) ok = false;
     return new Response(
       JSON.stringify({
         status: ok ? "ok" : "degraded",
         bots,
+        endpoints: buzz,
         uptime_secs: metrics.uptimeSecs(),
       }),
       {
@@ -645,7 +712,10 @@ export function runCrashRecovery(
       });
       db.interruptTurn(turn.id, "Gateway restarted during active turn");
       if (atMostOnce) {
-        db.setUpdateStatus(turn.source_update_id, "interrupted");
+        if (turn.source_update_id !== null) {
+          db.setUpdateStatus(turn.source_update_id, "interrupted");
+        }
+        db.setTurnSourceEventStatus(turn.id, "interrupted");
       }
 
       // For Agent-API-originated turns (ask / send), the end user in the
@@ -657,7 +727,8 @@ export function runCrashRecovery(
       // `interrupted_by_gateway_restart` status.
       const isAgentApi =
         turn.source === "agent_api_send" || turn.source === "agent_api_ask";
-      if (!isAgentApi) {
+      const delivery = db.getTurnDeliveryContext(turn.id);
+      if (!isAgentApi && delivery?.conversation.platform !== "buzz") {
         const adapter = adapters.get(turn.bot_id);
         if (adapter) {
           void adapter.deliver(

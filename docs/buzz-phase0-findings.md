@@ -144,4 +144,4 @@ This exceeds the required 30% memory headroom by 13.1 percentage points. The 12-
 
 There are no remaining Phase 0 blockers. All gates in §11 of the implementation plan have reproducible evidence, and no additional internal design inconsistency is known. Phase 1 may start using the approved session defaults above.
 
-Later-phase questions remain owned by their assigned gates, notably auth-tag refresh semantics before the first production Buzz endpoint and Linux Buzz distribution during the tool-broker phase; neither blocks Phase 1's platform-neutral core work.
+The later auth-tag refresh question is now closed: Block's NIP-AA contract treats the owner tag as a reusable capability on fresh NIP-42 connections, subject to owner membership and any explicit time condition. Linux Buzz distribution remains owned by the tool-broker phase and does not block the platform-neutral core work.

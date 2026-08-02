@@ -1,10 +1,9 @@
 import type { BotId } from "../config/schema.js";
 import type { TelegramUpdate } from "../telegram/types.js";
-
-export type TransportKind = "webhook" | "polling";
+export type TransportKind = "webhook" | "polling" | "buzz";
 
 export type OnUpdateHandler = (
-  botId: BotId,
+  endpointOrAgentId: BotId,
   update: TelegramUpdate,
 ) => Promise<void>;
 

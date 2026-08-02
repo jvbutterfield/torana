@@ -23,6 +23,8 @@ export interface CommandContext {
   resetConversation?: () => Promise<string>;
   cancelConversation?: () => Promise<string>;
   getConversationStatus?: () => string;
+  /** Durable platform-owned reply path used by Buzz owner controls. */
+  queueReply?: (text: string) => void;
 }
 
 export interface BotStatusSnapshot {
@@ -36,12 +38,12 @@ export interface BotStatusSnapshot {
 
 export type CommandResult = { handled: true } | { handled: false };
 
-/** Parse a leading /command from text. Returns null if the message isn't a command. */
+/** Parse a leading platform command from text. */
 export function parseCommand(
   text: string,
 ): { trigger: string; rest: string } | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return null;
+  if (!trimmed.startsWith("/") && !trimmed.startsWith("!")) return null;
   const space = trimmed.search(/\s/);
   if (space === -1) return { trigger: trimmed, rest: "" };
   return { trigger: trimmed.slice(0, space), rest: trimmed.slice(space + 1) };
@@ -51,12 +53,30 @@ export async function dispatchCommand(
   ctx: CommandContext,
   parsed: { trigger: string; rest: string },
 ): Promise<CommandResult> {
+  const intrinsicBuzzAction =
+    ctx.conversation.platform === "buzz"
+      ? (
+          {
+            "!rotate": "builtin:reset",
+            "!cancel": "builtin:cancel",
+            "!status": "builtin:status",
+            "!health": "builtin:health",
+          } as const
+        )[
+          parsed.trigger.toLowerCase() as
+            | "!rotate"
+            | "!cancel"
+            | "!status"
+            | "!health"
+        ]
+      : undefined;
   const binding = ctx.botConfig.commands.find(
     (c) => c.trigger === parsed.trigger,
   );
-  if (!binding) return { handled: false };
+  const action = binding?.action ?? intrinsicBuzzAction;
+  if (!action) return { handled: false };
 
-  switch (binding.action) {
+  switch (action) {
     case "builtin:reset":
       await handleReset(ctx);
       return { handled: true };
@@ -132,6 +152,10 @@ async function handleHealth(ctx: CommandContext): Promise<void> {
 }
 
 async function sendReply(ctx: CommandContext, text: string): Promise<void> {
+  if (ctx.queueReply) {
+    ctx.queueReply(text);
+    return;
+  }
   if (supports(ctx.adapter, "send")) {
     await ctx.adapter.deliver(ctx.conversation, {
       kind: "send",
