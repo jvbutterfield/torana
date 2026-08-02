@@ -1197,7 +1197,7 @@ Gate:
 - no Buzz code exists in the production path yet;
 - snapshot comparison shows identical Telegram requests for representative turns.
 
-**Completion evidence (2026-08-01):** the production gateway now normalizes Telegram updates through `TelegramAdapter` and processes them through the platform-neutral inbound path. Registry, bot runtime, streaming, outbox, alerts, and commands depend on `PlatformAdapter`; Telegram send/edit/reaction/typing/download calls remain inside the adapter. The existing full round-trip integration contract passes through these interfaces, and the adapter contract asserts the exact Telegram request bodies for send, edit, reaction, typing, and HTML fallback. The complete repository suite passes with 1,282 tests passed, 13 intentionally skipped, and zero failures; typecheck and format verification also pass. Production contains no Buzz integration code yet.
+**Completion evidence (2026-08-01):** the production gateway now normalizes Telegram updates through `TelegramAdapter` and processes them through the platform-neutral inbound path. Registry, bot runtime, streaming, outbox, alerts, and commands depend on `PlatformAdapter`; Telegram send/edit/reaction/typing/download calls remain inside the adapter. The existing full round-trip integration contract passes through these interfaces, and the adapter contract asserts the exact Telegram request bodies for send, edit, reaction, typing, and HTML fallback. The complete repository suite passes with 1,282 tests passed, 13 intentionally skipped, and zero failures; typecheck, lint, format verification, and the production build also pass. Production contains no Buzz integration code yet.
 
 ### Phase 2 — configuration v2 and normalized persistence
 

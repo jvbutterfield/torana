@@ -10,7 +10,7 @@
 //     to choose between the two surfaces; the legacy parseArgs is preserved
 //     unmodified so existing test imports keep working.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import { loadConfigFromFile, ConfigLoadError } from "./config/load.js";
@@ -250,6 +250,7 @@ async function main(argv: string[]): Promise<void> {
         }
       }
       process.exit(result.checks.some((c) => c.status === "fail") ? 1 : 0);
+      return;
     }
     case "migrate": {
       const path = resolveConfigPath(args.configPath);

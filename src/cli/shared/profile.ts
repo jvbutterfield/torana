@@ -31,6 +31,8 @@ import {
   statSync,
   chmodSync,
   mkdirSync,
+  readFileSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -129,8 +131,6 @@ export function saveProfiles(path: string, state: ProfileState): void {
   // Ensure even if umask stripped bits on creation.
   chmodSync(tmp, 0o600);
   // rename is atomic on POSIX; on collision it replaces the target.
-  // Using fs.renameSync for sync behavior.
-  const { renameSync } = require("node:fs") as typeof import("node:fs");
   renameSync(tmp, path);
   // Re-chmod after rename — on some filesystems rename preserves source
   // perms, but paranoia costs nothing here.
@@ -138,7 +138,6 @@ export function saveProfiles(path: string, state: ProfileState): void {
 }
 
 function readFileSafe(path: string): string {
-  const { readFileSync } = require("node:fs") as typeof import("node:fs");
   return readFileSync(path, "utf-8");
 }
 

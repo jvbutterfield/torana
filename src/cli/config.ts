@@ -35,7 +35,6 @@ import {
   saveProfiles,
   upsertProfile,
   type Profile,
-  type ProfileState,
 } from "./shared/profile.js";
 
 const CONFIG_HELP = `Usage: torana config <subcommand> [options]

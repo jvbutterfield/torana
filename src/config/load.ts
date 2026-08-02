@@ -364,7 +364,7 @@ function resolveAgentApiTokens(
 function isLiteralTokenInRaw(raw: string, tokenName: string): boolean {
   // Best-effort: find the line `name: <tokenName>` and then look forward
   // a few lines for the next `secret_ref:` value.
-  const re = new RegExp(`name:\\s*['\"]?${escapeRegExp(tokenName)}['\"]?`);
+  const re = new RegExp(`name:\\s*['"]?${escapeRegExp(tokenName)}['"]?`);
   const match = re.exec(raw);
   if (!match) return false;
   const tail = raw.slice(match.index, match.index + 400);

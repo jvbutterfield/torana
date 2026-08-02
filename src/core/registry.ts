@@ -4,7 +4,7 @@
 
 import { logger } from "../log.js";
 import type { AlertManager } from "../alerts.js";
-import type { BotConfig, BotId, Config } from "../config/schema.js";
+import type { BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { Metrics } from "../metrics.js";
 import { Bot } from "./bot.js";

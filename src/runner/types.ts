@@ -239,7 +239,6 @@ export class RunnerEventEmitter {
         handler(event);
       } catch (err) {
         // Handler errors are swallowed so one bad listener doesn't break the runner.
-        // eslint-disable-next-line no-console
         console.error("runner event handler threw", err);
       }
     }
