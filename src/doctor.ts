@@ -9,6 +9,7 @@
 import { existsSync, statSync } from "node:fs";
 import { resolve, isAbsolute } from "node:path";
 import { platform } from "node:os";
+import { Database } from "bun:sqlite";
 
 import type { Config } from "./config/schema.js";
 import { TelegramClient } from "./telegram/client.js";
@@ -30,6 +31,8 @@ export interface DoctorOptions {
   configPath: string;
   /** Test override — inject a fake fetch for network checks. */
   fetchImpl?: typeof fetch;
+  /** Original public config version before normalization. */
+  sourceConfigVersion?: 1 | 2;
 }
 
 export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
@@ -71,10 +74,44 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
   try {
     const plan = planMigration(config.gateway.db_path!);
     if (plan.steps.length === 0) {
+      let vacuumDetail = "";
+      if (plan.currentVersion === 5) {
+        const db = new Database(config.gateway.db_path!, { readonly: true });
+        try {
+          const mode = db.query("PRAGMA auto_vacuum").get() as {
+            auto_vacuum: number;
+          };
+          if (mode.auto_vacuum !== 2) {
+            checks.push({
+              id: "C003",
+              status: "fail",
+              detail:
+                "DB schema is v5 but incremental auto-vacuum is not enabled",
+            });
+            vacuumDetail = "failed";
+          }
+        } finally {
+          db.close();
+        }
+      }
+      if (vacuumDetail === "failed") {
+        // Failure already recorded with the repair-relevant detail.
+      } else {
+        checks.push({
+          id: "C003",
+          status: "ok",
+          detail: `DB user_version=${plan.currentVersion} (current)`,
+        });
+      }
+    } else if (
+      plan.currentVersion === 3 &&
+      (opts.sourceConfigVersion ?? 1) === 1
+    ) {
       checks.push({
         id: "C003",
-        status: "ok",
-        detail: `DB user_version=${plan.currentVersion} (current)`,
+        status: "warn",
+        detail:
+          "DB user_version=3 (compatibility bridge mode; schema-v5 migration available)",
       });
     } else {
       checks.push({

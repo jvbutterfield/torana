@@ -243,6 +243,28 @@ export function telegramConversation(
   };
 }
 
+/** Numeric compatibility projection used only by the schema-v3/v1 bridge. */
+export function telegramLegacyIds(event: InboundEvent): {
+  updateId: number;
+  chatId: number;
+  messageId: number;
+  fromUserId: number;
+} {
+  if (
+    event.platform !== "telegram" ||
+    !event.conversation ||
+    !event.externalMessageId
+  ) {
+    throw new Error("legacy bridge accepts only Telegram message events");
+  }
+  return {
+    updateId: decimalId(event.externalEventId, "Telegram update ID"),
+    chatId: decimalId(event.conversation.channelId, "Telegram chat ID"),
+    messageId: decimalId(event.externalMessageId, "Telegram message ID"),
+    fromUserId: decimalId(event.sender.id, "Telegram user ID"),
+  };
+}
+
 export function coerceTelegramAdapters(
   sources: ReadonlyMap<BotId, TelegramClient | PlatformAdapter>,
 ): Map<BotId, PlatformAdapter> {

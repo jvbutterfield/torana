@@ -1,6 +1,6 @@
--- torana v2 schema. Single source of truth — migrate.ts applies this on
--- fresh installs; migrations/0001_persona_to_bot_id.sql upgrades v0 →v1, and
--- migrations/0002_agent_api.sql upgrades v1→v2.
+-- Legacy-compatible schema base. Fresh installs immediately apply the
+-- expand-only 0004/0005 schema-v5 migrations; existing v0-v4 databases use
+-- the same ordered migration chain.
 --
 -- Keep columns ordered logically. Indexes at the bottom.
 

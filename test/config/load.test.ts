@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import yaml from "js-yaml";
 import {
   loadConfigFromString,
   interpolate,
@@ -11,6 +12,8 @@ import {
   setLogLevel,
   setSecrets,
 } from "../../src/log.js";
+import { upgradeV1Object } from "../../src/config/v2.js";
+import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 const MINIMAL = `
 version: 1
@@ -31,6 +34,38 @@ bots:
 `;
 
 describe("config/load", () => {
+  test("normalizes a v2 Telegram config while preserving its endpoint id", () => {
+    const v1 = makeTestConfig([makeTestBotConfig("alpha")]);
+    const upgraded = upgradeV1Object(v1);
+    const loaded = loadConfigFromString(yaml.dump(upgraded), {
+      skipInterpolation: true,
+    });
+    expect(loaded.normalized.sourceVersion).toBe(2);
+    expect(loaded.normalized.endpoints[0]?.id).toBe("alpha-telegram");
+    expect(loaded.config.bots[0]?.id).toBe("alpha");
+    expect(loaded.config.bots[0]?.token).toBe(v1.bots[0]?.token);
+  });
+
+  test("v2 rejects duplicate endpoint ids and enabled Buzz endpoints", () => {
+    const v1 = makeTestConfig([
+      makeTestBotConfig("alpha"),
+      makeTestBotConfig("beta"),
+    ]);
+    const upgraded = upgradeV1Object(v1) as any;
+    upgraded.agents[1].endpoints[0].id = "alpha-telegram";
+    upgraded.agents[0].endpoints.push({
+      id: "alpha-buzz",
+      platform: "buzz",
+      enabled: true,
+      community_id: "team",
+      relay_url: "wss://relay.example.com",
+      private_key: "secret",
+    });
+    expect(() =>
+      loadConfigFromString(yaml.dump(upgraded), { skipInterpolation: true }),
+    ).toThrow(/globally unique|Phase 4/);
+  });
+
   test("accepts a minimal polling config", () => {
     const { config } = loadConfigFromString(MINIMAL);
     expect(config.version).toBe(1);

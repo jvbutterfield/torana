@@ -116,13 +116,13 @@ describe("db/migrate", () => {
     const dbPath = join(tmpDir, "fresh.db");
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(null);
-    expect(plan.targetVersion).toBe(3);
+    expect(plan.targetVersion).toBe(5);
 
     const db = new Database(dbPath);
     const user = (
       db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(3);
+    expect(user).toBe(5);
 
     // inbound_updates has bot_id, not persona
     const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{
@@ -139,6 +139,9 @@ describe("db/migrate", () => {
     expect(names).toContain("user_chats");
     expect(names).toContain("agent_api_idempotency");
     expect(names).toContain("side_sessions");
+    expect(names).toContain("endpoints");
+    expect(names).toContain("conversations");
+    expect(names).toContain("inbound_events");
 
     // turns gains agent_api columns
     const turnsCols = (
@@ -161,24 +164,26 @@ describe("db/migrate", () => {
     db.close();
   });
 
-  test("v0 → v3 renames column + applies 0001/0002/0003", () => {
+  test("v0 → v5 preserves history and applies all compatibility steps", () => {
     const dbPath = join(tmpDir, "v0-upgrade.db");
     seedV0Schema(dbPath);
 
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(0);
-    expect(plan.targetVersion).toBe(3);
+    expect(plan.targetVersion).toBe(5);
     expect(plan.steps.map((s) => s.id)).toEqual([
       "0001_persona_to_bot_id",
       "0002_agent_api",
       "0003_runner_session_resume",
+      "0004_normalized_platform_state",
+      "0005_normalized_turns_outbox",
     ]);
 
     const db = new Database(dbPath);
     const user = (
       db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(3);
+    expect(user).toBe(5);
 
     // status remap (from 0001)
     const rows = db
@@ -200,6 +205,46 @@ describe("db/migrate", () => {
       )
       .get() as { bot_id: string };
     expect(one.bot_id).toBe("cato");
+
+    const normalized = db
+      .query(
+        `SELECT ie.external_event_id, ie.payload_sha256,
+                c.external_conversation_id, c.session_key
+         FROM inbound_events ie
+         JOIN conversations c ON c.id=ie.conversation_id
+         WHERE ie.endpoint_id='cato-telegram'
+         ORDER BY ie.received_seq`,
+      )
+      .all() as Array<{
+      external_event_id: string;
+      payload_sha256: string;
+      external_conversation_id: string;
+      session_key: string;
+    }>;
+    expect(normalized.map((row) => row.external_event_id)).toEqual([
+      "100",
+      "101",
+      "102",
+      "103",
+    ]);
+    expect(normalized.every((row) => row.payload_sha256.length === 64)).toBe(
+      true,
+    );
+    expect(normalized[0]?.external_conversation_id).toBe("111");
+    expect(normalized[0]?.session_key).toBe("legacy:cato");
+
+    const migratedTurn = db
+      .query(
+        "SELECT agent_id, conversation_id, source_event_id FROM turns WHERE id=1",
+      )
+      .get() as {
+      agent_id: string;
+      conversation_id: number;
+      source_event_id: number;
+    };
+    expect(migratedTurn.agent_id).toBe("cato");
+    expect(migratedTurn.conversation_id).toBeGreaterThan(0);
+    expect(migratedTurn.source_event_id).toBeGreaterThan(0);
 
     // bot_state exists (from 0001)
     const tbl = db
@@ -231,7 +276,7 @@ describe("db/migrate", () => {
     expect(plan.steps.length).toBe(0);
   });
 
-  test("v1 → v3 applies 0002 + 0003", () => {
+  test("v1 → v5 applies 0002 through 0005", () => {
     const dbPath = join(tmpDir, "v1-upgrade.db");
     // Build a v1 DB by running the 0001 migration on a v0 DB, then
     // resetting user_version to 1 (simulating a v1-shipped install).
@@ -254,10 +299,12 @@ describe("db/migrate", () => {
 
     const plan = planMigration(dbPath);
     expect(plan.currentVersion).toBe(1);
-    expect(plan.targetVersion).toBe(3);
+    expect(plan.targetVersion).toBe(5);
     expect(plan.steps.map((s) => s.id)).toEqual([
       "0002_agent_api",
       "0003_runner_session_resume",
+      "0004_normalized_platform_state",
+      "0005_normalized_turns_outbox",
     ]);
 
     applyMigrations(dbPath);
@@ -266,11 +313,11 @@ describe("db/migrate", () => {
     const user = (
       db2.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(3);
+    expect(user).toBe(5);
     db2.close();
   });
 
-  test("v2 → v3 applies 0003 only", () => {
+  test("v2 → v5 applies 0003 through 0005", () => {
     const dbPath = join(tmpDir, "v2-upgrade.db");
     // Build a v2 DB by running 0001 + 0002 manually.
     seedV0Schema(dbPath);
@@ -308,8 +355,12 @@ describe("db/migrate", () => {
 
     const plan = planMigration(dbPath);
     expect(plan.currentVersion).toBe(2);
-    expect(plan.targetVersion).toBe(3);
-    expect(plan.steps.map((s) => s.id)).toEqual(["0003_runner_session_resume"]);
+    expect(plan.targetVersion).toBe(5);
+    expect(plan.steps.map((s) => s.id)).toEqual([
+      "0003_runner_session_resume",
+      "0004_normalized_platform_state",
+      "0005_normalized_turns_outbox",
+    ]);
 
     applyMigrations(dbPath);
 
@@ -317,7 +368,7 @@ describe("db/migrate", () => {
     const user = (
       db2.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(3);
+    expect(user).toBe(5);
     const cols = (
       db2.query("PRAGMA table_info(worker_state)").all() as Array<{
         name: string;

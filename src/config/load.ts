@@ -4,6 +4,13 @@ import { isAbsolute, resolve, dirname } from "node:path";
 import yaml from "js-yaml";
 import { ZodError } from "zod";
 import { ConfigSchema, type Config, SECRET_PATHS } from "./schema.js";
+import {
+  ConfigV2Schema,
+  normalizeV2,
+  normalizedV1Model,
+  type ConfigV2,
+  type NormalizedConfigModel,
+} from "./v2.js";
 
 export class ConfigLoadError extends Error {
   constructor(
@@ -189,6 +196,8 @@ export interface ResolvedAgentApiToken {
 
 export interface LoadedConfig {
   config: Config;
+  /** Public v1/v2 configuration normalized into platform-neutral metadata. */
+  normalized: NormalizedConfigModel;
   /** Absolute path the config was loaded from (empty for string loads). */
   sourcePath: string;
   /** Values pulled from the resolved config whose slots are marked secret — for the log redactor. */
@@ -225,8 +234,18 @@ export function loadConfigFromString(
   }
 
   let config: Config;
+  let normalized: NormalizedConfigModel;
+  let parsedV2: ConfigV2 | null = null;
   try {
-    config = ConfigSchema.parse(parsed);
+    if ((parsed as { version?: unknown }).version === 2) {
+      parsedV2 = ConfigV2Schema.parse(parsed);
+      const result = normalizeV2(parsedV2);
+      config = result.config;
+      normalized = result.model;
+    } else {
+      config = ConfigSchema.parse(parsed);
+      normalized = normalizedV1Model(config);
+    }
   } catch (err) {
     if (err instanceof ZodError) {
       const issues = err.issues.map((i) => ({
@@ -282,6 +301,15 @@ export function loadConfigFromString(
   }
 
   const warnings: string[] = [];
+  const suppliedDeprecatedSideSessions =
+    parsedV2 !== null &&
+    (parsed as { agent_api?: { side_sessions?: unknown } }).agent_api
+      ?.side_sessions !== undefined;
+  if (suppliedDeprecatedSideSessions) {
+    warnings.push(
+      "agent_api.side_sessions is deprecated in config v2; sessions.* is authoritative",
+    );
+  }
   const agentApiTokens = resolveAgentApiTokens(config, raw, warnings);
 
   // Dashboard: full-request passthrough + non-loopback target sends client
@@ -301,8 +329,9 @@ export function loadConfigFromString(
 
   return {
     config,
+    normalized,
     sourcePath: opts.filePath ?? "",
-    secrets: collectSecrets(config, agentApiTokens),
+    secrets: collectSecrets(config, agentApiTokens, parsedV2),
     agentApiTokens,
     warnings,
   };
@@ -389,6 +418,7 @@ function pathToString(segments: (string | number)[]): string {
 function collectSecrets(
   config: Config,
   agentApiTokens: ResolvedAgentApiToken[] = [],
+  publicV2: ConfigV2 | null = null,
 ): string[] {
   const secrets = new Set<string>();
   if (config.transport.webhook?.secret)
@@ -404,6 +434,13 @@ function collectSecrets(
   }
   for (const tok of agentApiTokens) {
     if (tok.secret) secrets.add(tok.secret);
+  }
+  for (const agent of publicV2?.agents ?? []) {
+    for (const endpoint of agent.endpoints) {
+      if (endpoint.platform !== "buzz") continue;
+      secrets.add(endpoint.private_key);
+      if (endpoint.auth_tag) secrets.add(endpoint.auth_tag);
+    }
   }
   // Redact every configured secret. Schema validation already enforces a
   // 32-char minimum on webhook + agent-api secrets; bot tokens come from

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
 import type { ResolvedAgentApiToken } from "./config/load.js";
+import { normalizedV1Model, type NormalizedConfigModel } from "./config/v2.js";
 import {
   logger,
   setLogLevel,
@@ -45,6 +46,8 @@ export interface StartOptions {
   autoMigrate?: boolean;
   /** Resolved agent-api tokens from load.ts — empty when the feature is disabled. */
   agentApiTokens?: ResolvedAgentApiToken[];
+  /** Platform-neutral endpoint/session metadata from either config version. */
+  normalized?: NormalizedConfigModel;
 }
 
 export interface RunningGateway {
@@ -58,6 +61,7 @@ export async function startGateway(
   opts: StartOptions,
 ): Promise<RunningGateway> {
   const { config } = opts;
+  const normalized = opts.normalized ?? normalizedV1Model(config);
   setLogLevel(config.gateway.log_level);
   setLogFormat(config.gateway.log_format ?? autoFormat());
   setSecrets(opts.secrets);
@@ -80,15 +84,23 @@ export async function startGateway(
     // Lightly check: if DB needs migration and autoMigrate not set, fail loudly.
     const { planMigration } = await import("./db/migrate.js");
     const plan = planMigration(dbPath);
-    if (plan.steps.length > 0) {
+    const bridgeOnV3 =
+      normalized.sourceVersion === 1 && plan.currentVersion === 3;
+    if (plan.steps.length > 0 && !bridgeOnV3) {
       throw new Error(
         `database schema is not current (from=${plan.currentVersion} to=${plan.targetVersion}).\n` +
           `Run 'torana migrate --config <path>' first, or pass --auto-migrate.`,
       );
     }
+    if (bridgeOnV3) {
+      log.warn(
+        "running the compatibility bridge on schema v3; use 'torana migrate --to 5' during the maintenance window",
+      );
+    }
   }
 
   const db = new GatewayDB(dbPath);
+  db.syncNormalizedConfig(normalized);
   const metrics = new Metrics(config);
 
   const clients = new Map<string, TelegramClient>();
@@ -105,7 +117,10 @@ export async function startGateway(
 
   const adapters = new Map<string, PlatformAdapter>();
   for (const [botId, client] of clients) {
-    adapters.set(botId, new TelegramAdapter(botId, client));
+    adapters.set(
+      botId,
+      new TelegramAdapter(db.getEndpointId(botId, "telegram"), client, botId),
+    );
   }
 
   const alerts = new AlertManager(config, adapters);

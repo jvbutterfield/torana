@@ -2,6 +2,13 @@ import { Database, type Statement } from "bun:sqlite";
 import { chmodSync, existsSync } from "node:fs";
 import { logger } from "../log.js";
 import type { BotId } from "../config/schema.js";
+import type { NormalizedConfigModel } from "../config/v2.js";
+import type {
+  ConversationRef,
+  InboundEvent,
+  OutboundOperation,
+} from "../platform/types.js";
+import { createHash } from "node:crypto";
 
 const log = logger("db");
 
@@ -34,9 +41,13 @@ function chmodDbFiles(dbPath: string): void {
   }
 }
 
-/** Wrapper around the SQLite state. Keyed on bot_id throughout (v1 schema). */
+/** Schema-v5 wrapper. Legacy bot/Telegram columns are dual-written for rollback. */
 export class GatewayDB {
   private _db: Database;
+  private normalizedSchema: boolean;
+  private endpointByAgentPlatform = new Map<string, string>();
+  private sessionScopeByAgent = new Map<string, string>();
+  private enabledEndpointIds = new Set<string>();
   private stmts!: {
     insertUpdate: Statement;
     getUpdateStatus: Statement;
@@ -110,6 +121,22 @@ export class GatewayDB {
     this._db.exec("PRAGMA busy_timeout=5000");
     this._db.exec("PRAGMA synchronous=NORMAL");
     this._db.exec("PRAGMA foreign_keys=ON");
+    this.normalizedSchema = !!this._db
+      .query(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='endpoints'",
+      )
+      .get();
+    if (this.normalizedSchema) {
+      const mode = this._db.query("PRAGMA auto_vacuum").get() as {
+        auto_vacuum: number;
+      };
+      if (mode.auto_vacuum !== 2) {
+        this._db.close();
+        throw new Error(
+          "schema v5 requires incremental auto-vacuum; rerun the schema-v5 migration maintenance step",
+        );
+      }
+    }
     // Run AFTER the WAL pragma has forced the -wal/-shm sidecars into
     // existence so we lock them all down in one pass. Owner rw / group-
     // world no-access (0600).
@@ -137,12 +164,21 @@ export class GatewayDB {
 
   private prepareStatements(): void {
     const d = this._db;
+    const v5 = this.normalizedSchema;
     this.stmts = {
-      insertUpdate: d.prepare(`
+      insertUpdate: d.prepare(
+        v5
+          ? `
+        INSERT INTO inbound_updates (bot_id, agent_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (bot_id, telegram_update_id) DO NOTHING
+      `
+          : `
         INSERT INTO inbound_updates (bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (bot_id, telegram_update_id) DO NOTHING
-      `),
+      `,
+      ),
       getUpdateStatus: d.prepare(
         "SELECT id, status FROM inbound_updates WHERE bot_id = ? AND telegram_update_id = ?",
       ),
@@ -150,7 +186,15 @@ export class GatewayDB {
         "UPDATE inbound_updates SET status = ? WHERE id = ?",
       ),
       createTurn: d.prepare(
-        "INSERT INTO turns (bot_id, chat_id, source_update_id, attachment_paths_json) VALUES (?, ?, ?, ?)",
+        v5
+          ? `
+        INSERT INTO turns
+          (bot_id, agent_id, chat_id, source_update_id, attachment_paths_json,
+           conversation_id, session_key, source_platform, source_event_id,
+           prompt_text, prompt_markdown, prompt_revision_seq)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+          : "INSERT INTO turns (bot_id, chat_id, source_update_id, attachment_paths_json) VALUES (?, ?, ?, ?)",
       ),
       startTurn: d.prepare(
         "UPDATE turns SET status = 'running', started_at = datetime('now'), worker_generation = ? WHERE id = ?",
@@ -189,7 +233,16 @@ export class GatewayDB {
         "UPDATE outbox SET status = 'failed', last_error = ? WHERE turn_id = ? AND status IN ('pending', 'retrying')",
       ),
       insertOutbox: d.prepare(
-        "INSERT INTO outbox (turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+        v5
+          ? `
+        INSERT INTO outbox
+          (turn_id, bot_id, agent_id, chat_id, kind, telegram_message_id,
+           payload_json, endpoint_id, platform, conversation_id,
+           operation_kind, external_message_id, signed_payload_json,
+           signed_event_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `
+          : "INSERT INTO outbox (turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
       ),
       // Mark a row as currently being delivered. Sets a future
       // next_attempt_at so a concurrent processor (or a crash-affected
@@ -199,7 +252,9 @@ export class GatewayDB {
         "UPDATE outbox SET status = 'in_flight', next_attempt_at = datetime('now', '+' || ? || ' seconds') WHERE id = ? AND status IN ('pending', 'retrying')",
       ),
       markOutboxSent: d.prepare(
-        "UPDATE outbox SET status = 'sent', telegram_message_id = COALESCE(?, telegram_message_id) WHERE id = ?",
+        v5
+          ? "UPDATE outbox SET status = 'sent', telegram_message_id = COALESCE(?, telegram_message_id), external_message_id = COALESCE(CAST(? AS TEXT), external_message_id) WHERE id = ?"
+          : "UPDATE outbox SET status = 'sent', telegram_message_id = COALESCE(?, telegram_message_id) WHERE id = ?",
       ),
       markOutboxFailed: d.prepare(
         "UPDATE outbox SET status = 'failed', last_error = ? WHERE id = ?",
@@ -229,21 +284,57 @@ export class GatewayDB {
       // its grace-window next_attempt_at expires. Same-process re-entry is
       // already prevented by the OutboxProcessor.processing mutex; this
       // filter handles the cross-restart case.
-      getPendingOutbox: d.prepare(`
-        SELECT id, turn_id, bot_id, chat_id, kind, telegram_message_id, payload_json, status, attempt_count
+      getPendingOutbox: d.prepare(
+        v5
+          ? `
+        SELECT o.id, o.turn_id, o.bot_id, o.agent_id, o.chat_id, o.kind,
+               o.telegram_message_id, o.payload_json, o.status, o.attempt_count,
+               o.endpoint_id, o.platform, o.conversation_id, o.operation_kind,
+               o.external_message_id, c.external_conversation_id,
+               c.thread_root_id, c.workflow_run_id, c.conversation_type
+        FROM outbox o
+        JOIN conversations c ON c.id = o.conversation_id
+        WHERE o.status IN ('pending', 'retrying', 'in_flight')
+          AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= datetime('now'))
+        ORDER BY o.id ASC
+      `
+          : `
+        SELECT id, turn_id, bot_id, bot_id AS agent_id, chat_id, kind,
+               telegram_message_id, payload_json, status, attempt_count,
+               bot_id || '-telegram' AS endpoint_id,
+               'telegram' AS platform,
+               NULL AS conversation_id,
+               kind AS operation_kind,
+               CAST(telegram_message_id AS TEXT) AS external_message_id,
+               CAST(chat_id AS TEXT) AS external_conversation_id,
+               NULL AS thread_root_id,
+               NULL AS workflow_run_id,
+               'direct' AS conversation_type
         FROM outbox
         WHERE status IN ('pending', 'retrying', 'in_flight')
           AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
         ORDER BY id ASC
-      `),
+      `,
+      ),
       // Used at startup for operator-visible warnings about crash-affected
       // rows. Returns rows still labelled 'in_flight' regardless of grace.
-      getInFlightOutbox: d.prepare(`
-        SELECT id, turn_id, bot_id, chat_id, kind, attempt_count, next_attempt_at
+      getInFlightOutbox: d.prepare(
+        v5
+          ? `
+        SELECT id, turn_id, bot_id, agent_id, chat_id, kind, operation_kind,
+               attempt_count, next_attempt_at
         FROM outbox
         WHERE status = 'in_flight'
         ORDER BY id ASC
-      `),
+      `
+          : `
+        SELECT id, turn_id, bot_id, bot_id AS agent_id, chat_id, kind,
+               kind AS operation_kind, attempt_count, next_attempt_at
+        FROM outbox
+        WHERE status = 'in_flight'
+        ORDER BY id ASC
+      `,
+      ),
       getOutboxRow: d.prepare(
         "SELECT telegram_message_id, status FROM outbox WHERE id = ?",
       ),
@@ -251,7 +342,9 @@ export class GatewayDB {
         "SELECT id FROM outbox WHERE telegram_message_id = ? AND id > ? AND status = 'sent' LIMIT 1",
       ),
       initWorkerState: d.prepare(
-        "INSERT INTO worker_state (bot_id) VALUES (?) ON CONFLICT (bot_id) DO UPDATE SET status = 'starting', pid = NULL",
+        v5
+          ? "INSERT INTO worker_state (bot_id, agent_id) VALUES (?, ?) ON CONFLICT (bot_id) DO UPDATE SET agent_id=excluded.agent_id, status = 'starting', pid = NULL"
+          : "INSERT INTO worker_state (bot_id) VALUES (?) ON CONFLICT (bot_id) DO UPDATE SET status = 'starting', pid = NULL",
       ),
       getWorkerState: d.prepare("SELECT * FROM worker_state WHERE bot_id = ?"),
       incWorkerGen: d.prepare(
@@ -280,7 +373,9 @@ export class GatewayDB {
         "SELECT completed_at FROM turns WHERE bot_id = ? AND status IN ('completed', 'failed') ORDER BY id DESC LIMIT 1",
       ),
       initBotState: d.prepare(
-        "INSERT INTO bot_state (bot_id) VALUES (?) ON CONFLICT (bot_id) DO NOTHING",
+        v5
+          ? "INSERT INTO bot_state (bot_id, agent_id) VALUES (?, ?) ON CONFLICT (bot_id) DO UPDATE SET agent_id=excluded.agent_id"
+          : "INSERT INTO bot_state (bot_id) VALUES (?) ON CONFLICT (bot_id) DO NOTHING",
       ),
       getBotState: d.prepare("SELECT * FROM bot_state WHERE bot_id = ?"),
       setBotOffset: d.prepare(
@@ -306,9 +401,12 @@ export class GatewayDB {
 
       // --- Agent API ---
 
-      allocateSyntheticInbound: d.prepare(`
-        INSERT INTO inbound_updates (bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
+      allocateSyntheticInbound: d.prepare(
+        v5
+          ? `
+        INSERT INTO inbound_updates (bot_id, agent_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
         SELECT
+          $bot_id,
           $bot_id,
           COALESCE(MIN(telegram_update_id), 0) - 1,
           $chat_id,
@@ -319,15 +417,33 @@ export class GatewayDB {
         FROM inbound_updates
         WHERE bot_id = $bot_id AND telegram_update_id < 0
         RETURNING id
-      `),
+      `
+          : `
+        INSERT INTO inbound_updates (bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json, status)
+        SELECT $bot_id, COALESCE(MIN(telegram_update_id), 0) - 1, $chat_id, 0,
+               $from_user_id, $payload_json, 'enqueued'
+        FROM inbound_updates WHERE bot_id=$bot_id AND telegram_update_id < 0
+        RETURNING id
+      `,
+      ),
 
-      upsertUserChat: d.prepare(`
+      upsertUserChat: d.prepare(
+        v5
+          ? `
+        INSERT INTO user_chats (bot_id, agent_id, telegram_user_id, chat_id, last_inbound_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+        ON CONFLICT (bot_id, telegram_user_id) DO UPDATE SET
+          agent_id = excluded.agent_id,
+          chat_id = excluded.chat_id,
+          last_inbound_at = excluded.last_inbound_at
+      `
+          : `
         INSERT INTO user_chats (bot_id, telegram_user_id, chat_id, last_inbound_at)
         VALUES (?, ?, ?, datetime('now'))
         ON CONFLICT (bot_id, telegram_user_id) DO UPDATE SET
-          chat_id = excluded.chat_id,
-          last_inbound_at = excluded.last_inbound_at
-      `),
+          chat_id=excluded.chat_id, last_inbound_at=excluded.last_inbound_at
+      `,
+      ),
       getLastChatForUser: d.prepare(
         "SELECT chat_id FROM user_chats WHERE bot_id = ? AND telegram_user_id = ?",
       ),
@@ -345,21 +461,33 @@ export class GatewayDB {
         "SELECT turn_id FROM agent_api_idempotency WHERE bot_id = ? AND idempotency_key = ?",
       ),
       insertIdempotency: d.prepare(
-        "INSERT INTO agent_api_idempotency (bot_id, idempotency_key, turn_id) VALUES (?, ?, ?)",
+        v5
+          ? "INSERT INTO agent_api_idempotency (bot_id, agent_id, idempotency_key, turn_id) VALUES (?, ?, ?, ?)"
+          : "INSERT INTO agent_api_idempotency (bot_id, idempotency_key, turn_id) VALUES (?, ?, ?)",
       ),
       sweepIdempotency: d.prepare(
         "DELETE FROM agent_api_idempotency WHERE CAST(strftime('%s', created_at) AS INTEGER) * 1000 < ?",
       ),
 
-      upsertSideSession: d.prepare(`
-        INSERT INTO side_sessions (bot_id, session_id, pid, started_at, last_used_at, hard_expires_at, state)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+      upsertSideSession: d.prepare(
+        v5
+          ? `
+        INSERT INTO side_sessions (bot_id, agent_id, session_id, pid, started_at, last_used_at, hard_expires_at, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (bot_id, session_id) DO UPDATE SET
           pid = excluded.pid,
           last_used_at = excluded.last_used_at,
           hard_expires_at = excluded.hard_expires_at,
           state = excluded.state
-      `),
+      `
+          : `
+        INSERT INTO side_sessions (bot_id, session_id, pid, started_at, last_used_at, hard_expires_at, state)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (bot_id, session_id) DO UPDATE SET
+          pid=excluded.pid, last_used_at=excluded.last_used_at,
+          hard_expires_at=excluded.hard_expires_at, state=excluded.state
+      `,
+      ),
       markSideSessionState: d.prepare(
         "UPDATE side_sessions SET state = ?, last_used_at = datetime('now') WHERE bot_id = ? AND session_id = ?",
       ),
@@ -373,19 +501,58 @@ export class GatewayDB {
         "UPDATE side_sessions SET state = 'stopped' WHERE state != 'stopped'",
       ),
 
-      insertAskTurnRow: d.prepare(`
+      insertAskTurnRow: d.prepare(
+        v5
+          ? `
+        INSERT INTO turns
+          (bot_id, agent_id, chat_id, source_update_id, status, started_at,
+           attachment_paths_json, source, agent_api_token_name,
+           conversation_id, session_key, source_platform, source_event_id,
+           prompt_text, prompt_markdown, prompt_revision_seq)
+        SELECT ?, ?, 0, ?, 'running', datetime('now'), ?, 'agent_api_ask', ?,
+               ie.conversation_id, c.session_key, 'agent_api', ie.id, NULL, 0,
+               ie.received_seq
+        FROM inbound_updates iu
+        JOIN inbound_events ie ON ie.endpoint_id = iu.bot_id || '-agent-api'
+          AND ie.external_event_id = 'agentapi:' || CAST(ABS(iu.telegram_update_id) AS TEXT)
+        JOIN conversations c ON c.id = ie.conversation_id
+        WHERE iu.id = ?
+        RETURNING id
+      `
+          : `
         INSERT INTO turns (bot_id, chat_id, source_update_id, status, started_at,
                            attachment_paths_json, source, agent_api_token_name)
         VALUES (?, 0, ?, 'running', datetime('now'), ?, 'agent_api_ask', ?)
         RETURNING id
-      `),
-      insertSendTurnRow: d.prepare(`
+      `,
+      ),
+      insertSendTurnRow: d.prepare(
+        v5
+          ? `
+        INSERT INTO turns
+          (bot_id, agent_id, chat_id, source_update_id, status,
+           attachment_paths_json, source, agent_api_token_name,
+           agent_api_source_label, idempotency_key, conversation_id,
+           session_key, source_platform, source_event_id, prompt_text,
+           prompt_markdown, prompt_revision_seq)
+        SELECT ?, ?, ?, ?, 'queued', ?, 'agent_api_send', ?, ?, ?,
+               ie.conversation_id, c.session_key, 'agent_api', ie.id, ?, 0,
+               ie.received_seq
+        FROM inbound_updates iu
+        JOIN inbound_events ie ON ie.endpoint_id = iu.bot_id || '-agent-api'
+          AND ie.external_event_id = 'agentapi:' || CAST(ABS(iu.telegram_update_id) AS TEXT)
+        JOIN conversations c ON c.id = ie.conversation_id
+        WHERE iu.id = ?
+        RETURNING id
+      `
+          : `
         INSERT INTO turns (bot_id, chat_id, source_update_id, status,
                            attachment_paths_json, source, agent_api_token_name,
                            agent_api_source_label, idempotency_key)
         VALUES (?, ?, ?, 'queued', ?, 'agent_api_send', ?, ?, ?)
         RETURNING id
-      `),
+      `,
+      ),
       setTurnFinalText: d.prepare(`
         UPDATE turns SET
           status = 'completed',
@@ -428,6 +595,240 @@ export class GatewayDB {
     return tx.immediate();
   }
 
+  /** Persist configured endpoints before intake; safe to call on every boot. */
+  syncNormalizedConfig(model: NormalizedConfigModel): void {
+    if (!this.normalizedSchema) return;
+    this.enabledEndpointIds.clear();
+    const upsert = this._db.prepare(`
+      INSERT INTO endpoints
+        (endpoint_id, agent_id, platform, external_identity, lifecycle_state)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint_id) DO UPDATE SET
+        agent_id=excluded.agent_id,
+        platform=excluded.platform,
+        external_identity=excluded.external_identity,
+        lifecycle_state=excluded.lifecycle_state,
+        updated_at=datetime('now')
+    `);
+    this.transaction(() => {
+      for (const endpoint of model.endpoints) {
+        upsert.run(
+          endpoint.id,
+          endpoint.agentId,
+          endpoint.platform,
+          endpoint.externalIdentity,
+          endpoint.enabled ? "active" : "disabled",
+        );
+        this.endpointByAgentPlatform.set(
+          `${endpoint.agentId}:${endpoint.platform}`,
+          endpoint.id,
+        );
+        this.sessionScopeByAgent.set(
+          endpoint.agentId,
+          model.sourceVersion === 1 ? "legacy_agent" : model.sessions.scope,
+        );
+        if (endpoint.enabled) this.enabledEndpointIds.add(endpoint.id);
+      }
+    });
+  }
+
+  getEndpointId(agentId: string, platform: string): string {
+    if (!this.normalizedSchema) {
+      return `${agentId}-${platform === "agent_api" ? "agent-api" : platform}`;
+    }
+    const key = `${agentId}:${platform}`;
+    const configured = this.endpointByAgentPlatform.get(key);
+    if (configured) return configured;
+    const row = this._db
+      .query(
+        "SELECT endpoint_id FROM endpoints WHERE agent_id=? AND platform=? ORDER BY endpoint_id LIMIT 1",
+      )
+      .get(agentId, platform) as { endpoint_id: string } | null;
+    if (row) {
+      this.endpointByAgentPlatform.set(key, row.endpoint_id);
+      return row.endpoint_id;
+    }
+    const fallback = `${agentId}-${platform === "agent_api" ? "agent-api" : platform}`;
+    this._db
+      .prepare(
+        "INSERT OR IGNORE INTO endpoints (endpoint_id, agent_id, platform) VALUES (?, ?, ?)",
+      )
+      .run(fallback, agentId, platform);
+    this.endpointByAgentPlatform.set(key, fallback);
+    return fallback;
+  }
+
+  resolveConversation(
+    agentId: string,
+    conversation: ConversationRef,
+    senderId: string | null = null,
+  ): { id: number; sessionKey: string | null } {
+    const threadRoot = conversation.threadRootId ?? "";
+    const workflowRun = conversation.workflowRunId ?? "";
+    const existing = this._db
+      .query(
+        `
+        SELECT id, session_key FROM conversations
+        WHERE endpoint_id=? AND external_conversation_id=?
+          AND thread_root_id=? AND workflow_run_id=?
+      `,
+      )
+      .get(
+        conversation.endpointId,
+        conversation.channelId,
+        threadRoot,
+        workflowRun,
+      ) as { id: number; session_key: string | null } | null;
+    if (existing) return { id: existing.id, sessionKey: existing.session_key };
+
+    const policy = this.sessionScopeByAgent.get(agentId) ?? "legacy_agent";
+    const keyMaterial = [
+      conversation.platform,
+      conversation.communityId ?? "",
+      conversation.endpointId,
+      conversation.channelId,
+      threadRoot,
+      workflowRun,
+    ].join("\u001f");
+    const conversationKey = createHash("sha256")
+      .update(keyMaterial)
+      .digest("hex");
+    const sessionKey =
+      policy === "ephemeral"
+        ? null
+        : policy === "legacy_agent"
+          ? `legacy:${agentId}`
+          : `conversation:${conversationKey}`;
+    if (sessionKey) {
+      const runnerSessionId = createHash("sha256")
+        .update(sessionKey)
+        .digest("hex");
+      this._db
+        .prepare(
+          `
+          INSERT OR IGNORE INTO conversation_sessions
+            (session_key, agent_id, runner_session_id, runner_type, state)
+          VALUES (?, ?, ?, 'pending', 'stopped')
+        `,
+        )
+        .run(sessionKey, agentId, runnerSessionId);
+    }
+    this._db
+      .prepare(
+        `
+        INSERT INTO conversations
+          (agent_id, endpoint_id, platform, community_id,
+           external_conversation_id, thread_root_id, workflow_run_id,
+           conversation_type, conversation_key, session_policy, session_key,
+           last_sender_id, last_inbound_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(endpoint_id, external_conversation_id, thread_root_id, workflow_run_id)
+        DO UPDATE SET last_sender_id=COALESCE(excluded.last_sender_id, last_sender_id),
+                      last_inbound_at=datetime('now')
+      `,
+      )
+      .run(
+        agentId,
+        conversation.endpointId,
+        conversation.platform,
+        conversation.communityId,
+        conversation.channelId,
+        threadRoot,
+        workflowRun,
+        conversation.type,
+        conversationKey,
+        policy,
+        sessionKey,
+        senderId,
+      );
+    const row = this._db
+      .query(
+        `
+        SELECT id, session_key FROM conversations
+        WHERE endpoint_id=? AND external_conversation_id=?
+          AND thread_root_id=? AND workflow_run_id=?
+      `,
+      )
+      .get(
+        conversation.endpointId,
+        conversation.channelId,
+        threadRoot,
+        workflowRun,
+      ) as { id: number; session_key: string | null };
+    return { id: row.id, sessionKey: row.session_key };
+  }
+
+  getInboundEventStatus(
+    endpointId: string,
+    externalEventId: string,
+  ): { id: number; status: string } | null {
+    return this._db
+      .query(
+        "SELECT id, status FROM inbound_events WHERE endpoint_id=? AND external_event_id=?",
+      )
+      .get(endpointId, externalEventId) as {
+      id: number;
+      status: string;
+    } | null;
+  }
+
+  private insertNormalizedInbound(
+    event: InboundEvent,
+    status: string,
+    payloadJson: string,
+  ): number | null {
+    if (!event.conversation) return null;
+    const existing = this.getInboundEventStatus(
+      event.endpointId,
+      event.externalEventId,
+    );
+    if (existing) return null;
+    const conversation = this.resolveConversation(
+      event.agentId,
+      event.conversation,
+      event.sender.id,
+    );
+    const seq = this._db
+      .query(
+        `
+        UPDATE endpoints
+        SET next_received_seq=next_received_seq+1, updated_at=datetime('now')
+        WHERE endpoint_id=?
+        RETURNING next_received_seq
+      `,
+      )
+      .get(event.endpointId) as { next_received_seq: number } | null;
+    if (!seq) throw new Error(`unknown endpoint '${event.endpointId}'`);
+    const result = this._db
+      .prepare(
+        `
+        INSERT INTO inbound_events
+          (endpoint_id, platform, external_event_id, external_message_id,
+           target_external_event_id, workflow_run_id, conversation_id,
+           sender_id, event_kind, reply_to_external_id, payload_json,
+           payload_sha256, received_seq, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      )
+      .run(
+        event.endpointId,
+        event.platform,
+        event.externalEventId,
+        event.externalMessageId,
+        event.targetExternalEventId,
+        event.workflowRunId,
+        conversation.id,
+        event.sender.id,
+        event.kind,
+        event.replyTo,
+        payloadJson,
+        createHash("sha256").update(payloadJson).digest("hex"),
+        seq.next_received_seq,
+        status,
+      );
+    return Number(result.lastInsertRowid);
+  }
+
   // --- Inbound updates ---
 
   /** Look up a pre-existing dedup row for (bot_id, telegram_update_id). */
@@ -450,21 +851,85 @@ export class GatewayDB {
     payloadJson: string,
     status: "received" | "enqueued" | "rejected" = "received",
   ): number | null {
-    const result = this.stmts.insertUpdate.run(
+    const args = [
       botId,
+      ...(this.normalizedSchema ? [botId] : []),
       telegramUpdateId,
       chatId,
       messageId,
       fromUserId,
       payloadJson,
       status,
-    );
+    ];
+    const result = this.stmts.insertUpdate.run(...args);
     if (result.changes === 0) return null;
+    if (!this.normalizedSchema) return Number(result.lastInsertRowid);
+    const endpointId = this.getEndpointId(botId, "telegram");
+    this.insertNormalizedInbound(
+      {
+        platform: "telegram",
+        endpointId,
+        agentId: botId,
+        communityId: null,
+        conversation: {
+          platform: "telegram",
+          communityId: null,
+          endpointId,
+          channelId: String(chatId),
+          threadRootId: null,
+          workflowRunId: null,
+          type: "direct",
+        },
+        externalEventId: String(telegramUpdateId),
+        externalMessageId: String(messageId),
+        targetExternalEventId: null,
+        workflowRunId: null,
+        sender: {
+          id: fromUserId,
+          kind: "unknown",
+          displayName: null,
+          username: null,
+          raw: null,
+        },
+        kind: "message",
+        text: "",
+        markdown: false,
+        replyTo: null,
+        rootEventId: null,
+        mentions: [],
+        attachments: [],
+        occurredAt: 0,
+        receivedSeq: 0,
+        raw: null,
+      },
+      status,
+      payloadJson,
+    );
     return Number(result.lastInsertRowid);
   }
 
   setUpdateStatus(id: number, status: string): void {
     this.stmts.setUpdateStatus.run(status, id);
+    if (!this.normalizedSchema) return;
+    const update = this._db
+      .query(
+        "SELECT bot_id, telegram_update_id FROM inbound_updates WHERE id=?",
+      )
+      .get(id) as { bot_id: string; telegram_update_id: number } | null;
+    if (!update) return;
+    const isAgentApi = update.telegram_update_id < 0;
+    const endpointId = this.getEndpointId(
+      update.bot_id,
+      isAgentApi ? "agent_api" : "telegram",
+    );
+    const externalEventId = isAgentApi
+      ? `agentapi:${Math.abs(update.telegram_update_id)}`
+      : String(update.telegram_update_id);
+    this._db
+      .prepare(
+        "UPDATE inbound_events SET status=? WHERE endpoint_id=? AND external_event_id=?",
+      )
+      .run(status, endpointId, externalEventId);
   }
 
   // --- Turns ---
@@ -475,11 +940,119 @@ export class GatewayDB {
     sourceUpdateId: number,
     attachmentPaths?: string[],
   ): number {
+    if (!this.normalizedSchema) {
+      const result = this.stmts.createTurn.run(
+        botId,
+        chatId,
+        sourceUpdateId,
+        attachmentPaths ? JSON.stringify(attachmentPaths) : null,
+      );
+      return Number(result.lastInsertRowid);
+    }
+    const inbound = this._db
+      .query(
+        `SELECT telegram_update_id, chat_id, message_id, from_user_id,
+                payload_json, status
+         FROM inbound_updates WHERE id=?`,
+      )
+      .get(sourceUpdateId) as {
+      telegram_update_id: number;
+      chat_id: number;
+      message_id: number;
+      from_user_id: string;
+      payload_json: string;
+      status: string;
+    } | null;
+    if (!inbound) throw new Error(`inbound update ${sourceUpdateId} not found`);
+    const endpointId = this.getEndpointId(botId, "telegram");
+    let event = this.getInboundEventStatus(
+      endpointId,
+      String(inbound.telegram_update_id),
+    );
+    if (!event) {
+      this.insertNormalizedInbound(
+        {
+          platform: "telegram",
+          endpointId,
+          agentId: botId,
+          communityId: null,
+          conversation: {
+            platform: "telegram",
+            communityId: null,
+            endpointId,
+            channelId: String(inbound.chat_id),
+            threadRootId: null,
+            workflowRunId: null,
+            type: "direct",
+          },
+          externalEventId: String(inbound.telegram_update_id),
+          externalMessageId: String(inbound.message_id),
+          targetExternalEventId: null,
+          workflowRunId: null,
+          sender: {
+            id: inbound.from_user_id,
+            kind: "unknown",
+            displayName: null,
+            username: null,
+            raw: null,
+          },
+          kind: "message",
+          text: "",
+          markdown: false,
+          replyTo: null,
+          rootEventId: null,
+          mentions: [],
+          attachments: [],
+          occurredAt: 0,
+          receivedSeq: 0,
+          raw: null,
+        },
+        inbound.status,
+        inbound.payload_json,
+      );
+      event = this.getInboundEventStatus(
+        endpointId,
+        String(inbound.telegram_update_id),
+      );
+    }
+    if (!event) throw new Error("normalized inbound event missing");
+    const normalized = this._db
+      .query(
+        `
+        SELECT ie.conversation_id, ie.received_seq, c.session_key
+        FROM inbound_events ie JOIN conversations c ON c.id=ie.conversation_id
+        WHERE ie.id=?
+      `,
+      )
+      .get(event.id) as {
+      conversation_id: number;
+      received_seq: number;
+      session_key: string | null;
+    };
+    let promptText: string | null = null;
+    try {
+      const payload = JSON.parse(inbound.payload_json);
+      promptText =
+        payload?.message?.text ??
+        payload?.message?.caption ??
+        payload?.prompt ??
+        null;
+    } catch {
+      // Raw payload remains durable even when the legacy parser cannot read it.
+    }
     const result = this.stmts.createTurn.run(
+      botId,
       botId,
       chatId,
       sourceUpdateId,
       attachmentPaths ? JSON.stringify(attachmentPaths) : null,
+      normalized.conversation_id,
+      normalized.session_key,
+      "telegram",
+      event.id,
+      promptText,
+      0,
+      normalized.received_seq,
     );
     return Number(result.lastInsertRowid);
   }
@@ -593,13 +1166,109 @@ export class GatewayDB {
     payloadJson: string,
     telegramMessageId?: number,
   ): number {
+    if (!this.normalizedSchema) {
+      const result = this.stmts.insertOutbox.run(
+        turnId,
+        botId,
+        chatId,
+        kind,
+        telegramMessageId ?? null,
+        payloadJson,
+      );
+      return Number(result.lastInsertRowid);
+    }
+    const endpointId = this.getEndpointId(botId, "telegram");
+    const conversation = this.resolveConversation(botId, {
+      platform: "telegram",
+      communityId: null,
+      endpointId,
+      channelId: String(chatId),
+      threadRootId: null,
+      workflowRunId: null,
+      type: "direct",
+    });
     const result = this.stmts.insertOutbox.run(
       turnId,
+      botId,
       botId,
       chatId,
       kind,
       telegramMessageId ?? null,
       payloadJson,
+      endpointId,
+      "telegram",
+      conversation.id,
+      kind,
+      telegramMessageId !== undefined ? String(telegramMessageId) : null,
+      null,
+      null,
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Queue one platform-neutral durable operation with its prebuilt payload. */
+  insertOutboundOperation(args: {
+    turnId: number | null;
+    agentId: string;
+    conversation: ConversationRef;
+    operation: OutboundOperation;
+    payloadJson?: string;
+    signedPayloadJson?: string | null;
+    signedEventId?: string | null;
+  }): number {
+    const externalMessageId =
+      "externalMessageId" in args.operation
+        ? args.operation.externalMessageId
+        : null;
+    const payloadJson = args.payloadJson ?? JSON.stringify(args.operation);
+    if (!this.normalizedSchema) {
+      if (args.conversation.platform !== "telegram") {
+        throw new Error("schema v3 can queue only Telegram operations");
+      }
+      const chatId = legacyDecimalOrNull(args.conversation.channelId);
+      const messageId = externalMessageId
+        ? legacyDecimalOrNull(externalMessageId)
+        : null;
+      if (chatId === null) {
+        throw new Error("schema v3 requires a numeric Telegram chat ID");
+      }
+      const result = this.stmts.insertOutbox.run(
+        args.turnId,
+        args.agentId,
+        chatId,
+        args.operation.kind,
+        messageId,
+        payloadJson,
+      );
+      return Number(result.lastInsertRowid);
+    }
+    const conversation = this.resolveConversation(
+      args.agentId,
+      args.conversation,
+    );
+    const legacyChatId =
+      args.conversation.platform === "telegram"
+        ? legacyDecimalOrNull(args.conversation.channelId)
+        : null;
+    const legacyMessageId =
+      args.conversation.platform === "telegram" && externalMessageId
+        ? legacyDecimalOrNull(externalMessageId)
+        : null;
+    const result = this.stmts.insertOutbox.run(
+      args.turnId,
+      args.conversation.platform === "telegram" ? args.agentId : null,
+      args.agentId,
+      legacyChatId,
+      args.conversation.platform === "telegram" ? args.operation.kind : null,
+      legacyMessageId,
+      payloadJson,
+      args.conversation.endpointId,
+      args.conversation.platform,
+      conversation.id,
+      args.operation.kind,
+      externalMessageId,
+      args.signedPayloadJson ?? null,
+      args.signedEventId ?? null,
     );
     return Number(result.lastInsertRowid);
   }
@@ -613,8 +1282,21 @@ export class GatewayDB {
     this.stmts.markOutboxInFlight.run(graceSecs, id);
   }
 
-  markOutboxSent(id: number, telegramMessageId?: number): void {
-    this.stmts.markOutboxSent.run(telegramMessageId ?? null, id);
+  markOutboxSent(id: number, externalMessageId?: string | number): void {
+    const telegramMessageId =
+      externalMessageId !== undefined &&
+      /^-?\d+$/.test(String(externalMessageId))
+        ? Number(externalMessageId)
+        : null;
+    if (this.normalizedSchema) {
+      this.stmts.markOutboxSent.run(
+        telegramMessageId,
+        externalMessageId !== undefined ? String(externalMessageId) : null,
+        id,
+      );
+    } else {
+      this.stmts.markOutboxSent.run(telegramMessageId, id);
+    }
   }
 
   /**
@@ -624,19 +1306,23 @@ export class GatewayDB {
    */
   getInFlightOutbox(): Array<{
     id: number;
-    turn_id: number;
-    bot_id: BotId;
-    chat_id: number;
-    kind: string;
+    turn_id: number | null;
+    bot_id: BotId | null;
+    agent_id: BotId;
+    chat_id: number | null;
+    kind: string | null;
+    operation_kind?: string;
     attempt_count: number;
     next_attempt_at: string | null;
   }> {
     return this.stmts.getInFlightOutbox.all() as Array<{
       id: number;
-      turn_id: number;
-      bot_id: BotId;
-      chat_id: number;
-      kind: string;
+      turn_id: number | null;
+      bot_id: BotId | null;
+      agent_id: BotId;
+      chat_id: number | null;
+      kind: string | null;
+      operation_kind?: string;
       attempt_count: number;
       next_attempt_at: string | null;
     }>;
@@ -676,26 +1362,38 @@ export class GatewayDB {
 
   getPendingOutbox(): Array<{
     id: number;
-    turn_id: number;
-    bot_id: BotId;
-    chat_id: number;
-    kind: string;
+    turn_id: number | null;
+    bot_id: BotId | null;
+    agent_id: BotId;
+    chat_id: number | null;
+    kind: string | null;
     telegram_message_id: number | null;
     payload_json: string;
     status: string;
     attempt_count: number;
+    endpoint_id: string;
+    platform: "telegram" | "buzz" | "agent_api";
+    conversation_id: number | null;
+    operation_kind: string;
+    external_message_id: string | null;
+    external_conversation_id: string;
+    thread_root_id: string | null;
+    workflow_run_id: string | null;
+    conversation_type:
+      | "direct"
+      | "stream"
+      | "forum"
+      | "workflow"
+      | "group"
+      | "api";
   }> {
-    return this.stmts.getPendingOutbox.all() as Array<{
-      id: number;
-      turn_id: number;
-      bot_id: BotId;
-      chat_id: number;
-      kind: string;
-      telegram_message_id: number | null;
-      payload_json: string;
-      status: string;
-      attempt_count: number;
-    }>;
+    const rows = this.stmts.getPendingOutbox.all() as ReturnType<
+      GatewayDB["getPendingOutbox"]
+    >;
+    if (!this.normalizedSchema || this.enabledEndpointIds.size === 0) {
+      return rows;
+    }
+    return rows.filter((row) => this.enabledEndpointIds.has(row.endpoint_id));
   }
 
   getOutboxRow(
@@ -718,7 +1416,9 @@ export class GatewayDB {
   // --- Worker state ---
 
   initWorkerState(botId: BotId): void {
-    this.stmts.initWorkerState.run(botId);
+    this.stmts.initWorkerState.run(
+      ...(this.normalizedSchema ? [botId, botId] : [botId]),
+    );
   }
 
   // Runtime allowlist of columns each dynamicUpdate-capable table accepts.
@@ -742,6 +1442,7 @@ export class GatewayDB {
     ]),
     stream_state: new Set([
       "active_telegram_message_id",
+      "active_external_message_id",
       "buffer_text",
       "last_flushed_at",
       "segment_index",
@@ -862,6 +1563,7 @@ export class GatewayDB {
   getStreamState(turnId: number): {
     turn_id: number;
     active_telegram_message_id: number | null;
+    active_external_message_id?: string | null;
     buffer_text: string;
     last_flushed_at: string | null;
     segment_index: number;
@@ -869,6 +1571,7 @@ export class GatewayDB {
     return this.stmts.getStreamState.get(turnId) as {
       turn_id: number;
       active_telegram_message_id: number | null;
+      active_external_message_id?: string | null;
       buffer_text: string;
       last_flushed_at: string | null;
       segment_index: number;
@@ -884,18 +1587,37 @@ export class GatewayDB {
       segment_index: number;
     }>,
   ): void {
+    const dualWrite = {
+      ...updates,
+      ...(this.normalizedSchema &&
+      Object.prototype.hasOwnProperty.call(
+        updates,
+        "active_telegram_message_id",
+      )
+        ? {
+            active_external_message_id:
+              updates.active_telegram_message_id === null ||
+              updates.active_telegram_message_id === undefined
+                ? null
+                : String(updates.active_telegram_message_id),
+          }
+        : {}),
+    };
     this.dynamicUpdate(
       "stream_state",
       "turn_id",
       turnId,
-      updates as Record<string, string | number | null>,
+      dualWrite as Record<string, string | number | null>,
     );
   }
 
   // --- Bot state (polling offset, disabled flag) ---
 
   initBotState(botId: BotId): void {
-    this.stmts.initBotState.run(botId);
+    if (this.normalizedSchema) this.getEndpointId(botId, "telegram");
+    this.stmts.initBotState.run(
+      ...(this.normalizedSchema ? [botId, botId] : [botId]),
+    );
   }
 
   getBotState(botId: BotId): {
@@ -915,15 +1637,48 @@ export class GatewayDB {
   }
 
   setBotLastUpdateId(botId: BotId, lastUpdateId: number): void {
-    this.stmts.setBotOffset.run(lastUpdateId, botId);
+    this.transaction(() => {
+      this.stmts.setBotOffset.run(lastUpdateId, botId);
+      if (this.normalizedSchema) {
+        this._db
+          .prepare(
+            "UPDATE endpoints SET cursor_json=?, updated_at=datetime('now') WHERE endpoint_id=?",
+          )
+          .run(
+            JSON.stringify({
+              kind: "telegram_offset",
+              last_update_id: lastUpdateId,
+            }),
+            this.getEndpointId(botId, "telegram"),
+          );
+      }
+    });
   }
 
   setBotDisabled(botId: BotId, reason: string): void {
-    this.stmts.setBotDisabled.run(reason, botId);
+    this.transaction(() => {
+      this.stmts.setBotDisabled.run(reason, botId);
+      if (this.normalizedSchema) {
+        this._db
+          .prepare(
+            "UPDATE endpoints SET lifecycle_state='disabled', state_reason=?, updated_at=datetime('now') WHERE endpoint_id=?",
+          )
+          .run(reason, this.getEndpointId(botId, "telegram"));
+      }
+    });
   }
 
   clearBotDisabled(botId: BotId): void {
-    this.stmts.clearBotDisabled.run(botId);
+    this.transaction(() => {
+      this.stmts.clearBotDisabled.run(botId);
+      if (this.normalizedSchema) {
+        this._db
+          .prepare(
+            "UPDATE endpoints SET lifecycle_state='active', state_reason=NULL, updated_at=datetime('now') WHERE endpoint_id=?",
+          )
+          .run(this.getEndpointId(botId, "telegram"));
+      }
+    });
   }
 
   // --- Metrics / observability ---
@@ -966,7 +1721,34 @@ export class GatewayDB {
    * `telegram_user_id` later.
    */
   upsertUserChat(botId: BotId, telegramUserId: string, chatId: number): void {
-    this.stmts.upsertUserChat.run(botId, telegramUserId, chatId);
+    this.stmts.upsertUserChat.run(
+      ...(this.normalizedSchema
+        ? [botId, botId, telegramUserId, chatId]
+        : [botId, telegramUserId, chatId]),
+    );
+    if (!this.normalizedSchema) return;
+    const endpointId = this.getEndpointId(botId, "telegram");
+    const conversation = this.resolveConversation(botId, {
+      platform: "telegram",
+      communityId: null,
+      endpointId,
+      channelId: String(chatId),
+      threadRootId: null,
+      workflowRunId: null,
+      type: "direct",
+    });
+    this._db
+      .prepare(
+        `
+        INSERT INTO user_conversations
+          (agent_id, platform, external_user_id, conversation_id, last_inbound_at)
+        VALUES (?, 'telegram', ?, ?, datetime('now'))
+        ON CONFLICT(agent_id, platform, external_user_id) DO UPDATE SET
+          conversation_id=excluded.conversation_id,
+          last_inbound_at=excluded.last_inbound_at
+      `,
+      )
+      .run(botId, telegramUserId, conversation.id);
   }
 
   getLastChatForUser(
@@ -1033,6 +1815,7 @@ export class GatewayDB {
   }): void {
     this.stmts.upsertSideSession.run(
       row.botId,
+      ...(this.normalizedSchema ? [row.botId] : []),
       row.sessionId,
       row.pid,
       row.startedAt,
@@ -1040,6 +1823,36 @@ export class GatewayDB {
       row.hardExpiresAt,
       row.state,
     );
+    if (!this.normalizedSchema) return;
+    const sessionKey = `agentapi:${row.botId}:${row.sessionId}`;
+    const runnerSessionId = createHash("sha256")
+      .update(sessionKey)
+      .digest("hex");
+    this._db
+      .prepare(
+        `
+        INSERT INTO conversation_sessions
+          (session_key, agent_id, runner_session_id, runner_type,
+           provider_state_json, state, started_at, last_used_at,
+           hard_expires_at)
+        VALUES (?, ?, ?, 'agent_api_legacy', ?, ?, ?, ?, ?)
+        ON CONFLICT(session_key) DO UPDATE SET
+          provider_state_json=excluded.provider_state_json,
+          state=excluded.state,
+          last_used_at=excluded.last_used_at,
+          hard_expires_at=excluded.hard_expires_at
+      `,
+      )
+      .run(
+        sessionKey,
+        row.botId,
+        runnerSessionId,
+        JSON.stringify({ version: 1, pid: row.pid }),
+        row.state,
+        row.startedAt,
+        row.lastUsedAt,
+        row.hardExpiresAt,
+      );
   }
 
   markSideSessionState(
@@ -1048,10 +1861,24 @@ export class GatewayDB {
     state: "starting" | "ready" | "busy" | "stopping" | "stopped",
   ): void {
     this.stmts.markSideSessionState.run(state, botId, sessionId);
+    if (this.normalizedSchema) {
+      this._db
+        .prepare(
+          "UPDATE conversation_sessions SET state=?, last_used_at=datetime('now') WHERE session_key=?",
+        )
+        .run(state, `agentapi:${botId}:${sessionId}`);
+    }
   }
 
   deleteSideSession(botId: BotId, sessionId: string): void {
     this.stmts.deleteSideSession.run(botId, sessionId);
+    if (this.normalizedSchema) {
+      this._db
+        .prepare(
+          "DELETE FROM conversation_sessions WHERE session_key=? AND runner_type='agent_api_legacy'",
+        )
+        .run(`agentapi:${botId}:${sessionId}`);
+    }
   }
 
   listSideSessions(botId: BotId): Array<{
@@ -1076,6 +1903,13 @@ export class GatewayDB {
 
   markAllSideSessionsStopped(): void {
     this.stmts.markAllSideSessionsStopped.run();
+    if (this.normalizedSchema) {
+      this._db
+        .prepare(
+          "UPDATE conversation_sessions SET state='stopped' WHERE runner_type='agent_api_legacy'",
+        )
+        .run();
+    }
   }
 
   /**
@@ -1101,13 +1935,20 @@ export class GatewayDB {
           text_preview: args.textPreview.slice(0, 200),
         }),
       });
+      const attachmentJson = args.attachmentPaths.length
+        ? JSON.stringify(args.attachmentPaths)
+        : null;
       const row = this.stmts.insertAskTurnRow.get(
-        args.botId,
-        inboundId,
-        args.attachmentPaths.length
-          ? JSON.stringify(args.attachmentPaths)
-          : null,
-        args.tokenName,
+        ...(this.normalizedSchema
+          ? [
+              args.botId,
+              args.botId,
+              inboundId,
+              attachmentJson,
+              args.tokenName,
+              inboundId,
+            ]
+          : [args.botId, inboundId, attachmentJson, args.tokenName]),
       ) as { id: number };
       return row.id;
     });
@@ -1146,22 +1987,38 @@ export class GatewayDB {
         }),
       });
 
+      const attachmentJson = args.attachmentPaths.length
+        ? JSON.stringify(args.attachmentPaths)
+        : null;
       const turnRow = this.stmts.insertSendTurnRow.get(
-        args.botId,
-        args.chatId,
-        inboundId,
-        args.attachmentPaths.length
-          ? JSON.stringify(args.attachmentPaths)
-          : null,
-        args.tokenName,
-        args.sourceLabel,
-        args.idempotencyKey,
+        ...(this.normalizedSchema
+          ? [
+              args.botId,
+              args.botId,
+              args.chatId,
+              inboundId,
+              attachmentJson,
+              args.tokenName,
+              args.sourceLabel,
+              args.idempotencyKey,
+              args.markerWrappedText,
+              inboundId,
+            ]
+          : [
+              args.botId,
+              args.chatId,
+              inboundId,
+              attachmentJson,
+              args.tokenName,
+              args.sourceLabel,
+              args.idempotencyKey,
+            ]),
       ) as { id: number };
 
       this.stmts.insertIdempotency.run(
-        args.botId,
-        args.idempotencyKey,
-        turnRow.id,
+        ...(this.normalizedSchema
+          ? [args.botId, args.botId, args.idempotencyKey, turnRow.id]
+          : [args.botId, args.idempotencyKey, turnRow.id]),
       );
 
       return { replay: false, turnId: turnRow.id };
@@ -1219,6 +2076,52 @@ export class GatewayDB {
         "allocateSyntheticInbound returned no row — DB in unexpected state",
       );
     }
+    if (!this.normalizedSchema) return row.id;
+    const legacy = this._db
+      .query("SELECT telegram_update_id FROM inbound_updates WHERE id=?")
+      .get(row.id) as { telegram_update_id: number };
+    const endpointId = this.getEndpointId(args.botId, "agent_api");
+    this.insertNormalizedInbound(
+      {
+        platform: "agent_api",
+        endpointId,
+        agentId: args.botId,
+        communityId: null,
+        conversation: {
+          platform: "agent_api",
+          communityId: null,
+          endpointId,
+          channelId:
+            args.chatId === 0 ? "legacy" : `chat:${String(args.chatId)}`,
+          threadRootId: null,
+          workflowRunId: null,
+          type: "api",
+        },
+        externalEventId: `agentapi:${Math.abs(legacy.telegram_update_id)}`,
+        externalMessageId: null,
+        targetExternalEventId: null,
+        workflowRunId: null,
+        sender: {
+          id: args.fromUserId,
+          kind: "service",
+          displayName: null,
+          username: null,
+          raw: null,
+        },
+        kind: "message",
+        text: "",
+        markdown: false,
+        replyTo: null,
+        rootEventId: null,
+        mentions: [],
+        attachments: [],
+        occurredAt: 0,
+        receivedSeq: 0,
+        raw: null,
+      },
+      "enqueued",
+      args.payloadJson,
+    );
     return row.id;
   }
 
@@ -1226,4 +2129,10 @@ export class GatewayDB {
     this._db.close();
     log.info("database closed");
   }
+}
+
+function legacyDecimalOrNull(value: string): number | null {
+  if (!/^-?[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }

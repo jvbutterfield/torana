@@ -12,6 +12,7 @@
 // All writes go through `saveProfiles` → atomic rename + chmod 0600.
 // Reads surface non-fatal warnings (e.g. wider-than-0600 perms) on stderr.
 
+import yaml from "js-yaml";
 import {
   COMMON_FLAGS,
   CliUsageError,
@@ -36,6 +37,8 @@ import {
   upsertProfile,
   type Profile,
 } from "./shared/profile.js";
+import { ConfigLoadError, loadConfigFromFile } from "../config/load.js";
+import { ConfigV2Schema, upgradeV1Object } from "../config/v2.js";
 
 const CONFIG_HELP = `Usage: torana config <subcommand> [options]
 
@@ -47,11 +50,24 @@ Subcommands:
   list-profiles           Show stored profiles (tokens redacted)
   remove-profile <name>   Remove a profile
   show [<name>]           Print one profile (or all) with tokens redacted
+  upgrade                 Render a v1 gateway config as v2 YAML
 
 Common options:
   --config-path PATH      Override the profile file location
   --json                  Emit JSON (list-profiles, show)
   -h, --help              Show this help
+`;
+
+const UPGRADE_HELP = `Usage: torana config upgrade --from v1 --to v2 --input PATH
+
+Validate a v1 gateway configuration and print its equivalent v2 YAML to
+stdout. The input file is never modified; redirect or review the output before
+using it.
+
+Options:
+  --from VERSION      Source version (must be v1)
+  --to VERSION        Destination version (must be v2)
+  --input PATH        Existing v1 YAML configuration
 `;
 
 const ADD_PROFILE_HELP = `Usage: torana config add-profile <name> --server URL --token TOKEN [--default]
@@ -122,6 +138,9 @@ const CONFIG_FLAGS: Record<string, FlagSpec> = {
     kind: "value",
     describe: "Override the profile file location (for tests)",
   },
+  from: { kind: "value", describe: "Source config version" },
+  to: { kind: "value", describe: "Destination config version" },
+  input: { kind: "value", describe: "Input gateway config path" },
 };
 
 export interface RunConfigOptions {
@@ -151,6 +170,8 @@ export function runConfig(
         return runRemoveProfile(rest, env);
       case "show":
         return runShow(rest, env);
+      case "upgrade":
+        return runUpgrade(rest);
       default:
         return renderText([CONFIG_HELP], ExitCode.badUsage, [
           `config: unknown subcommand '${sub}'`,
@@ -169,8 +190,42 @@ export function runConfig(
           : ExitCode.internal;
       return renderText([], code, [`config ${sub}: ${err.message}`]);
     }
+    if (err instanceof ConfigLoadError) {
+      return renderText([], ExitCode.badUsage, [
+        `config ${sub}: ${err.message}`,
+      ]);
+    }
     throw err;
   }
+}
+
+// ---- upgrade -------------------------------------------------------------
+
+function runUpgrade(argv: string[]): Rendered {
+  if (requireHelp(argv))
+    return renderText(UPGRADE_HELP.split("\n").slice(0, -1), ExitCode.success);
+  const { positional, flags } = parseFlags(argv, CONFIG_FLAGS);
+  if (positional.length > 0) {
+    throw new CliUsageError("upgrade does not accept positional arguments");
+  }
+  if (flags.from !== "v1" || flags.to !== "v2") {
+    throw new CliUsageError("upgrade currently requires --from v1 --to v2");
+  }
+  if (typeof flags.input !== "string" || flags.input.length === 0) {
+    throw new CliUsageError("--input <path> required");
+  }
+  const loaded = loadConfigFromFile(flags.input);
+  if (loaded.normalized.sourceVersion !== 1) {
+    throw new CliUsageError("--input must contain a version: 1 config");
+  }
+  const upgraded = upgradeV1Object(loaded.config);
+  ConfigV2Schema.parse(upgraded);
+  const output = yaml.dump(upgraded, {
+    noRefs: true,
+    lineWidth: 100,
+    sortKeys: false,
+  });
+  return renderText([output.trimEnd()], ExitCode.success, loaded.warnings);
 }
 
 function requireHelp(argv: string[]): boolean {

@@ -778,6 +778,8 @@ export const SECRET_PATHS = [
   "bots[].token",
   "bots[].runner.secrets[*]",
   "agent_api.tokens[].secret_ref",
+  "agents[].endpoints[].private_key",
+  "agents[].endpoints[].auth_tag",
 ] as const;
 
 export type AgentApiTokenConfig = z.infer<typeof AgentApiTokenSchema>;

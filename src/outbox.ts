@@ -9,6 +9,7 @@ import type {
   PlatformAdapter,
 } from "./platform/capabilities.js";
 import { telegramConversation } from "./platform/telegram/adapter.js";
+import type { ConversationRef, OutboundOperation } from "./platform/types.js";
 
 const log = logger("outbox");
 
@@ -61,7 +62,7 @@ export class OutboxProcessor {
 
   /**
    * Surface any outbox rows that a previous process left in `in_flight`
-   * state — these were mid-Telegram-POST when the previous process died.
+   * state — these were mid-platform-delivery when the previous process died.
    * The grace window auto-retries them via getPendingOutbox; this just
    * makes them visible to the operator (a duplicate Telegram message is
    * possible if Telegram had already accepted the original send before
@@ -74,13 +75,14 @@ export class OutboxProcessor {
       log.warn("crash-affected outbox row will auto-retry", {
         id: row.id,
         turn_id: row.turn_id,
+        agent_id: row.agent_id,
         bot_id: row.bot_id,
         chat_id: row.chat_id,
-        kind: row.kind,
+        kind: row.operation_kind ?? row.kind,
         attempt_count: row.attempt_count,
         next_attempt_at: row.next_attempt_at,
         caveat:
-          "Telegram may have already accepted the prior attempt; a duplicate is possible",
+          "the platform may have accepted the prior attempt; a duplicate is possible",
       });
     }
   }
@@ -124,12 +126,14 @@ export class OutboxProcessor {
     chatId: number,
     text: string,
   ): number {
-    return this.db.insertOutbox(
+    const endpointId =
+      this.adapters.get(botId)?.endpoint.id ??
+      this.db.getEndpointId(botId, "telegram");
+    return this.queueOperation(
       turnId,
       botId,
-      chatId,
-      "send",
-      JSON.stringify({ text }),
+      telegramConversation(endpointId, chatId),
+      { kind: "send", text, files: [] },
     );
   }
 
@@ -152,14 +156,31 @@ export class OutboxProcessor {
     messageId: number,
     text: string,
   ): number {
-    return this.db.insertOutbox(
+    const endpointId =
+      this.adapters.get(botId)?.endpoint.id ??
+      this.db.getEndpointId(botId, "telegram");
+    return this.queueOperation(
       turnId,
       botId,
-      chatId,
-      "edit",
-      JSON.stringify({ text }),
-      messageId,
+      telegramConversation(endpointId, chatId),
+      { kind: "edit", externalMessageId: String(messageId), text },
     );
+  }
+
+  queueOperation(
+    turnId: number | null,
+    agentId: BotId,
+    conversation: ConversationRef,
+    operation: OutboundOperation,
+    prebuiltPayloadJson?: string,
+  ): number {
+    return this.db.insertOutboundOperation({
+      turnId,
+      agentId,
+      conversation,
+      operation,
+      payloadJson: prebuiltPayloadJson,
+    });
   }
 
   /**
@@ -205,53 +226,72 @@ export class OutboxProcessor {
     const rows = this.db.getPendingOutbox();
     if (rows.length === 0) return;
 
-    // Group by bot_id. Each bot's queue is processed serially (preserves
-    // intra-chat ordering) but bots run concurrently, so a 429 on bot A
-    // doesn't head-of-line block bot B. Per-bot reentrancy is guarded
-    // via processingBots so a slow bot can't be picked up twice if the
+    // Group by agent_id. Each agent's queue is processed serially (preserves
+    // intra-conversation ordering) but agents run concurrently, so a 429 on
+    // one endpoint doesn't head-of-line block another. Per-agent reentrancy is
+    // guarded via processingBots so a slow agent can't be picked up twice if the
     // 500ms timer fires while it's still draining.
-    const byBot = new Map<BotId, typeof rows>();
+    const byAgent = new Map<BotId, typeof rows>();
     for (const row of rows) {
-      const list = byBot.get(row.bot_id);
+      const list = byAgent.get(row.agent_id);
       if (list) list.push(row);
-      else byBot.set(row.bot_id, [row]);
+      else byAgent.set(row.agent_id, [row]);
     }
 
     await Promise.all(
-      [...byBot.entries()].map(async ([botId, botRows]) => {
-        if (this.processingBots.has(botId)) return;
-        this.processingBots.add(botId);
+      [...byAgent.entries()].map(async ([agentId, agentRows]) => {
+        if (this.processingBots.has(agentId)) return;
+        this.processingBots.add(agentId);
         try {
-          for (const row of botRows) {
+          for (const row of agentRows) {
             await this.processOne(row);
           }
         } finally {
-          this.processingBots.delete(botId);
+          this.processingBots.delete(agentId);
         }
       }),
     );
   }
 
-  private async processOne(row: {
-    id: number;
-    turn_id: number;
-    bot_id: BotId;
-    chat_id: number;
-    kind: string;
-    telegram_message_id: number | null;
-    payload_json: string;
-    status: string;
-    attempt_count: number;
-  }): Promise<void> {
-    const adapter = this.adapters.get(row.bot_id);
+  private async processOne(
+    row: ReturnType<GatewayDB["getPendingOutbox"]>[number],
+  ): Promise<void> {
+    const adapter = this.adapters.get(row.agent_id);
     if (!adapter) {
-      log.error("no endpoint for agent", { bot_id: row.bot_id });
+      log.error("no endpoint for agent", { agent_id: row.agent_id });
       this.db.markOutboxFailed(row.id, "no messaging endpoint");
       return;
     }
 
-    const payload = JSON.parse(row.payload_json) as { text: string };
-    const conversation = telegramConversation(row.bot_id, row.chat_id);
+    const payload = JSON.parse(row.payload_json) as Partial<OutboundOperation> &
+      Record<string, unknown>;
+    const conversation: ConversationRef = {
+      platform: row.platform,
+      communityId: null,
+      endpointId: row.endpoint_id,
+      channelId: row.external_conversation_id,
+      threadRootId: row.thread_root_id,
+      workflowRunId: row.workflow_run_id,
+      type: row.conversation_type,
+    };
+    const operationKind = row.operation_kind as OutboundOperation["kind"];
+    const externalMessageId =
+      row.external_message_id ??
+      (row.telegram_message_id !== null
+        ? String(row.telegram_message_id)
+        : null);
+    const operation = materializeOperation(
+      operationKind,
+      payload,
+      externalMessageId,
+    );
+    if (!operation) {
+      this.db.markOutboxFailed(
+        row.id,
+        `invalid ${operationKind} outbox payload`,
+      );
+      return;
+    }
 
     // Mark as in_flight before the Telegram POST. If we crash between the
     // POST returning success and `markOutboxSent`, the row stays in
@@ -261,46 +301,27 @@ export class OutboxProcessor {
     this.db.markOutboxInFlight(row.id, this.inFlightGraceSecs);
 
     try {
-      if (row.kind === "send") {
-        const result = await adapter.deliver(conversation, {
-          kind: "send",
-          text: payload.text,
-          files: [],
-        });
-        if (result.ok) {
-          const externalMessageId = result.externalMessageId
-            ? Number(result.externalMessageId)
-            : undefined;
-          this.db.markOutboxSent(row.id, externalMessageId);
+      const result = await adapter.deliver(conversation, operation);
+      if (result.ok || (!result.ok && result.notModified)) {
+        this.db.markOutboxSent(
+          row.id,
+          result.ok ? result.externalMessageId : undefined,
+        );
+        if (operation.kind === "send" && result.ok) {
           const cb = this.sendCallbacks.get(row.id);
-          if (cb && externalMessageId !== undefined) {
+          const callbackMessageId =
+            result.externalMessageId && /^-?\d+$/.test(result.externalMessageId)
+              ? Number(result.externalMessageId)
+              : undefined;
+          if (cb && callbackMessageId !== undefined) {
             this.sendCallbacks.delete(row.id);
-            cb(externalMessageId);
+            cb(callbackMessageId);
           }
-        } else if (!result.retriable) {
-          this.db.markOutboxFailed(row.id, result.description);
-        } else {
-          this.handleFailure(row, result.description, result.retryAfterMs);
         }
-      } else if (row.kind === "edit") {
-        if (!row.telegram_message_id) {
-          this.db.markOutboxFailed(row.id, "edit without message_id");
-          return;
-        }
-        const result = await adapter.deliver(conversation, {
-          kind: "edit",
-          externalMessageId: String(row.telegram_message_id),
-          text: payload.text,
-        });
-        if (result.ok || (!result.ok && result.notModified)) {
-          // Treat "not modified" as success: the displayed message already
-          // matches what we wanted to write.
-          this.db.markOutboxSent(row.id);
-        } else if (!result.retriable) {
-          this.db.markOutboxFailed(row.id, result.description);
-        } else {
-          this.handleFailure(row, result.description, result.retryAfterMs);
-        }
+      } else if (!result.retriable) {
+        this.db.markOutboxFailed(row.id, result.description);
+      } else {
+        this.handleFailure(row, result.description, result.retryAfterMs);
       }
     } catch (err) {
       this.handleFailure(row, err instanceof Error ? err.message : String(err));
@@ -308,14 +329,23 @@ export class OutboxProcessor {
   }
 
   private handleFailure(
-    row: { id: number; attempt_count: number; kind?: string; bot_id?: BotId },
+    row: {
+      id: number;
+      attempt_count: number;
+      kind?: string | null;
+      operation_kind?: string;
+      bot_id?: BotId | null;
+      agent_id?: BotId;
+    },
     error: string,
     retryAfterMs?: number,
   ): void {
-    if (row.bot_id) {
+    const metricAgentId = row.agent_id ?? row.bot_id;
+    const operationKind = row.operation_kind ?? row.kind;
+    if (metricAgentId) {
       this.metrics.recordOutboundFailure(
-        row.bot_id,
-        row.kind === "edit" ? "edit" : "send",
+        metricAgentId,
+        operationKind === "edit" ? "edit" : "send",
       );
     }
 
@@ -373,8 +403,30 @@ export class OutboxProcessor {
       this.config.outbox.max_attempts,
     );
 
-    if (willDeadLetter && row.bot_id && this.alerts) {
-      void this.alerts.outboxFailures(row.bot_id, nextAttemptCount);
+    if (willDeadLetter && metricAgentId && this.alerts) {
+      void this.alerts.outboxFailures(metricAgentId, nextAttemptCount);
     }
   }
+}
+
+function materializeOperation(
+  kind: OutboundOperation["kind"],
+  payload: Partial<OutboundOperation> & Record<string, unknown>,
+  externalMessageId: string | null,
+): OutboundOperation | null {
+  const candidate = { ...payload, kind } as Record<string, unknown>;
+  if (kind === "send") {
+    if (typeof candidate.text !== "string") return null;
+    candidate.files = Array.isArray(candidate.files) ? candidate.files : [];
+  }
+  if (
+    ["edit", "delete", "reaction_add", "reaction_remove", "vote"].includes(kind)
+  ) {
+    candidate.externalMessageId =
+      typeof candidate.externalMessageId === "string"
+        ? candidate.externalMessageId
+        : externalMessageId;
+    if (typeof candidate.externalMessageId !== "string") return null;
+  }
+  return candidate as unknown as OutboundOperation;
 }

@@ -2,7 +2,31 @@
 
 All configuration lives in a single YAML file (default `./torana.yaml`). The schema is validated with [Zod](https://zod.dev); errors point at the exact bad path.
 
-> **Version key.** Every config must start with `version: 1`. Future breaking schema changes bump the version. Anything other than `1` is rejected at load time.
+> **Version key.** Config versions `1` and `2` are accepted. Version 1 remains
+> the compatibility format. Version 2 models agents, platform endpoints, and
+> session policy separately; both normalize to the same runtime behavior for
+> Telegram during Phase 2.
+
+## Upgrading a v1 config
+
+Render a reviewable v2 file without changing the source:
+
+```sh
+torana config upgrade --from v1 --to v2 --input ./torana.yaml > ./torana.v2.yaml
+torana validate --config ./torana.v2.yaml
+```
+
+The upgrade preserves the v1 agent-wide session behavior as
+`sessions.scope: legacy_agent`, maps every `bots[]` entry to an `agents[]`
+entry with a `<agent>-telegram` endpoint, and converts legacy alerts to
+`alerts.target`. Buzz endpoints are representable but must remain disabled
+until Phase 4.
+
+In v2, Telegram-wide transport settings live under
+`platforms.telegram.delivery`; bot identity and credentials live under
+`agents[].endpoints[]`; Agent API side-session limits move to `sessions.*`.
+The deprecated `agent_api.side_sessions` block is accepted during the bridge
+window, but `sessions.*` is authoritative.
 
 ## Env interpolation
 
@@ -37,7 +61,7 @@ To inherit a specific var, reference it via `${VAR}`. To disable PATH inheritanc
 
 ### `version`
 
-`1` (required). Schema version.
+`1` or `2` (required). Schema version.
 
 ### `gateway`
 

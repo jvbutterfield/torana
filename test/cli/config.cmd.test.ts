@@ -3,11 +3,14 @@
 // config file so we don't touch the real ~/.config/torana/.
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runConfig } from "../../src/cli/config.js";
+import { loadConfigFromString } from "../../src/config/load.js";
+import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
+import yaml from "js-yaml";
 
 function tmpPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "torana-cfg-"));
@@ -362,5 +365,46 @@ describe("torana config dispatcher", () => {
     expect(r.stdout.join("\n")).toContain(
       "Manage the torana CLI profile store",
     );
+  });
+});
+
+describe("torana config upgrade", () => {
+  test("renders a valid v2 config without modifying its v1 input", () => {
+    const input = tmpPath().replace("config.toml", "torana.yaml");
+    const source = yaml.dump(makeTestConfig([makeTestBotConfig("alpha")]));
+    writeFileSync(input, source, { mode: 0o600 });
+
+    const result = runConfig([
+      "upgrade",
+      "--from",
+      "v1",
+      "--to",
+      "v2",
+      "--input",
+      input,
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.join("\n")).toContain("version: 2");
+    const upgraded = loadConfigFromString(result.stdout.join("\n"), {
+      skipInterpolation: true,
+    });
+    expect(upgraded.normalized.sourceVersion).toBe(2);
+    expect(upgraded.normalized.endpoints[0]?.id).toBe("alpha-telegram");
+    expect(Bun.file(input).text()).resolves.toBe(source);
+  });
+
+  test("rejects unsupported version pairs", () => {
+    const result = runConfig([
+      "upgrade",
+      "--from",
+      "v2",
+      "--to",
+      "v3",
+      "--input",
+      "/unused",
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr.join("\n")).toContain("--from v1 --to v2");
   });
 });

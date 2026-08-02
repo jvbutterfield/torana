@@ -1,7 +1,7 @@
 // Platform-neutral inbound processing. Platform transports normalize their
-// native payloads before entering this path; the v1 database bridge below
-// converts canonical decimal external IDs back to integers until Phase 2
-// introduces the normalized persistence model.
+// native payloads before entering this path. Phase 2 still projects Telegram
+// events through the explicit schema-v3/v1 compatibility boundary while the
+// durable conversation and outbox models retain string external IDs.
 
 import type { AlertManager } from "../alerts.js";
 import type { BotConfig, Config } from "../config/schema.js";
@@ -10,6 +10,7 @@ import { logger } from "../log.js";
 import type { PlatformAdapter } from "../platform/capabilities.js";
 import { supports } from "../platform/capabilities.js";
 import type { InboundEvent } from "../platform/types.js";
+import { telegramLegacyIds } from "../platform/telegram/adapter.js";
 import { isAuthorized } from "./acl.js";
 import { computeAttachmentsDiskUsage } from "./attachments.js";
 import {
@@ -57,13 +58,7 @@ export async function processInboundEvent(
     return { status: "dropped_malformed" };
   }
 
-  const updateId = legacyDecimal(event.externalEventId, "external event ID");
-  const chatId = legacyDecimal(event.conversation.channelId, "channel ID");
-  const messageId = legacyDecimal(
-    event.externalMessageId,
-    "external message ID",
-  );
-  const fromUserId = legacyDecimal(event.sender.id, "external principal ID");
+  const { updateId, chatId, messageId, fromUserId } = telegramLegacyIds(event);
   const payloadJson = JSON.stringify(event.raw);
 
   const existing = db.getInboundUpdateStatus(botConfig.id, updateId);
@@ -248,15 +243,4 @@ async function deliverNotice(
   } catch {
     // Best effort, matching the pre-adapter Telegram behavior.
   }
-}
-
-function legacyDecimal(value: string, label: string): number {
-  if (!/^-?[1-9]\d*$/.test(value)) {
-    throw new Error(`${label} must be a canonical decimal integer`);
-  }
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed)) {
-    throw new Error(`${label} is outside the safe integer range`);
-  }
-  return parsed;
 }

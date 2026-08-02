@@ -65,32 +65,22 @@ describe("§12.5.2 authz.enumeration-resistance", () => {
     // Telegram-origin turns have agent_api_token_name = NULL, so they
     // never match the caller's token name and should return
     // turn_not_found just like a genuinely missing id. We exercise
-    // this via raw SQL since the public insert helpers are purpose-
-    // specific.
+    // this through the compatibility helpers so schema-v5 normalized fields
+    // are populated alongside the legacy Telegram columns.
     h = startHarness({ tokens: [attacker] });
-    const db = (
-      h.db as unknown as {
-        _db: {
-          prepare: (s: string) => {
-            get: (...a: unknown[]) => unknown;
-            run: (...a: unknown[]) => unknown;
-          };
-        };
-      }
-    )._db;
-    db.prepare(
-      `INSERT INTO inbound_updates (id, bot_id, telegram_update_id, chat_id, message_id, from_user_id, payload_json)
-       VALUES (1, 'bot1', 1, 100, 1, '1', '{}')`,
-    ).run();
-    const row = db
-      .prepare(
-        `INSERT INTO turns (bot_id, chat_id, source_update_id, status, attachment_paths_json, source)
-         VALUES ('bot1', 100, 1, 'completed', '[]', 'telegram')
-         RETURNING id`,
-      )
-      .get() as { id: number };
+    const inboundId = h.db.insertUpdate(
+      "bot1",
+      1,
+      100,
+      1,
+      "1",
+      "{}",
+      "received",
+    )!;
+    const turnId = h.db.createTurn("bot1", 100, inboundId, []);
+    h.db.completeTurn(turnId, "completed");
 
-    const rTelegram = await fetch(`${h.base}/v1/turns/${row.id}`, {
+    const rTelegram = await fetch(`${h.base}/v1/turns/${turnId}`, {
       headers: { Authorization: `Bearer ${attackerSecret}` },
     });
     const rNonexistent = await fetch(`${h.base}/v1/turns/9999999`, {
