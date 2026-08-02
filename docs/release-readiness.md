@@ -65,15 +65,19 @@ provenance also passed.
 The real Telegram sandbox regression remains pending because no
 `TELEGRAM_TEST_BOT_TOKEN` and `TELEGRAM_TEST_CHAT_ID` are configured.
 
-The production `agent-team` Jules canary is active on Railway deployment
-`461e49af-a1ae-4b6f-acef-1246a9f887f7`, pinned to `torana@2.0.0-rc.1` and the
-Block Buzz CLI `desktop-v0.5.3` source. Buzz Desktop registers Jules as a
-deployed provider-backed agent, preventing an explicit mention from starting a
-second local runtime. The corrected canary test dispatched exactly one Torana
-turn (`4079`), produced one visible reply, and left the Desktop local-worker
-process set unchanged. The endpoint remained healthy and connected with empty
-queues and outbox. The 24-hour canary observation window began at
-2026-08-02 21:00:20 UTC (15:00:20 MDT).
+The production `agent-team` Buzz rollout is active on Railway deployment
+`e6ea885b-742a-47b5-9dee-fd396901ba3b`, pinned to `torana@2.0.0-rc.1` and the
+Block Buzz CLI `desktop-v0.5.3` source. Buzz Desktop registers Jules and Cato as
+deployed provider-backed agents, preventing explicit mentions from starting
+second local runtimes. The corrected Jules test dispatched exactly one Torana
+turn (`4079`) and produced one visible reply. Cato was then added behind a
+separate disabled endpoint gate in `agent-team` commit `10ff31a`; the disabled
+deployment passed before activation. His final test dispatched exactly one
+Torana turn (`4080`) and produced one visible reply. Both tests left the Desktop
+local-worker process set unchanged. Both endpoints are healthy and connected
+with one isolated conversation/session each and empty queues and Buzz outboxes.
+The 24-hour two-persona observation window began at 2026-08-02 22:07:57 UTC
+(16:07:57 MDT).
 
 The mixed-platform harness uses five personas, Telegram plus cryptographically
 signed Buzz delivery, configurable realistic conversation counts, durable

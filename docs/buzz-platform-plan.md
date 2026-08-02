@@ -1662,15 +1662,18 @@ again, so both Desktop and Torana replied. Remote intake was disabled while
 Jules's managed-agent record was changed to a deployed provider-backed runtime;
 deleting the managed identity was neither necessary nor desirable.
 
-The corrected canary passed on Railway deployment
-`461e49af-a1ae-4b6f-acef-1246a9f887f7`, pinned to `torana@2.0.0-rc.1` and the
-Block Buzz CLI `desktop-v0.5.3` source. The remote `jules-buzz` endpoint became
-active, healthy, and connected while all five Telegram runners remained ready.
-The final owner message dispatched exactly one Torana turn (`4079`), produced
-one visible reply, left the Buzz Desktop local-worker process set unchanged,
-and ended with zero queued/running work and zero pending/dead Buzz outbox rows.
-The 24-hour canary observation window began at 2026-08-02 21:00:20 UTC
-(15:00:20 MDT).
+The corrected Jules canary passed with exactly one Torana turn (`4079`) and one
+visible reply. Cato was then added behind a separate disabled endpoint gate in
+`agent-team` commit `10ff31a`. The disabled deployment passed before activation,
+and Cato's final owner message dispatched exactly one Torana turn (`4080`) and
+produced one visible reply. Railway deployment
+`e6ea885b-742a-47b5-9dee-fd396901ba3b` now runs both provider-backed identities,
+pinned to `torana@2.0.0-rc.1` and the Block Buzz CLI `desktop-v0.5.3` source.
+Both Buzz endpoints are active, healthy, and connected while all five Telegram
+runners remain ready. Each has one isolated conversation/session, zero
+queued/running work, and zero pending/dead Buzz outbox rows. Neither test
+changed the Buzz Desktop local-worker process set. The 24-hour two-persona
+observation window began at 2026-08-02 22:07:57 UTC (16:07:57 MDT).
 
 Remaining operator gates are the real Telegram sandbox and external open-relay
 E2Es, fresh cross-process Codex/Claude restart checks, the 24-hour
