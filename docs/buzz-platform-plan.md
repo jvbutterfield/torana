@@ -1474,7 +1474,10 @@ delete contract, leaving blob lifecycle to relay retention/deduplication policy.
 Focused Phase 8 tests cover signed image/PDF materialization, durable paths,
 same-origin SSRF defense, traversal-safe names, redirect/compression/oversize/
 MIME-spoof rejection, retry reuse, and media-thread root routing. The remaining
-live gate requires an authenticated hosted-relay image/PDF round trip.
+live gate passed against the Block-hosted closed relay on 2026-08-02: a PNG and
+PDF uploaded with signed Blossom authorization, the original signed message was
+accepted, an exact-event retry was deduplicated, and authenticated downloads
+matched the advertised MIME types, sizes, and SHA-256 hashes.
 
 ### Phase 9 — complete Buzz CLI/skill integration
 

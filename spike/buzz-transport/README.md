@@ -47,6 +47,21 @@ BUZZ_PHASE0_PUBLISH=1 \
 bun run hosted-live.ts
 ```
 
+`hosted-media-live.ts` completes the Phase 8 hosted-relay gate. It uploads a
+small PNG and PDF, publishes their native `imeta` descriptors, retries the exact
+same signed event, downloads both files with signed Blossom authorization,
+and verifies their sizes, MIME types, and hashes. It removes its local temporary
+files but leaves the published probe and its content-addressed blobs referenced:
+
+```sh
+BUZZ_RELAY_URL=wss://relay.example \
+BUZZ_PRIVATE_KEY=nsec1... \
+BUZZ_AUTH_TAG='["auth",...]' \
+BUZZ_CHANNEL_ID=disposable-channel-uuid \
+BUZZ_PHASE8_PUBLISH=1 \
+bun run hosted-media-live.ts
+```
+
 ## Authenticated capacity probe
 
 `measure-authenticated-capacity.ts` runs minimal real provider turns at 1, 2,
