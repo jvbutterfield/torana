@@ -302,6 +302,8 @@ export async function startGateway(
           inboundEventId,
           event,
         }),
+      onProactive: ({ endpointId, channelId, prompt }) =>
+        registry.handleBuzzHeartbeat({ endpointId, channelId, prompt }),
     });
     transports.push(buzzTransport);
   }

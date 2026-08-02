@@ -230,7 +230,10 @@ export class OutboxProcessor {
     turnId: number | null,
     agentId: BotId,
     conversation: ConversationRef,
-    operation: Extract<OutboundOperation, { kind: "send" }>,
+    operation: Extract<
+      OutboundOperation,
+      { kind: "send" | "forum_post" | "forum_comment" }
+    >,
     onSent: SendCallback,
   ): number {
     const id = this.queueOperation(turnId, agentId, conversation, operation);
@@ -386,7 +389,10 @@ export class OutboxProcessor {
           row.id,
           result.ok ? result.externalMessageId : undefined,
         );
-        if (operation.kind === "send" && result.ok) {
+        if (
+          ["send", "forum_post", "forum_comment"].includes(operation.kind) &&
+          result.ok
+        ) {
           const cb = this.sendCallbacks.get(row.id);
           if (cb && result.externalMessageId) {
             this.sendCallbacks.delete(row.id);

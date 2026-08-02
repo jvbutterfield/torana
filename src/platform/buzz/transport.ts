@@ -58,6 +58,11 @@ export interface BuzzTransportOptions {
     inboundEventId: number;
     event: InboundEvent;
   }) => Promise<void> | void;
+  onProactive?: (args: {
+    endpointId: string;
+    channelId: string;
+    prompt: string;
+  }) => Promise<void> | void;
   adapters?: ReadonlyMap<string, PlatformAdapter>;
   clientFactory?: (
     options: ConstructorParameters<typeof BuzzRelayClient>[0],
@@ -110,6 +115,7 @@ class BuzzEndpointSupervisor {
   private alerts?: AlertManager;
   private onAccepted?: BuzzTransportOptions["onAccepted"];
   private onControl?: BuzzTransportOptions["onControl"];
+  private onProactive?: BuzzTransportOptions["onProactive"];
   private clientFactory: NonNullable<BuzzTransportOptions["clientFactory"]>;
   private random: () => number;
   private lifecyclePollMs: number;
@@ -144,6 +150,7 @@ class BuzzEndpointSupervisor {
     this.alerts = opts.alerts;
     this.onAccepted = opts.onAccepted;
     this.onControl = opts.onControl;
+    this.onProactive = opts.onProactive;
     this.adapter.setRateLimits({
       edit: this.normalized.limits.buzz_edit_cadence_ms,
       reaction: this.normalized.limits.reaction_min_interval_ms,
@@ -444,6 +451,10 @@ class BuzzEndpointSupervisor {
             BUZZ_KINDS.deletion,
             BUZZ_KINDS.nativeDelete,
             BUZZ_KINDS.reaction,
+            BUZZ_KINDS.forumPost,
+            BUZZ_KINDS.forumComment,
+            BUZZ_KINDS.forumVote,
+            ...this.workflowKinds(),
           ],
           since,
           limit,
@@ -482,6 +493,10 @@ class BuzzEndpointSupervisor {
             BUZZ_KINDS.deletion,
             BUZZ_KINDS.nativeDelete,
             BUZZ_KINDS.reaction,
+            BUZZ_KINDS.forumPost,
+            BUZZ_KINDS.forumComment,
+            BUZZ_KINDS.forumVote,
+            ...this.workflowKinds(),
           ],
           since: liveSince,
         }),
@@ -634,6 +649,14 @@ class BuzzEndpointSupervisor {
     const heartbeatMs =
       this.normalized.buzzPlatform.subscription.heartbeat_secs * 1000;
     let nextHeartbeatAt = Date.now() + heartbeatMs;
+    const heartbeatTrigger = this.adapter.config.triggers.heartbeat;
+    const feedTrigger = this.adapter.config.triggers.feed;
+    let nextPromptAt = heartbeatTrigger.enabled
+      ? Date.now() + heartbeatTrigger.interval_secs! * 1000
+      : Number.POSITIVE_INFINITY;
+    let nextFeedAt = feedTrigger.enabled
+      ? Date.now() + feedTrigger.interval_secs! * 1000
+      : Number.POSITIVE_INFINITY;
     while (this.running && this.client === client) {
       const lifecycle = this.db.getEndpointState(
         this.endpointId,
@@ -654,12 +677,72 @@ class BuzzEndpointSupervisor {
         });
         nextHeartbeatAt = Date.now() + heartbeatMs;
       }
+      if (now >= nextFeedAt) {
+        await this.pollConfiguredFeed(client, feedTrigger.modes);
+        nextFeedAt = Date.now() + feedTrigger.interval_secs! * 1000;
+      }
+      if (now >= nextPromptAt) {
+        const channelId = heartbeatTrigger.target_channel!;
+        if (this.accessibleChannels.has(channelId)) {
+          await this.onProactive?.({
+            endpointId: this.endpointId,
+            channelId,
+            prompt: heartbeatTrigger.prompt!,
+          });
+        }
+        nextPromptAt = Date.now() + heartbeatTrigger.interval_secs! * 1000;
+      }
       await this.sleep(
         Math.min(
           this.lifecyclePollMs,
-          Math.max(1, nextHeartbeatAt - Date.now()),
+          Math.max(
+            1,
+            Math.min(nextHeartbeatAt, nextFeedAt, nextPromptAt) - Date.now(),
+          ),
         ),
       );
+    }
+  }
+
+  private async pollConfiguredFeed(
+    client: BuzzRelayClient,
+    modes: readonly ("mentions" | "needs_action")[],
+  ): Promise<void> {
+    const kinds = [
+      ...(modes.includes("mentions")
+        ? [BUZZ_KINDS.streamMessageV1, BUZZ_KINDS.streamMessageV2]
+        : []),
+      ...(modes.includes("needs_action")
+        ? [BUZZ_KINDS.workflowApprovalRequested]
+        : []),
+    ];
+    if (kinds.length === 0) return;
+    const since = Math.max(
+      0,
+      Math.floor(Date.now() / 1000) -
+        this.adapter.config.triggers.feed.interval_secs! -
+        this.normalized.buzzPlatform.subscription.replay_overlap_secs,
+    );
+    for (const channelId of this.accessibleChannels) {
+      const events = await client.query(
+        [
+          channelFilter({
+            channelId,
+            kinds,
+            pubkey: this.adapter.config.pubkey,
+            since,
+            limit: this.normalized.buzzPlatform.subscription.historical_limit,
+          }),
+        ],
+        this.subscriptionId(`feed-${channelId}-${Date.now()}`),
+      );
+      for (const event of events
+        .filter(isValidInboundEvent)
+        .sort(
+          (a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id),
+        )) {
+        await this.handleRelayEvent(event);
+      }
     }
   }
 
@@ -693,6 +776,12 @@ class BuzzEndpointSupervisor {
       workflowRunId: null,
       type: "stream",
     };
+  }
+
+  private workflowKinds(): number[] {
+    return this.adapter.config.triggers.workflows.enabled
+      ? [...this.adapter.config.triggers.workflows.event_kinds]
+      : [];
   }
 
   private channelSubscriptionId(channelId: string): string {

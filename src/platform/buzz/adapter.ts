@@ -35,6 +35,9 @@ const BUZZ_PHASE6_CAPABILITIES = new Set([
   "delete",
   "reaction_add",
   "reaction_remove",
+  "forum_post",
+  "forum_comment",
+  "vote",
   "typing",
   "presence",
 ] as const);
@@ -191,8 +194,15 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     const isMutation = (DEFAULT_MUTATION_KINDS as readonly number[]).includes(
       event.kind,
     );
+    const isWorkflow =
+      this.config.triggers.workflows.enabled &&
+      this.config.triggers.workflows.event_kinds.includes(event.kind);
+    const isNeedsAction =
+      this.config.triggers.feed.enabled &&
+      this.config.triggers.feed.modes.includes("needs_action") &&
+      event.kind === BUZZ_KINDS.workflowApprovalRequested;
     if (
-      (!isMessage && !isMutation) ||
+      (!isMessage && !isMutation && !isWorkflow && !isNeedsAction) ||
       (allowedKinds && !allowedKinds.includes(event.kind))
     ) {
       return {
@@ -210,6 +220,14 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
       };
     }
 
+    if (isWorkflow || isNeedsAction) {
+      return {
+        kind: "accepted",
+        event: normalized,
+        reason: null,
+        cursorScope,
+      };
+    }
     if (!this.authorAllowed(event.pubkey)) {
       return {
         kind: "rejected",
@@ -277,7 +295,14 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     conversation: ConversationRef,
     operation: OutboundOperation,
   ): PreparedOutboundOperation {
-    const tags: string[][] = [["h", conversation.channelId]];
+    const tags: string[][] = [
+      [
+        "h",
+        operation.kind === "forum_post"
+          ? operation.channelId
+          : conversation.channelId,
+      ],
+    ];
     let kind: number;
     let content: string;
     if (operation.kind === "send") {
@@ -307,6 +332,20 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     } else if (operation.kind === "reaction_remove") {
       kind = BUZZ_KINDS.deletion;
       content = "";
+      tags.push(["e", operation.externalMessageId]);
+    } else if (operation.kind === "forum_post") {
+      kind = BUZZ_KINDS.forumPost;
+      content = operation.title.trim()
+        ? `# ${operation.title.trim()}\n\n${operation.text}`
+        : operation.text;
+    } else if (operation.kind === "forum_comment") {
+      kind = BUZZ_KINDS.forumComment;
+      content = operation.text;
+      tags.push(["e", operation.rootEventId, "", "root"]);
+      tags.push(["e", operation.replyTo ?? operation.rootEventId, "", "reply"]);
+    } else if (operation.kind === "vote") {
+      kind = BUZZ_KINDS.forumVote;
+      content = operation.direction === "up" ? "+" : "-";
       tags.push(["e", operation.externalMessageId]);
     } else {
       return { payloadJson: JSON.stringify(operation) };
@@ -351,9 +390,16 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     prepared?: PreparedOutboundOperation,
   ): Promise<DeliveryResult> {
     if (
-      !["send", "edit", "delete", "reaction_add", "reaction_remove"].includes(
-        operation.kind,
-      )
+      ![
+        "send",
+        "edit",
+        "delete",
+        "reaction_add",
+        "reaction_remove",
+        "forum_post",
+        "forum_comment",
+        "vote",
+      ].includes(operation.kind)
     ) {
       return {
         ok: false,
@@ -492,10 +538,15 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
       event.kind === BUZZ_KINDS.streamEdit ||
       event.kind === BUZZ_KINDS.deletion ||
       event.kind === BUZZ_KINDS.nativeDelete ||
-      event.kind === BUZZ_KINDS.reaction
+      event.kind === BUZZ_KINDS.reaction ||
+      event.kind === BUZZ_KINDS.forumVote
         ? (reply ?? firstTag(event, "e"))
         : null;
-    const root = explicitRoot ?? reply ?? null;
+    const root =
+      event.kind === BUZZ_KINDS.forumPost
+        ? event.id
+        : (explicitRoot ?? reply ?? null);
+    const workflowRunId = workflowRunIdFromEvent(event);
     const kind =
       event.kind === BUZZ_KINDS.memberAdded ||
       event.kind === BUZZ_KINDS.memberRemoved
@@ -507,20 +558,30 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
             ? "message_delete"
             : event.kind === BUZZ_KINDS.reaction
               ? "reaction"
-              : "message";
+              : event.kind === BUZZ_KINDS.forumPost
+                ? "forum_post"
+                : event.kind === BUZZ_KINDS.forumComment
+                  ? "forum_comment"
+                  : event.kind === BUZZ_KINDS.forumVote
+                    ? "forum_vote"
+                    : isWorkflowKind(event.kind)
+                      ? "workflow_event"
+                      : "message";
     const conversation: ConversationRef = {
       platform: "buzz",
       communityId: this.endpoint.communityId,
       endpointId: this.endpoint.id,
       channelId,
       threadRootId: root,
-      workflowRunId: null,
+      workflowRunId,
       type:
-        this.channels.get(channelId)?.type === "dm"
-          ? "direct"
-          : this.channels.get(channelId)?.type === "forum"
-            ? "forum"
-            : "stream",
+        workflowRunId || this.channels.get(channelId)?.type === "workflow"
+          ? "workflow"
+          : this.channels.get(channelId)?.type === "dm"
+            ? "direct"
+            : this.channels.get(channelId)?.type === "forum"
+              ? "forum"
+              : "stream",
     };
     return {
       platform: "buzz",
@@ -531,7 +592,7 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
       externalEventId: event.id,
       externalMessageId: event.id,
       targetExternalEventId: mutationTarget ?? null,
-      workflowRunId: null,
+      workflowRunId,
       sender: {
         id: event.pubkey,
         kind: "unknown",
@@ -604,4 +665,29 @@ function normalizeReaction(
     );
   }
   return { content: `:${name}:`, custom: { name, url } };
+}
+
+function isWorkflowKind(kind: number): boolean {
+  return (
+    (kind >= BUZZ_KINDS.workflowTriggered &&
+      kind <= BUZZ_KINDS.workflowCancelled) ||
+    (kind >= BUZZ_KINDS.workflowApprovalRequested &&
+      kind <= BUZZ_KINDS.workflowApprovalDenied)
+  );
+}
+
+function workflowRunIdFromEvent(event: Event): string | null {
+  for (const name of ["run", "run_id", "workflow_run"]) {
+    const value = firstTag(event, name);
+    if (value) return value;
+  }
+  try {
+    const content = JSON.parse(event.content) as Record<string, unknown>;
+    for (const name of ["run_id", "workflow_run_id"]) {
+      if (typeof content[name] === "string") return content[name];
+    }
+  } catch {
+    // Workflow content may be plain text; missing run identity is handled below.
+  }
+  return isWorkflowKind(event.kind) ? event.id : null;
 }

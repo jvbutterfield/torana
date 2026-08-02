@@ -54,6 +54,8 @@ export interface BuzzChannelMetadata {
 export const DEFAULT_MESSAGE_KINDS = [
   BUZZ_KINDS.streamMessageV1,
   BUZZ_KINDS.streamMessageV2,
+  BUZZ_KINDS.forumPost,
+  BUZZ_KINDS.forumComment,
 ] as const;
 
 export const DEFAULT_MUTATION_KINDS = [
@@ -61,6 +63,7 @@ export const DEFAULT_MUTATION_KINDS = [
   BUZZ_KINDS.deletion,
   BUZZ_KINDS.nativeDelete,
   BUZZ_KINDS.reaction,
+  BUZZ_KINDS.forumVote,
 ] as const;
 
 export type OwnerAuthTag = ["auth", string, string, string];

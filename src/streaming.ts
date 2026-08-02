@@ -561,15 +561,23 @@ export class StreamManager {
   ): number {
     if (state.conversation.platform === "buzz") {
       const reply = state.buzzReply!;
-      const operation = {
-        kind: "send" as const,
-        text,
-        files: [],
-        replyTo: reply.sourceEventId,
-        mentions: [reply.senderId],
-        traceId: reply.traceId,
-        hop: reply.hop,
-      };
+      const operation =
+        state.conversation.type === "forum" && state.conversation.threadRootId
+          ? {
+              kind: "forum_comment" as const,
+              rootEventId: state.conversation.threadRootId,
+              replyTo: reply.sourceEventId,
+              text,
+            }
+          : {
+              kind: "send" as const,
+              text,
+              files: [],
+              replyTo: reply.sourceEventId,
+              mentions: [reply.senderId],
+              traceId: reply.traceId,
+              hop: reply.hop,
+            };
       return onSent
         ? this.outbox.queueOperationWithCallback(
             state.turnId,

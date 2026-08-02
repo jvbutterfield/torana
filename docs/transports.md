@@ -22,6 +22,13 @@ content is capped separately. Torana defaults to `max_frame_bytes: 524288` and
 `message_max_bytes: 65536`, and byte-splits continuations without cutting UTF-8
 characters.
 
+Forum posts, comments, and votes use Buzz-native event kinds. Each forum root
+has its own durable session, and nested comments route back to that root. Feed
+mentions, needs-action events, workflow notifications, and scheduled heartbeat
+prompts are disabled unless enabled under the endpoint's `triggers` settings.
+Heartbeat prompts run only when the agent has no queued or running human work;
+workflow prompts cannot grant or deny approvals implicitly.
+
 ## Telegram: when to use webhook or polling
 
 ## When to use what

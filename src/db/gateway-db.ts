@@ -8,7 +8,7 @@ import type {
   InboundEvent,
   OutboundOperation,
 } from "../platform/types.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { runnerSessionId } from "../conversation/session-key.js";
 
 const log = logger("db");
@@ -757,7 +757,7 @@ export class GatewayDB {
       conversation.communityId ?? "",
       conversation.endpointId,
       conversation.channelId,
-      policy === "thread" ? threadRoot : "",
+      policy === "thread" || conversation.type === "forum" ? threadRoot : "",
       workflowRun,
     ].join("\u001f");
     const scopedSessionHash = createHash("sha256")
@@ -825,6 +825,107 @@ export class GatewayDB {
         workflowRun,
       ) as { id: number; session_key: string | null };
     return { id: row.id, sessionKey: row.session_key };
+  }
+
+  enqueueBuzzHeartbeat(args: {
+    agentId: BotId;
+    endpointId: string;
+    communityId: string | null;
+    channelId: string;
+    prompt: string;
+  }): number | null {
+    if (!this.normalizedSchema) return null;
+    return this.transactionImmediate(() => {
+      const endpoint = this._db
+        .query(
+          `SELECT lifecycle_state, external_identity FROM endpoints
+           WHERE endpoint_id=? AND agent_id=? AND platform='buzz'`,
+        )
+        .get(args.endpointId, args.agentId) as {
+        lifecycle_state: string;
+        external_identity: string | null;
+      } | null;
+      if (!endpoint || endpoint.lifecycle_state !== "active") return null;
+      const busy = this._db
+        .query(
+          "SELECT 1 FROM turns WHERE agent_id=? AND status IN ('queued','running') LIMIT 1",
+        )
+        .get(args.agentId);
+      if (busy) return null;
+      const conversationRef: ConversationRef = {
+        platform: "buzz",
+        communityId: args.communityId,
+        endpointId: args.endpointId,
+        channelId: args.channelId,
+        threadRootId: null,
+        workflowRunId: null,
+        type: "stream",
+      };
+      const conversation = this.resolveConversation(
+        args.agentId,
+        conversationRef,
+        endpoint.external_identity,
+      );
+      const seq = this._db
+        .query(
+          `UPDATE endpoints SET next_received_seq=next_received_seq+1,
+             updated_at=datetime('now') WHERE endpoint_id=?
+           RETURNING next_received_seq`,
+        )
+        .get(args.endpointId) as { next_received_seq: number };
+      const externalId = `heartbeat:${randomUUID()}`;
+      const raw = JSON.stringify({
+        kind: "heartbeat",
+        channel_id: args.channelId,
+        prompt: args.prompt,
+      });
+      const inbound = this._db
+        .prepare(
+          `INSERT INTO inbound_events
+            (endpoint_id, platform, external_event_id, external_message_id,
+             conversation_id, sender_id, event_kind, payload_json,
+             payload_sha256, received_seq, status, status_reason)
+           VALUES (?, 'buzz', ?, ?, ?, ?, 'control', ?, ?, ?, 'enqueued',
+                   'scheduled_heartbeat')`,
+        )
+        .run(
+          args.endpointId,
+          externalId,
+          externalId,
+          conversation.id,
+          endpoint.external_identity ?? args.endpointId,
+          raw,
+          createHash("sha256").update(raw).digest("hex"),
+          seq.next_received_seq,
+        );
+      const prompt = [
+        "[Buzz scheduled heartbeat]",
+        `Community: ${args.communityId ?? "unknown"}`,
+        `Channel: ${args.channelId}`,
+        "This is lower-priority proactive work. Do not issue workflow approvals.",
+        "[/Buzz scheduled heartbeat]",
+        "",
+        args.prompt,
+      ].join("\n");
+      const turn = this._db
+        .prepare(
+          `INSERT INTO turns
+            (bot_id, agent_id, chat_id, conversation_id, session_key,
+             source_platform, source_event_id, prompt_text, prompt_markdown,
+             prompt_revision_seq)
+           VALUES (?, ?, 0, ?, ?, 'buzz', ?, ?, 1, ?)`,
+        )
+        .run(
+          args.agentId,
+          args.agentId,
+          conversation.id,
+          conversation.sessionKey,
+          Number(inbound.lastInsertRowid),
+          prompt,
+          seq.next_received_seq,
+        );
+      return Number(turn.lastInsertRowid);
+    });
   }
 
   getInboundEventStatus(

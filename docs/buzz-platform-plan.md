@@ -1413,6 +1413,19 @@ Gate:
 - heartbeat work never delays already queued human work;
 - approvals are never issued without explicit tool policy and agent instructions.
 
+Implementation evidence: forum kinds `45001`, `45003`, and `45002` normalize to
+posts, comments, and votes, and outbound operations sign the matching native
+events. Forum roots are always included in durable session scope, including
+when the general policy is conversation-scoped, while nested comments retain
+both root and immediate-reply provenance. Explicitly configured workflow kinds
+and needs-action events carry workflow-run identity into isolated conversations
+and receive a non-recursion/no-implicit-approval prompt boundary. Feed polling
+is opt-in and covers stream v1/v2 mentions plus needs-action events. Scheduled
+heartbeats are also opt-in, create durable lower-priority prompts only while the
+agent has no queued or running turn, and never accumulate. Focused Phase 7 tests
+cover isolated roots, nested replies, signed forum operations, workflow-run
+isolation, and the one-in-flight heartbeat gate.
+
 ### Phase 8 — attachments and Blossom media
 
 **Purpose:** provide secure inbound/outbound files and images.
