@@ -13,7 +13,11 @@ export interface BotCounters {
   turns_failed: number;
   worker_restarts: number;
   worker_startup_failures: number;
+  outbound_send_failures: number;
+  outbound_edit_failures: number;
+  /** @deprecated Use outbound_send_failures. Retained for one release. */
   telegram_send_failures: number;
+  /** @deprecated Use outbound_edit_failures. Retained for one release. */
   telegram_edit_failures: number;
 }
 
@@ -94,6 +98,8 @@ function zeroCounters(): BotCounters {
     turns_failed: 0,
     worker_restarts: 0,
     worker_startup_failures: 0,
+    outbound_send_failures: 0,
+    outbound_edit_failures: 0,
     telegram_send_failures: 0,
     telegram_edit_failures: 0,
   };
@@ -203,6 +209,18 @@ export class Metrics {
 
   recordTelegramCall(bucket: keyof TelegramApiCounters): void {
     this.telegramCounters[bucket] += 1;
+  }
+
+  recordOutboundFailure(botId: BotId, operation: "send" | "edit"): void {
+    const counters = this.counters.get(botId);
+    if (!counters) return;
+    if (operation === "send") {
+      counters.outbound_send_failures += 1;
+      counters.telegram_send_failures += 1;
+    } else {
+      counters.outbound_edit_failures += 1;
+      counters.telegram_edit_failures += 1;
+    }
   }
 
   /**
@@ -320,10 +338,29 @@ export class Metrics {
       );
     }
 
+    lines.push(
+      "# HELP torana_agent_turns_total Turns by agent and terminal status.",
+    );
+    lines.push("# TYPE torana_agent_turns_total counter");
+    for (const [agentId, c] of this.counters) {
+      lines.push(
+        `torana_agent_turns_total{agent_id="${agentId}",status="completed"} ${c.turns_completed}`,
+      );
+      lines.push(
+        `torana_agent_turns_total{agent_id="${agentId}",status="failed"} ${c.turns_failed}`,
+      );
+    }
+
     lines.push("# HELP bot_state Current bot lifecycle state.");
     lines.push("# TYPE bot_state gauge");
     for (const [botId, s] of Object.entries(botStates)) {
       lines.push(`bot_state{bot_id="${botId}"} ${s}`);
+    }
+
+    lines.push("# HELP torana_agent_state Current agent lifecycle state.");
+    lines.push("# TYPE torana_agent_state gauge");
+    for (const [agentId, state] of Object.entries(botStates)) {
+      lines.push(`torana_agent_state{agent_id="${agentId}"} ${state}`);
     }
 
     lines.push("# HELP outbox_depth Pending outbox rows per bot.");
@@ -350,6 +387,29 @@ export class Metrics {
     lines.push("# TYPE telegram_api_calls_total counter");
     for (const [bucket, v] of Object.entries(this.telegramCounters)) {
       lines.push(`telegram_api_calls_total{status="${bucket}"} ${v}`);
+    }
+
+    lines.push(
+      "# HELP torana_platform_api_calls_total Outbound platform API calls by platform and HTTP class.",
+    );
+    lines.push("# TYPE torana_platform_api_calls_total counter");
+    for (const [bucket, value] of Object.entries(this.telegramCounters)) {
+      lines.push(
+        `torana_platform_api_calls_total{platform="telegram",status="${bucket}"} ${value}`,
+      );
+    }
+
+    lines.push(
+      "# HELP torana_outbound_failures_total Outbound delivery failures by agent and operation.",
+    );
+    lines.push("# TYPE torana_outbound_failures_total counter");
+    for (const [agentId, counters] of this.counters) {
+      lines.push(
+        `torana_outbound_failures_total{agent_id="${agentId}",operation="send"} ${counters.outbound_send_failures}`,
+      );
+      lines.push(
+        `torana_outbound_failures_total{agent_id="${agentId}",operation="edit"} ${counters.outbound_edit_failures}`,
+      );
     }
 
     if (this.agentApi.size > 0) {

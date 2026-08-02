@@ -17,7 +17,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { Attachment } from "../../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../../platform/types.js";
 import type {
   AgentRunner,
   RunnerEvent,

@@ -1,7 +1,6 @@
 import { logger, type Logger } from "../log.js";
 import { nextBackoffMs } from "../backoff.js";
 import type { BotConfig, Config } from "../config/schema.js";
-import type { TelegramClient } from "../telegram/client.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { AgentRunner, RunnerEvent } from "../runner/types.js";
 import { ClaudeCodeRunner } from "../runner/claude-code.js";
@@ -11,12 +10,13 @@ import type { StreamManager } from "../streaming.js";
 import type { OutboxProcessor } from "../outbox.js";
 import type { Metrics } from "../metrics.js";
 import type { AlertManager } from "../alerts.js";
+import type { PlatformAdapter } from "../platform/capabilities.js";
 
 export interface BotOptions {
   config: Config;
   botConfig: BotConfig;
   db: GatewayDB;
-  telegram: TelegramClient;
+  endpoint: PlatformAdapter;
   streaming: StreamManager;
   outbox: OutboxProcessor;
   metrics: Metrics;
@@ -27,7 +27,7 @@ export interface BotOptions {
 
 export class Bot {
   readonly botConfig: BotConfig;
-  readonly telegram: TelegramClient;
+  readonly endpoint: PlatformAdapter;
   readonly runner: AgentRunner;
 
   private config: Config;
@@ -45,7 +45,7 @@ export class Bot {
   constructor(opts: BotOptions) {
     this.config = opts.config;
     this.botConfig = opts.botConfig;
-    this.telegram = opts.telegram;
+    this.endpoint = opts.endpoint;
     this.db = opts.db;
     this.streaming = opts.streaming;
     this.outbox = opts.outbox;

@@ -22,6 +22,8 @@ import { fileURLToPath } from "node:url";
 import { runCrashRecovery } from "../../src/main.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import type { TelegramClient } from "../../src/telegram/client.js";
+import type { PlatformAdapter } from "../../src/platform/capabilities.js";
+import { TelegramAdapter } from "../../src/platform/telegram/adapter.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -40,21 +42,21 @@ interface RecordedCall {
 }
 
 function makeRecordingClient(): {
-  client: TelegramClient;
+  client: PlatformAdapter;
   calls: RecordedCall[];
 } {
   const calls: RecordedCall[] = [];
   const client = {
     async sendMessage(chatId: number, text: string) {
       calls.push({ method: "sendMessage", chatId, text });
-      return { messageId: 1 };
+      return { ok: true, messageId: 1 };
     },
     async editMessageText(chatId: number, messageId: number, text: string) {
       calls.push({ method: "editMessageText", chatId, messageId, text });
-      return true;
+      return { ok: true };
     },
   } as unknown as TelegramClient;
-  return { client, calls };
+  return { client: new TelegramAdapter("alpha", client), calls };
 }
 
 let tmpDir: string;
@@ -263,7 +265,7 @@ describe("runCrashRecovery", () => {
     });
 
     // Pass an empty clients map — no client for 'alpha'.
-    runCrashRecovery(db, new Map<string, TelegramClient>());
+    runCrashRecovery(db, new Map<string, PlatformAdapter>());
 
     // Turn state was still updated even without a client.
     const row = db

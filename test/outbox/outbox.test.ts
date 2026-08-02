@@ -13,6 +13,7 @@ import { GatewayDB } from "../../src/db/gateway-db.js";
 import { OutboxProcessor } from "../../src/outbox.js";
 import { Metrics } from "../../src/metrics.js";
 import { TelegramClient, TelegramError } from "../../src/telegram/client.js";
+import { coerceTelegramAdapters } from "../../src/platform/telegram/adapter.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -153,8 +154,9 @@ beforeEach(() => {
         fetchImpl: wrapped,
       });
       const clients = new Map<string, TelegramClient>([["alpha", client]]);
+      const adapters = coerceTelegramAdapters(clients);
       const metrics = new Metrics(config);
-      const outbox = new OutboxProcessor(config, db, clients, metrics, null, {
+      const outbox = new OutboxProcessor(config, db, adapters, metrics, null, {
         inFlightGraceSecs: opts.inFlightGraceSecs,
       });
       return { outbox, metrics, calls };
@@ -994,7 +996,12 @@ describe("OutboxProcessor per-bot sharding", () => {
       ],
     ]);
     const metrics = new Metrics(config);
-    const outbox = new OutboxProcessor(config, harness.db, clients, metrics);
+    const outbox = new OutboxProcessor(
+      config,
+      harness.db,
+      coerceTelegramAdapters(clients),
+      metrics,
+    );
 
     // Seed two turns: one per bot. Both rows go into the outbox.
     const tA = harness.seedTurn("alpha");

@@ -1,7 +1,7 @@
 // AgentRunner interface and the normalized event shape all runners emit.
 
 import type { BotId } from "../config/schema.js";
-import type { Attachment } from "../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../platform/types.js";
 
 export type TurnId = string;
 

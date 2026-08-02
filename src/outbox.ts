@@ -2,10 +2,13 @@ import { logger } from "./log.js";
 import { nextBackoffMs } from "./backoff.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { GatewayDB } from "./db/gateway-db.js";
-import type { TelegramClient, EditResult } from "./telegram/client.js";
 import type { Metrics } from "./metrics.js";
 import type { AlertManager } from "./alerts.js";
-import { markdownToTelegramHtml } from "./format.js";
+import type {
+  DeliveryResult,
+  PlatformAdapter,
+} from "./platform/capabilities.js";
+import { telegramConversation } from "./platform/telegram/adapter.js";
 
 const log = logger("outbox");
 
@@ -26,7 +29,7 @@ const IN_FLIGHT_GRACE_SECS = 60;
 export class OutboxProcessor {
   private config: Config;
   private db: GatewayDB;
-  private clients: Map<BotId, TelegramClient>;
+  private adapters: Map<BotId, PlatformAdapter>;
   private metrics: Metrics;
   private alerts: AlertManager | null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -43,14 +46,14 @@ export class OutboxProcessor {
   constructor(
     config: Config,
     db: GatewayDB,
-    clients: Map<BotId, TelegramClient>,
+    endpoints: ReadonlyMap<BotId, PlatformAdapter>,
     metrics: Metrics,
     alerts: AlertManager | null = null,
     opts: { inFlightGraceSecs?: number } = {},
   ) {
     this.config = config;
     this.db = db;
-    this.clients = clients;
+    this.adapters = new Map(endpoints);
     this.metrics = metrics;
     this.alerts = alerts;
     this.inFlightGraceSecs = opts.inFlightGraceSecs ?? IN_FLIGHT_GRACE_SECS;
@@ -172,18 +175,22 @@ export class OutboxProcessor {
     chatId: number,
     messageId: number,
     text: string,
-  ): Promise<EditResult> {
-    const client = this.clients.get(botId);
-    if (!client) {
+  ): Promise<DeliveryResult> {
+    const adapter = this.adapters.get(botId);
+    if (!adapter) {
       return {
         ok: false,
         retriable: false,
         notModified: false,
-        description: "no telegram client",
+        description: "no messaging endpoint",
       };
     }
     try {
-      return await client.editMessageText(chatId, messageId, text);
+      return await adapter.deliver(telegramConversation(botId, chatId), {
+        kind: "edit",
+        externalMessageId: String(messageId),
+        text,
+      });
     } catch (err) {
       return {
         ok: false,
@@ -236,15 +243,15 @@ export class OutboxProcessor {
     status: string;
     attempt_count: number;
   }): Promise<void> {
-    const client = this.clients.get(row.bot_id);
-    if (!client) {
-      log.error("no client for bot", { bot_id: row.bot_id });
-      this.db.markOutboxFailed(row.id, "no telegram client");
+    const adapter = this.adapters.get(row.bot_id);
+    if (!adapter) {
+      log.error("no endpoint for agent", { bot_id: row.bot_id });
+      this.db.markOutboxFailed(row.id, "no messaging endpoint");
       return;
     }
 
     const payload = JSON.parse(row.payload_json) as { text: string };
-    const formatted = markdownToTelegramHtml(payload.text);
+    const conversation = telegramConversation(row.bot_id, row.chat_id);
 
     // Mark as in_flight before the Telegram POST. If we crash between the
     // POST returning success and `markOutboxSent`, the row stays in
@@ -255,17 +262,20 @@ export class OutboxProcessor {
 
     try {
       if (row.kind === "send") {
-        let result = await client.sendMessage(row.chat_id, formatted, "HTML");
-        // Retry once in plain text if HTML parsing is the culprit.
-        if (!result.ok && formatted !== payload.text) {
-          result = await client.sendMessage(row.chat_id, payload.text);
-        }
+        const result = await adapter.deliver(conversation, {
+          kind: "send",
+          text: payload.text,
+          files: [],
+        });
         if (result.ok) {
-          this.db.markOutboxSent(row.id, result.messageId);
+          const externalMessageId = result.externalMessageId
+            ? Number(result.externalMessageId)
+            : undefined;
+          this.db.markOutboxSent(row.id, externalMessageId);
           const cb = this.sendCallbacks.get(row.id);
-          if (cb) {
+          if (cb && externalMessageId !== undefined) {
             this.sendCallbacks.delete(row.id);
-            cb(result.messageId);
+            cb(externalMessageId);
           }
         } else if (!result.retriable) {
           this.db.markOutboxFailed(row.id, result.description);
@@ -277,21 +287,11 @@ export class OutboxProcessor {
           this.db.markOutboxFailed(row.id, "edit without message_id");
           return;
         }
-        let result = await client.editMessageText(
-          row.chat_id,
-          row.telegram_message_id,
-          formatted,
-          "HTML",
-        );
-        // HTML parse error → try plain text. notModified already means the
-        // message content matches, so re-sending plain text wouldn't help.
-        if (!result.ok && !result.notModified && formatted !== payload.text) {
-          result = await client.editMessageText(
-            row.chat_id,
-            row.telegram_message_id,
-            payload.text,
-          );
-        }
+        const result = await adapter.deliver(conversation, {
+          kind: "edit",
+          externalMessageId: String(row.telegram_message_id),
+          text: payload.text,
+        });
         if (result.ok || (!result.ok && result.notModified)) {
           // Treat "not modified" as success: the displayed message already
           // matches what we wanted to write.
@@ -313,11 +313,10 @@ export class OutboxProcessor {
     retryAfterMs?: number,
   ): void {
     if (row.bot_id) {
-      const counter =
-        row.kind === "edit"
-          ? ("telegram_edit_failures" as const)
-          : ("telegram_send_failures" as const);
-      this.metrics.inc(row.bot_id, counter);
+      this.metrics.recordOutboundFailure(
+        row.bot_id,
+        row.kind === "edit" ? "edit" : "send",
+      );
     }
 
     // Retry-After waits don't count against attempt_count. Otherwise a

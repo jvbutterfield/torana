@@ -2,7 +2,8 @@ import { logger } from "./log.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { GatewayDB } from "./db/gateway-db.js";
 import type { OutboxProcessor } from "./outbox.js";
-import type { TelegramClient } from "./telegram/client.js";
+import type { PlatformAdapter } from "./platform/capabilities.js";
+import { telegramConversation } from "./platform/telegram/adapter.js";
 
 const log = logger("streaming");
 
@@ -14,7 +15,7 @@ export class StreamManager {
   private config: Config;
   private db: GatewayDB;
   private outbox: OutboxProcessor;
-  private clients: Map<BotId, TelegramClient>;
+  private adapters: Map<BotId, PlatformAdapter>;
 
   /**
    * Per-bot rate-limit cooldown timestamp (epoch ms). When set above
@@ -67,12 +68,12 @@ export class StreamManager {
     config: Config,
     db: GatewayDB,
     outbox: OutboxProcessor,
-    clients: Map<BotId, TelegramClient>,
+    endpoints: ReadonlyMap<BotId, PlatformAdapter>,
   ) {
     this.config = config;
     this.db = db;
     this.outbox = outbox;
-    this.clients = clients;
+    this.adapters = new Map(endpoints);
   }
 
   /** Cancel an in-flight stream (e.g. after fatal runner error). */
@@ -332,8 +333,15 @@ export class StreamManager {
     // review F9).
     const cooldownUntil = this.rateLimitedUntil.get(botId);
     if (cooldownUntil && Date.now() < cooldownUntil) return;
-    const client = this.clients.get(botId);
-    if (client) client.sendChatAction(state.chatId).catch(() => {});
+    const adapter = this.adapters.get(botId);
+    if (adapter) {
+      void adapter
+        .signal(telegramConversation(botId, state.chatId), {
+          kind: "typing",
+          active: true,
+        })
+        .catch(() => {});
+    }
   }
 
   private async flush(botId: BotId): Promise<void> {

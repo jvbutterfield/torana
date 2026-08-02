@@ -4,7 +4,8 @@
 
 import { logger, redactString } from "./log.js";
 import type { BotId, Config } from "./config/schema.js";
-import type { TelegramClient } from "./telegram/client.js";
+import type { PlatformAdapter } from "./platform/capabilities.js";
+import { telegramConversation } from "./platform/telegram/adapter.js";
 
 const log = logger("alerts");
 
@@ -21,14 +22,15 @@ export class AlertManager {
   private cooldowns = new Map<string, number>();
   private cooldownMs: number;
   private chatId: number | null;
-  private deliveryClient: TelegramClient | null;
+  private deliveryAdapter: PlatformAdapter | null;
 
-  constructor(config: Config, clients: Map<BotId, TelegramClient>) {
+  constructor(config: Config, endpoints: ReadonlyMap<BotId, PlatformAdapter>) {
     const alerts = config.alerts;
+    const adapters = new Map(endpoints);
     this.cooldownMs = alerts?.cooldown_ms ?? 600_000;
     this.chatId = alerts?.chat_id ?? null;
-    this.deliveryClient = alerts?.via_bot
-      ? (clients.get(alerts.via_bot) ?? null)
+    this.deliveryAdapter = alerts?.via_bot
+      ? (adapters.get(alerts.via_bot) ?? null)
       : null;
   }
 
@@ -55,14 +57,14 @@ export class AlertManager {
     // were the gap that fix didn't cover.
     const redacted = redactString(text);
 
-    if (!this.deliveryClient || !this.chatId) {
+    if (!this.deliveryAdapter || !this.chatId) {
       log.warn(`alert: ${redacted}`, { alert_kind: kind, bot_id: botId });
       return;
     }
     try {
-      const result = await this.deliveryClient.sendMessage(
-        this.chatId,
-        redacted,
+      const result = await this.deliveryAdapter.deliver(
+        telegramConversation(this.deliveryAdapter.endpoint.id, this.chatId),
+        { kind: "send", text: redacted, files: [] },
       );
       // sendMessage swallows Telegram errors and returns {ok:false,...}.
       // The catch block below would never fire on Telegram-side failures;

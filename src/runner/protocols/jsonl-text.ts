@@ -1,7 +1,7 @@
 // Simple line-delimited JSON protocol for the CommandRunner.
 
 import { logger } from "../../log.js";
-import type { Attachment } from "../../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../../platform/types.js";
 import type { RunnerEvent, TurnId } from "../types.js";
 import {
   createLineBufferedParser,

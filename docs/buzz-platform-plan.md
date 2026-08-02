@@ -1,6 +1,6 @@
 # Implementation Plan: Multi-platform Torana with Native Buzz Support
 
-**Status:** Phase 0 complete — all protocol, relay, provider-continuity, artifact-provenance, and production-capacity gates passed; Phase 1 is ready to implement
+**Status:** Phases 0–1 complete — the platform-neutral messaging boundary is implemented with Telegram parity; Phase 2 is ready to implement
 
 **Date:** 2026-08-01 (refined same day; see §21)
 
@@ -1197,6 +1197,8 @@ Gate:
 - no Buzz code exists in the production path yet;
 - snapshot comparison shows identical Telegram requests for representative turns.
 
+**Completion evidence (2026-08-01):** the production gateway now normalizes Telegram updates through `TelegramAdapter` and processes them through the platform-neutral inbound path. Registry, bot runtime, streaming, outbox, alerts, and commands depend on `PlatformAdapter`; Telegram send/edit/reaction/typing/download calls remain inside the adapter. The existing full round-trip integration contract passes through these interfaces, and the adapter contract asserts the exact Telegram request bodies for send, edit, reaction, typing, and HTML fallback. The complete repository suite passes with 1,282 tests passed, 13 intentionally skipped, and zero failures; typecheck and format verification also pass. Production contains no Buzz integration code yet.
+
 ### Phase 2 — configuration v2 and normalized persistence
 
 **Purpose:** make multiple platforms and string external IDs representable.
@@ -1824,3 +1826,4 @@ These are accepted, not solved. Each has an owner phase and a fallback.
 - **Product decisions closed:** lossless rollback uses a deployed compatibility bridge (Q13); one Torana installation/container is one trust domain (Q14); post-dispatch runner execution is at-most-once with explicit retry (Q15).
 - **Second-review corrections:** replaced the impossible arbitrary-prior-binary rollback promise; added expand/contract dual-write behavior; separated conversation keys from shared session bindings; made ephemeral sessions representable; made control-event fields nullable; bounded queue overflow; prevented automatic side-effect replay; split typing/presence from the outbox; reconciled signed-payload retention; added transactional receive sequences, pending mutation storage, and composite cursors; completed retention/trigger/alias configuration; and aligned broker profiles with exact pinned CLI commands.
 - **Phase 0 execution pass:** resolved Q1–Q3 and Q5; added the tracked transport spike, CLI manifest/checksum, Rust↔TypeScript golden-event tests, NIP-OA verification, fake open/closed relay coverage, authenticated hosted closed-relay publish/replay/intake evidence, reconnect/dedup coverage, local idle and authenticated 1/2/8/32 capacity measurements, authenticated Codex runner plus full-HTTP continuity E2E coverage, authenticated Claude cross-process resume coverage, and a byte-for-byte mapping from the installed CLI to the official `desktop-v0.5.3` release at commit `3a96acea09b4a9e3f02c3a26cfb0607d2ccacf42`. The production defaults are `max_per_agent: 8`, `max_global: 32`, `max_concurrent_turns_per_agent: 2`, and `max_concurrent_turns_global: 12`. No additional internal design inconsistency is known, and Phase 1 is ready to implement.
+- **Phase 1 implementation pass:** introduced the platform-neutral endpoint, conversation, principal, inbound-event, outbound-operation, ephemeral-signal, and attachment contracts; moved Telegram normalization and capabilities behind `TelegramAdapter`; split Telegram compatibility ingestion from platform-neutral processing; converted registry, runtime, streaming, outbox, alerts, and commands to adapter dependencies; added generic metrics while retaining the deprecated Telegram series for one release; and verified identical representative Telegram request bodies plus the complete Telegram integration flow. All Phase 1 gates pass, and Phase 2 is ready to implement.

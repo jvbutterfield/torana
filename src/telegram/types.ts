@@ -96,11 +96,5 @@ export interface TelegramWebhookInfo {
   last_error_message?: string;
 }
 
-/** Normalized attachment passed to runners. */
-export interface Attachment {
-  kind: "photo" | "document";
-  path: string;
-  mime_type?: string;
-  original_filename?: string;
-  bytes: number;
-}
+/** @deprecated Import LocalAttachment from platform/types instead. */
+export type { LocalAttachment as Attachment } from "../platform/types.js";

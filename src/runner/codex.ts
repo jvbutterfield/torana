@@ -27,7 +27,7 @@ import { dirname, resolve } from "node:path";
 
 import type { BotId, CodexRunnerConfig } from "../config/schema.js";
 import { logger, redactString, type Logger } from "../log.js";
-import type { Attachment } from "../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../platform/types.js";
 import {
   InvalidSideSessionId,
   RunnerEventEmitter,

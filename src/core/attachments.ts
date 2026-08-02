@@ -12,7 +12,8 @@ import { logger } from "../log.js";
 import type { BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { TelegramClient } from "../telegram/client.js";
-import type { TelegramMessage, Attachment } from "../telegram/types.js";
+import type { TelegramMessage } from "../telegram/types.js";
+import type { LocalAttachment as Attachment } from "../platform/types.js";
 import { detectMimeFromMagic } from "../mime-magic.js";
 
 const log = logger("attachments");
