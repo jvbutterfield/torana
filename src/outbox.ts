@@ -475,6 +475,9 @@ export class OutboxProcessor {
       operation_kind?: string;
       bot_id?: BotId | null;
       agent_id?: BotId;
+      platform?: string;
+      endpoint_id?: string;
+      conversation_id?: number | null;
     },
     error: string,
     retryAfterMs?: number,
@@ -501,8 +504,11 @@ export class OutboxProcessor {
         .toISOString()
         .slice(0, 19)
         .replace("T", " ");
-      log.warn("outbox delivery throttled by Telegram; honoring Retry-After", {
+      log.warn("outbox delivery throttled; honoring Retry-After", {
         id: row.id,
+        platform: row.platform,
+        endpoint_id: row.endpoint_id,
+        conversation_id: row.conversation_id,
         attempt: row.attempt_count,
         retry_after_ms: retryAfterMs,
         next_attempt_at: nextAttempt,
@@ -530,6 +536,9 @@ export class OutboxProcessor {
     const willDeadLetter = nextAttemptCount >= this.config.outbox.max_attempts;
     log.warn("outbox delivery failed", {
       id: row.id,
+      platform: row.platform,
+      endpoint_id: row.endpoint_id,
+      conversation_id: row.conversation_id,
       attempt: nextAttemptCount,
       max_attempts: this.config.outbox.max_attempts,
       error,

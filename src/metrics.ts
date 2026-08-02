@@ -177,6 +177,25 @@ export type AcquireOutcome = "reuse" | "spawn" | "capacity" | "busy";
 export type AskRoute = "ask" | "send";
 export type EvictionReason = "idle" | "hard" | "lru";
 
+export interface OperationalMetricRow {
+  endpointId: string;
+  agentId: string;
+  platform: string;
+  lifecycleState: string;
+  conversations: number;
+  queued: number;
+  running: number;
+  sessions: number;
+  outboxPending: number;
+  outboxDead: number;
+}
+
+export interface RuntimeEndpointMetric {
+  endpointId: string;
+  state: string;
+  channels: number;
+}
+
 export class Metrics {
   private counters = new Map<BotId, BotCounters>();
   private timers = new Map<BotId, BotTimers>();
@@ -323,7 +342,11 @@ export class Metrics {
   }
 
   /** Prometheus text-exposition format. */
-  renderPrometheus(botStates: Record<BotId, number>): string {
+  renderPrometheus(
+    botStates: Record<BotId, number>,
+    operational: readonly OperationalMetricRow[] = [],
+    runtimeEndpoints: readonly RuntimeEndpointMetric[] = [],
+  ): string {
     const lines: string[] = [];
     lines.push(
       "# HELP gateway_uptime_secs Seconds since gateway process start.",
@@ -365,6 +388,66 @@ export class Metrics {
     lines.push("# TYPE torana_agent_state gauge");
     for (const [agentId, state] of Object.entries(botStates)) {
       lines.push(`torana_agent_state{agent_id="${agentId}"} ${state}`);
+    }
+
+    lines.push(
+      "# HELP torana_endpoint_lifecycle_state Persisted endpoint lifecycle state.",
+    );
+    lines.push("# TYPE torana_endpoint_lifecycle_state gauge");
+    lines.push(
+      "# HELP torana_conversation_queue_depth Queued and running turns aggregated by configured endpoint.",
+    );
+    lines.push("# TYPE torana_conversation_queue_depth gauge");
+    lines.push(
+      "# HELP torana_endpoint_conversations Current non-archived conversations aggregated by configured endpoint.",
+    );
+    lines.push("# TYPE torana_endpoint_conversations gauge");
+    lines.push(
+      "# HELP torana_endpoint_sessions Current session bindings aggregated by configured endpoint.",
+    );
+    lines.push("# TYPE torana_endpoint_sessions gauge");
+    lines.push(
+      "# HELP torana_endpoint_outbox_depth Outbox rows aggregated by configured endpoint and bounded status class.",
+    );
+    lines.push("# TYPE torana_endpoint_outbox_depth gauge");
+    for (const row of operational) {
+      const labels = `platform="${row.platform}",endpoint_id="${row.endpointId}"`;
+      lines.push(
+        `torana_endpoint_lifecycle_state{${labels},state="${row.lifecycleState}"} 1`,
+      );
+      lines.push(
+        `torana_conversation_queue_depth{${labels},state="queued"} ${row.queued}`,
+      );
+      lines.push(
+        `torana_conversation_queue_depth{${labels},state="running"} ${row.running}`,
+      );
+      lines.push(
+        `torana_endpoint_conversations{${labels}} ${row.conversations}`,
+      );
+      lines.push(`torana_endpoint_sessions{${labels}} ${row.sessions}`);
+      lines.push(
+        `torana_endpoint_outbox_depth{${labels},status="pending"} ${row.outboxPending}`,
+      );
+      lines.push(
+        `torana_endpoint_outbox_depth{${labels},status="dead"} ${row.outboxDead}`,
+      );
+    }
+
+    lines.push(
+      "# HELP torana_endpoint_connection_state Runtime connection state for externally connected endpoints.",
+    );
+    lines.push("# TYPE torana_endpoint_connection_state gauge");
+    lines.push(
+      "# HELP torana_endpoint_subscriptions Runtime subscription count for externally connected endpoints.",
+    );
+    lines.push("# TYPE torana_endpoint_subscriptions gauge");
+    for (const endpoint of runtimeEndpoints) {
+      lines.push(
+        `torana_endpoint_connection_state{platform="buzz",endpoint_id="${endpoint.endpointId}",state="${endpoint.state}"} 1`,
+      );
+      lines.push(
+        `torana_endpoint_subscriptions{platform="buzz",endpoint_id="${endpoint.endpointId}"} ${endpoint.channels}`,
+      );
     }
 
     lines.push("# HELP outbox_depth Pending outbox rows per bot.");

@@ -10,7 +10,7 @@
 //     to choose between the two surfaces; the legacy parseArgs is preserved
 //     unmodified so existing test imports keep working.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 import { loadConfigFromFile, ConfigLoadError } from "./config/load.js";
@@ -71,6 +71,7 @@ interface ParsedArgs {
   migrationTo: number | null;
   confirmShared: boolean;
   deadLetterPending: boolean;
+  limit: number;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -89,6 +90,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     migrationTo: null,
     confirmShared: false,
     deadLetterPending: false,
+    limit: 100,
   };
 
   for (let i = isHelpFlag ? 0 : 1; i < argv.length; i += 1) {
@@ -105,6 +107,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.confirmShared = true;
     } else if (a === "--dead-letter-pending") {
       args.deadLetterPending = true;
+    } else if (a === "--limit") {
+      const next = argv[++i];
+      if (!next) throw new Error("--limit requires a number");
+      args.limit = Number(next);
     } else if (a === "--to") {
       const next = argv[++i];
       if (!next) throw new Error("--to requires a schema version");
@@ -137,9 +143,15 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.profile = a.slice("--profile=".length);
     } else if (a.startsWith("--to=")) {
       args.migrationTo = Number(a.slice("--to=".length));
+    } else if (a.startsWith("--limit=")) {
+      args.limit = Number(a.slice("--limit=".length));
     } else if (a.startsWith("-")) {
       throw new Error(`unknown flag: ${a}`);
     }
+  }
+
+  if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 500) {
+    throw new Error("--limit must be an integer between 1 and 500");
   }
 
   return args;
@@ -279,9 +291,12 @@ async function main(argv: string[]): Promise<void> {
     case "sessions": {
       const action = argv[1];
       const sessionKey = argv[2];
-      if (action !== "reset" || !sessionKey || sessionKey.startsWith("-")) {
+      if (
+        action !== "list" &&
+        (action !== "reset" || !sessionKey || sessionKey.startsWith("-"))
+      ) {
         throw new Error(
-          "usage: torana sessions reset <session-key> [--confirm-shared] [--config <path>]",
+          "usage: torana sessions <list|reset <session-key>> [--limit N] [--confirm-shared] [--format text|json] [--config <path>]",
         );
       }
       const path = resolveConfigPath(args.configPath);
@@ -289,6 +304,19 @@ async function main(argv: string[]): Promise<void> {
       setSecrets(secrets);
       const db = new GatewayDB(config.gateway.db_path!);
       try {
+        if (action === "list") {
+          const rows = db.listOperationalSessions(args.limit);
+          if (args.format === "json")
+            console.log(JSON.stringify(rows, null, 2));
+          else {
+            for (const row of rows) {
+              console.log(
+                `${row.sessionKey}\tagent=${row.agentId}\tstate=${row.state}\tgeneration=${row.generation}\tbindings=${row.bindings}\tqueued=${row.queued}${row.lastError ? `\terror=${row.lastError}` : ""}`,
+              );
+            }
+          }
+          return;
+        }
         const session = db.getConversationSession(sessionKey);
         if (!session) throw new Error(`session '${sessionKey}' not found`);
         const bindings = db.conversationSessionBindingCount(sessionKey);
@@ -304,6 +332,104 @@ async function main(argv: string[]): Promise<void> {
       } finally {
         db.close();
       }
+      return;
+    }
+    case "conversations": {
+      if (argv[1] !== "list") {
+        throw new Error(
+          "usage: torana conversations list [--limit N] [--format text|json] [--config <path>]",
+        );
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const db = new GatewayDB(config.gateway.db_path!);
+      try {
+        const rows = db.listOperationalConversations(args.limit);
+        if (args.format === "json") console.log(JSON.stringify(rows, null, 2));
+        else {
+          for (const row of rows) {
+            console.log(
+              `${row.id}\t${row.platform}\t${row.endpointId}\t${row.externalConversationId}\ttype=${row.type}\tsession=${row.sessionKey ?? "ephemeral"}\tstate=${row.sessionState ?? "none"}\tqueued=${row.queued}\trunning=${row.running}`,
+            );
+          }
+        }
+      } finally {
+        db.close();
+      }
+      return;
+    }
+    case "outbox": {
+      const action = argv[1];
+      const id = Number(argv[2]);
+      if (
+        action !== "list" &&
+        (!Number.isSafeInteger(id) ||
+          id < 1 ||
+          !["replay", "dead-letter"].includes(action ?? ""))
+      ) {
+        throw new Error(
+          "usage: torana outbox <list|replay <id>|dead-letter <id>> [--limit N] [--format text|json] [--config <path>]",
+        );
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const db = new GatewayDB(config.gateway.db_path!);
+      try {
+        if (action === "list") {
+          const rows = db.listOperationalOutbox(args.limit);
+          if (args.format === "json")
+            console.log(JSON.stringify(rows, null, 2));
+          else {
+            for (const row of rows) {
+              console.log(
+                `${row.id}\t${row.platform}\t${row.endpointId}\t${row.operation}\t${row.status}\tattempts=${row.attempts}${row.lastError ? `\terror=${row.lastError}` : ""}`,
+              );
+            }
+          }
+          return;
+        }
+        if (action === "replay") {
+          if (!db.replayOutbox(id)) {
+            throw new Error(`outbox row ${id} is not dead or failed`);
+          }
+          console.log(`outbox row ${id} queued for exact-payload replay`);
+          return;
+        }
+        if (!db.deadLetterOutbox(id, "operator dead-lettered outbox row")) {
+          throw new Error(`outbox row ${id} cannot be dead-lettered`);
+        }
+        console.log(`outbox row ${id} dead-lettered`);
+      } finally {
+        db.close();
+      }
+      return;
+    }
+    case "gateway": {
+      if (argv[1] !== "drain") {
+        throw new Error("usage: torana gateway drain [--config <path>]");
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const lockPath = resolve(config.gateway.data_dir, ".torana.lock");
+      let pid: number;
+      try {
+        const record = JSON.parse(readFileSync(lockPath, "utf8")) as {
+          pid?: unknown;
+        };
+        if (!Number.isSafeInteger(record.pid) || Number(record.pid) < 1) {
+          throw new Error("invalid PID");
+        }
+        pid = Number(record.pid);
+      } catch {
+        throw new Error(`running gateway lock was not found at ${lockPath}`);
+      }
+      process.kill(pid, "SIGTERM");
+      console.log(
+        `gateway PID ${pid} received SIGTERM; intake is stopping and accepted work will drain`,
+      );
       return;
     }
     case "endpoints": {
@@ -473,6 +599,12 @@ Gateway commands:
   validate     Offline config check (no Telegram, no DB)
   migrate      Apply pending DB migrations (--dry-run to preview)
   sessions reset <key>  Clear a conversation session (shared sessions require --confirm-shared)
+  sessions list          Inspect durable conversation sessions
+  conversations list     Inspect platform conversations and queue state
+  outbox list            Inspect delivery state without exposing payloads
+  outbox replay <id>     Replay the exact stored dead/failed payload
+  outbox dead-letter <id>  Stop delivery attempts for one row
+  gateway drain          Trigger the running gateway's graceful shutdown
   endpoints status [id]  Show persisted endpoint lifecycle and backlog
   endpoints drain <id>   Stop Buzz intake while accepted work drains
   endpoints disable <id> Disable a drained Buzz endpoint

@@ -455,6 +455,29 @@ torana sessions reset alias:reviewer:shared --confirm-shared --config torana.yam
 a fixed taxonomy (`0` success, `2` bad usage, `3` auth failed, `4` not
 found, `5` server error, `6` timeout / 202 handoff, `7` capacity).
 
+### Operator routes
+
+When the Agent API is enabled, tokens carrying `ask` scope can inspect and
+operate only the agents in their `bot_ids` allowlist:
+
+| Method | Route                                 | Purpose                                 |
+| ------ | ------------------------------------- | --------------------------------------- |
+| `GET`  | `/v1/admin/endpoints`                 | Endpoint lifecycle and backlog          |
+| `GET`  | `/v1/admin/conversations?limit=N`     | Conversation/session/queue inspection   |
+| `GET`  | `/v1/admin/sessions?limit=N`          | Durable session state and runner errors |
+| `POST` | `/v1/admin/sessions/:key/rotate`      | Rotate an idle durable session          |
+| `GET`  | `/v1/admin/outbox?limit=N`            | Delivery state without payload bodies   |
+| `POST` | `/v1/admin/outbox/:id/replay`         | Replay an exact dead/failed payload     |
+| `POST` | `/v1/admin/outbox/:id/dead-letter`    | Stop delivery attempts                  |
+| `POST` | `/v1/admin/endpoints/:id/drain`       | Stop endpoint intake                    |
+| `POST` | `/v1/admin/endpoints/:id/resume`      | Resume a runtime-enabled endpoint       |
+| `POST` | `/v1/admin/endpoints/:id/dead-letter` | Disable after forced dead-letter        |
+
+The forced endpoint action requires the JSON body
+`{"acknowledge_data_loss":true}`, refuses while turns are running, and requires
+the endpoint to be draining first. An unauthorized or out-of-scope resource is
+reported as not found so tokens cannot enumerate other agents' state.
+
 When `torana ask` receives a 202 the CLI exits **6** and prints `turn_id`
 on stdout so you can pipe it into `torana turns get`:
 

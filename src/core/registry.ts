@@ -94,6 +94,25 @@ export class BotRegistry {
     await Promise.all([...this.bots.values()].map((b) => b.stop(graceMs)));
   }
 
+  /** Drain turns accepted before intake stopped, within the shutdown budget. */
+  async drainAccepted(timeoutMs: number): Promise<boolean> {
+    if (this.conversationScheduler) {
+      return this.conversationScheduler.drainAccepted(timeoutMs);
+    }
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+      this.dispatchAll();
+      const drained = [...this.bots.values()].every(
+        (bot) => bot.isReady && this.db.getMailboxDepth(bot.id) === 0,
+      );
+      if (drained) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await Bun.sleep(Math.min(25, remaining));
+    }
+    return false;
+  }
+
   /**
    * Transport entry point: deliver a platform-native payload for an endpoint.
    */

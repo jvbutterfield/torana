@@ -69,6 +69,32 @@ export class ConversationScheduler {
     this.timer = null;
   }
 
+  /**
+   * Finish work accepted before transport intake stopped. Queued rows remain
+   * durable when the budget expires; active runner turns are cancelled so the
+   * caller can continue the bounded shutdown sequence.
+   */
+  async drainAccepted(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    this.wake();
+    while (Date.now() <= deadline) {
+      if (
+        this.activeGlobal === 0 &&
+        this.db.getQueuedConversationTurns().length === 0
+      ) {
+        this.stop();
+        return true;
+      }
+      this.wake();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await Bun.sleep(Math.min(25, remaining));
+    }
+    for (const cancel of this.activeCancels.values()) cancel();
+    this.stop();
+    return false;
+  }
+
   wake(): void {
     if (this.scheduled) return;
     this.scheduled = true;
@@ -283,6 +309,14 @@ export class ConversationScheduler {
             this.manager.release(row.bot_id, acquired.sessionId);
             continue;
           }
+          log.info("conversation turn dispatched", {
+            agent_id: row.bot_id,
+            platform: row.platform,
+            endpoint_id: row.endpoint_id,
+            conversation_id: conversationId,
+            session_key: sessionKey,
+            turn_id: row.id,
+          });
           timeout = setTimeout(() => {
             const stopping = this.manager.cancelConversation(sessionKey);
             bot.cancelManagedTurn(row.id, "turn timeout");

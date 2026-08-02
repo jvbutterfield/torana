@@ -141,6 +141,30 @@ torana migrate [--config PATH] [--dry-run] [--to 5]
 without touching the DB. `--to 5` makes the compatibility-bridge activation
 explicit during the maintenance window.
 
+### Local operator commands
+
+These commands read or mutate the gateway's local SQLite state. Stop concurrent
+manual database tooling; Torana remains the only writer.
+
+```sh
+torana endpoints status [endpoint-id] [--format text|json]
+torana endpoints drain <endpoint-id>
+torana endpoints disable <endpoint-id> [--dead-letter-pending]
+torana endpoints resume <endpoint-id>
+torana conversations list [--limit N] [--format text|json]
+torana sessions list [--limit N] [--format text|json]
+torana sessions reset <session-key> [--confirm-shared]
+torana outbox list [--limit N] [--format text|json]
+torana outbox dead-letter <id>
+torana outbox replay <id>
+torana gateway drain
+```
+
+`--limit` is bounded to `1..500`. Outbox listings omit payload bodies. Replay
+accepts only `dead`/`failed` rows and restores the exact stored payload and
+signed event. `gateway drain` validates the data-directory lock PID and sends
+the gateway `SIGTERM`, invoking the ordered no-loss shutdown path.
+
 ### `torana config upgrade`
 
 Render a v1 gateway configuration as v2 YAML without overwriting it:

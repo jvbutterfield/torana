@@ -1083,6 +1083,251 @@ export class GatewayDB {
     });
   }
 
+  listOperationalConversations(limit = 100): Array<{
+    id: number;
+    agentId: string;
+    endpointId: string;
+    platform: string;
+    externalConversationId: string;
+    threadRootId: string | null;
+    workflowRunId: string | null;
+    type: string;
+    sessionKey: string | null;
+    sessionState: string | null;
+    queued: number;
+    running: number;
+    lastInboundAt: string | null;
+  }> {
+    if (!this.normalizedSchema) return [];
+    const bounded = Math.max(1, Math.min(500, Math.floor(limit)));
+    const rows = this._db
+      .query(
+        `SELECT c.id, c.agent_id, c.endpoint_id, c.platform,
+                c.external_conversation_id, c.thread_root_id,
+                c.workflow_run_id, c.conversation_type, c.session_key,
+                cs.state AS session_state, c.last_inbound_at,
+                SUM(CASE WHEN t.status='queued' THEN 1 ELSE 0 END) AS queued,
+                SUM(CASE WHEN t.status='running' THEN 1 ELSE 0 END) AS running
+         FROM conversations c
+         LEFT JOIN conversation_sessions cs ON cs.session_key=c.session_key
+         LEFT JOIN turns t ON t.conversation_id=c.id
+         WHERE c.archived=0
+         GROUP BY c.id
+         ORDER BY COALESCE(c.last_inbound_at, c.created_at) DESC
+         LIMIT ?`,
+      )
+      .all(bounded) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      agentId: String(row.agent_id),
+      endpointId: String(row.endpoint_id),
+      platform: String(row.platform),
+      externalConversationId: String(row.external_conversation_id),
+      threadRootId: String(row.thread_root_id ?? "") || null,
+      workflowRunId: String(row.workflow_run_id ?? "") || null,
+      type: String(row.conversation_type),
+      sessionKey: row.session_key === null ? null : String(row.session_key),
+      sessionState:
+        row.session_state === null ? null : String(row.session_state),
+      queued: Number(row.queued ?? 0),
+      running: Number(row.running ?? 0),
+      lastInboundAt:
+        row.last_inbound_at === null ? null : String(row.last_inbound_at),
+    }));
+  }
+
+  listOperationalSessions(limit = 100): Array<{
+    sessionKey: string;
+    agentId: string;
+    runnerSessionId: string;
+    runnerType: string;
+    generation: number;
+    state: string;
+    bindings: number;
+    queued: number;
+    lastUsedAt: string | null;
+    contextExpiresAt: string | null;
+    lastError: string | null;
+  }> {
+    if (!this.normalizedSchema) return [];
+    const bounded = Math.max(1, Math.min(500, Math.floor(limit)));
+    const rows = this._db
+      .query(
+        `SELECT cs.session_key, cs.agent_id, cs.runner_session_id,
+                cs.runner_type, cs.generation, cs.state, cs.last_used_at,
+                cs.context_expires_at, cs.last_error,
+                COUNT(DISTINCT c.id) AS bindings,
+                COUNT(DISTINCT CASE WHEN t.status='queued' THEN t.id END) AS queued
+         FROM conversation_sessions cs
+         LEFT JOIN conversations c ON c.session_key=cs.session_key AND c.archived=0
+         LEFT JOIN turns t ON t.session_key=cs.session_key
+         GROUP BY cs.session_key
+         ORDER BY COALESCE(cs.last_used_at, cs.started_at) DESC
+         LIMIT ?`,
+      )
+      .all(bounded) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      sessionKey: String(row.session_key),
+      agentId: String(row.agent_id),
+      runnerSessionId: String(row.runner_session_id),
+      runnerType: String(row.runner_type),
+      generation: Number(row.generation),
+      state: String(row.state),
+      bindings: Number(row.bindings),
+      queued: Number(row.queued),
+      lastUsedAt: row.last_used_at === null ? null : String(row.last_used_at),
+      contextExpiresAt:
+        row.context_expires_at === null ? null : String(row.context_expires_at),
+      lastError: row.last_error === null ? null : String(row.last_error),
+    }));
+  }
+
+  listOperationalOutbox(limit = 100): Array<{
+    id: number;
+    turnId: number | null;
+    agentId: string;
+    endpointId: string;
+    platform: string;
+    conversationId: number | null;
+    operation: string;
+    status: string;
+    attempts: number;
+    nextAttemptAt: string | null;
+    lastError: string | null;
+    createdAt: string;
+    signedEventId: string | null;
+  }> {
+    if (!this.normalizedSchema) return [];
+    const bounded = Math.max(1, Math.min(500, Math.floor(limit)));
+    const rows = this._db
+      .query(
+        `SELECT id, turn_id, agent_id, endpoint_id, platform,
+                conversation_id, operation_kind, status, attempt_count,
+                next_attempt_at, last_error, created_at, signed_event_id
+         FROM outbox ORDER BY id DESC LIMIT ?`,
+      )
+      .all(bounded) as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      id: Number(row.id),
+      turnId: row.turn_id === null ? null : Number(row.turn_id),
+      agentId: String(row.agent_id),
+      endpointId: String(row.endpoint_id),
+      platform: String(row.platform),
+      conversationId:
+        row.conversation_id === null ? null : Number(row.conversation_id),
+      operation: String(row.operation_kind),
+      status: String(row.status),
+      attempts: Number(row.attempt_count),
+      nextAttemptAt:
+        row.next_attempt_at === null ? null : String(row.next_attempt_at),
+      lastError: row.last_error === null ? null : String(row.last_error),
+      createdAt: String(row.created_at),
+      signedEventId:
+        row.signed_event_id === null ? null : String(row.signed_event_id),
+    }));
+  }
+
+  getOperationalOutbox(
+    id: number,
+  ): ReturnType<GatewayDB["listOperationalOutbox"]>[number] | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        `SELECT id, turn_id, agent_id, endpoint_id, platform,
+                conversation_id, operation_kind, status, attempt_count,
+                next_attempt_at, last_error, created_at, signed_event_id
+         FROM outbox WHERE id=?`,
+      )
+      .get(id) as Record<string, unknown> | null;
+    if (!row) return null;
+    return {
+      id: Number(row.id),
+      turnId: row.turn_id === null ? null : Number(row.turn_id),
+      agentId: String(row.agent_id),
+      endpointId: String(row.endpoint_id),
+      platform: String(row.platform),
+      conversationId:
+        row.conversation_id === null ? null : Number(row.conversation_id),
+      operation: String(row.operation_kind),
+      status: String(row.status),
+      attempts: Number(row.attempt_count),
+      nextAttemptAt:
+        row.next_attempt_at === null ? null : String(row.next_attempt_at),
+      lastError: row.last_error === null ? null : String(row.last_error),
+      createdAt: String(row.created_at),
+      signedEventId:
+        row.signed_event_id === null ? null : String(row.signed_event_id),
+    };
+  }
+
+  replayOutbox(id: number): boolean {
+    if (!this.normalizedSchema) return false;
+    const result = this._db
+      .prepare(
+        `UPDATE outbox SET status='pending', attempt_count=0,
+                next_attempt_at=NULL, last_error=NULL
+         WHERE id=? AND status IN ('dead','failed')`,
+      )
+      .run(id);
+    return result.changes === 1;
+  }
+
+  deadLetterOutbox(id: number, reason: string): boolean {
+    if (!this.normalizedSchema) return false;
+    const result = this._db
+      .prepare(
+        `UPDATE outbox SET status='dead', last_error=?
+         WHERE id=? AND status IN ('pending','retrying','in_flight','failed')`,
+      )
+      .run(reason, id);
+    return result.changes === 1;
+  }
+
+  operationalMetrics(): Array<{
+    endpointId: string;
+    agentId: string;
+    platform: string;
+    lifecycleState: string;
+    conversations: number;
+    queued: number;
+    running: number;
+    sessions: number;
+    outboxPending: number;
+    outboxDead: number;
+  }> {
+    if (!this.normalizedSchema) return [];
+    const rows = this._db
+      .query(
+        `SELECT e.endpoint_id, e.agent_id, e.platform, e.lifecycle_state,
+                COUNT(DISTINCT c.id) AS conversations,
+                COUNT(DISTINCT CASE WHEN t.status='queued' THEN t.id END) AS queued,
+                COUNT(DISTINCT CASE WHEN t.status='running' THEN t.id END) AS running,
+                COUNT(DISTINCT c.session_key) AS sessions,
+                COUNT(DISTINCT CASE WHEN o.status IN ('pending','retrying','in_flight') THEN o.id END) AS outbox_pending,
+                COUNT(DISTINCT CASE WHEN o.status IN ('dead','failed') THEN o.id END) AS outbox_dead
+         FROM endpoints e
+         LEFT JOIN conversations c ON c.endpoint_id=e.endpoint_id AND c.archived=0
+         LEFT JOIN turns t ON t.conversation_id=c.id
+         LEFT JOIN outbox o ON o.endpoint_id=e.endpoint_id
+         WHERE e.platform!='agent_api'
+         GROUP BY e.endpoint_id
+         ORDER BY e.endpoint_id`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map((row) => ({
+      endpointId: String(row.endpoint_id),
+      agentId: String(row.agent_id),
+      platform: String(row.platform),
+      lifecycleState: String(row.lifecycle_state),
+      conversations: Number(row.conversations),
+      queued: Number(row.queued),
+      running: Number(row.running),
+      sessions: Number(row.sessions),
+      outboxPending: Number(row.outbox_pending),
+      outboxDead: Number(row.outbox_dead),
+    }));
+  }
+
   setBuzzChannels(endpointId: string, channels: readonly string[]): void {
     if (!this.normalizedSchema) return;
     const state = this.getEndpointState(endpointId);
@@ -1941,6 +2186,8 @@ export class GatewayDB {
     agent_api_token_name: string | null;
     received_at: string;
     conversation_archived: number;
+    endpoint_id: string;
+    platform: string;
   }> {
     if (!this.normalizedSchema) return [];
     return this._db
@@ -1949,7 +2196,7 @@ export class GatewayDB {
         SELECT t.id, t.bot_id, t.chat_id, t.source_update_id,
                t.conversation_id, t.session_key, t.agent_api_token_name,
                COALESCE(ie.received_at, datetime('now')) AS received_at,
-               c.archived AS conversation_archived
+               c.archived AS conversation_archived, c.endpoint_id, c.platform
         FROM turns t
         JOIN conversations c ON c.id=t.conversation_id
         LEFT JOIN inbound_events ie ON ie.id=t.source_event_id
@@ -1967,6 +2214,8 @@ export class GatewayDB {
       agent_api_token_name: string | null;
       received_at: string;
       conversation_archived: number;
+      endpoint_id: string;
+      platform: string;
     }>;
   }
 

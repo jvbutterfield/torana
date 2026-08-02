@@ -13,6 +13,7 @@ import {
   setLogFormat,
   setSecrets,
   autoFormat,
+  redactString,
 } from "./log.js";
 import { GatewayDB } from "./db/gateway-db.js";
 import { applyMigrations } from "./db/migrate.js";
@@ -140,7 +141,7 @@ export async function startGateway(
     adapters.set(endpoint.id, new BuzzAdapter(endpoint));
   }
 
-  const alerts = new AlertManager(config, adapters);
+  const alerts = new AlertManager(config, adapters, normalized);
   const outbox = new OutboxProcessor(config, db, adapters, metrics, alerts, {
     normalized,
   });
@@ -461,7 +462,25 @@ export async function startGateway(
         // 1. Stop accepting new updates.
         await Promise.all(transports.map((t) => t.stop()));
 
-        // 2. Drain outbox up to shutdown.outbox_drain_secs.
+        // 2. Finish work accepted before intake stopped. A timeout cancels
+        //    active runner turns; queued turns remain durable for restart.
+        const runnerDeadline = Math.min(
+          deadline,
+          Date.now() + config.shutdown.runner_grace_secs * 1000,
+        );
+        const runnerGraceMs = Math.max(0, runnerDeadline - Date.now());
+        const acceptedDrained = await registry.drainAccepted(runnerGraceMs);
+        if (!acceptedDrained) {
+          log.warn("accepted turn drain budget expired; durable work remains", {
+            queued_turns: db.getQueuedConversationTurns().length,
+          });
+        }
+
+        // 3. Cancel any unfinished stream cadence before draining its durable
+        //    delivery operations.
+        streaming.stopAll();
+
+        // 4. Drain outbox up to shutdown.outbox_drain_secs.
         const drainBudgetMs = Math.max(
           0,
           Math.min(
@@ -472,19 +491,16 @@ export async function startGateway(
         await outbox.drain(drainBudgetMs);
         outbox.stop();
 
-        streaming.stopAll();
-
-        // 3a. Tear down agent-api side sessions before the main runners
+        // 5. Tear down agent-api side sessions before the main runners
         //     so ask handlers observe fatal events rather than hangs.
-        const runnerGraceMs = config.shutdown.runner_grace_secs * 1000;
+        const remainingRunnerGraceMs = Math.max(0, runnerDeadline - Date.now());
         if (agentApiOrphans) agentApiOrphans.shutdown();
-        await sessionManager.shutdown(runnerGraceMs);
+        await sessionManager.shutdown(remainingRunnerGraceMs);
 
-        // 3. Stop main runners with per-runner grace.
-        await registry.stopAll(runnerGraceMs);
+        await registry.stopAll(remainingRunnerGraceMs);
         await buzzBroker.stop();
 
-        // 4. Server + DB.
+        // 6. Close HTTP and persistence sockets last.
         await server.stop();
         db.close();
       } finally {
@@ -563,11 +579,40 @@ function registerFixedRoutes(
     }
     const buzz = buzzHealth();
     if (buzz.some((endpoint) => endpoint.state === "unhealthy")) ok = false;
+    const operational = db.operationalMetrics();
+    const runtimeByEndpoint = new Map(
+      buzz.map((endpoint) => [endpoint.endpointId, endpoint]),
+    );
+    const endpoints = operational.map((endpoint) => ({
+      endpoint_id: endpoint.endpointId,
+      agent_id: endpoint.agentId,
+      platform: endpoint.platform,
+      lifecycle_state: endpoint.lifecycleState,
+      runtime_state: runtimeByEndpoint.get(endpoint.endpointId)?.state ?? null,
+      connected: runtimeByEndpoint.get(endpoint.endpointId)?.connected ?? null,
+      diagnosis: diagnoseBuzzEndpoint(
+        runtimeByEndpoint.get(endpoint.endpointId),
+      ),
+      last_error: runtimeByEndpoint.get(endpoint.endpointId)?.lastError
+        ? redactString(runtimeByEndpoint.get(endpoint.endpointId)!.lastError!)
+        : null,
+      disconnected_since:
+        runtimeByEndpoint.get(endpoint.endpointId)?.disconnectedSince ?? null,
+      subscriptions:
+        runtimeByEndpoint.get(endpoint.endpointId)?.channels ?? null,
+      queue: { queued: endpoint.queued, running: endpoint.running },
+      conversations: endpoint.conversations,
+      sessions: endpoint.sessions,
+      outbox: {
+        pending: endpoint.outboxPending,
+        dead: endpoint.outboxDead,
+      },
+    }));
     return new Response(
       JSON.stringify({
         status: ok ? "ok" : "degraded",
         bots,
-        endpoints: buzz,
+        endpoints,
         uptime_secs: metrics.uptimeSecs(),
       }),
       {
@@ -585,7 +630,16 @@ function registerFixedRoutes(
         const snap = registry.snapshotFor(bot);
         botStates[botId] = snap.disabled ? 0 : snap.runner_ready ? 2 : 1;
       }
-      const body = metrics.renderPrometheus(botStates);
+      const runtime = buzzHealth();
+      const body = metrics.renderPrometheus(
+        botStates,
+        db.operationalMetrics(),
+        runtime.map((endpoint) => ({
+          endpointId: endpoint.endpointId,
+          state: endpoint.state,
+          channels: endpoint.channels,
+        })),
+      );
       return new Response(body, {
         status: 200,
         headers: { "Content-Type": "text/plain; version=0.0.4" },
@@ -679,6 +733,23 @@ function registerFixedRoutes(
       server.router.route(m, `${mountPath}/*`, handler);
     }
   }
+}
+
+function diagnoseBuzzEndpoint(
+  endpoint: BuzzEndpointHealth | undefined,
+): "none" | "key" | "auth" | "membership" | "reconnect" {
+  if (!endpoint?.lastError) return "none";
+  const error = endpoint.lastError.toLowerCase();
+  if (/private key|public key|signature|signing key/.test(error)) return "key";
+  if (/auth|nip-42|nip-aa|owner.?auth|expired/.test(error)) return "auth";
+  if (
+    /member|membership|forbidden|not permitted|no accessible channel/.test(
+      error,
+    )
+  ) {
+    return "membership";
+  }
+  return "reconnect";
 }
 
 export function runCrashRecovery(

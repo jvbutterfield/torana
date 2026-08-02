@@ -1569,6 +1569,39 @@ Gate:
 - shutdown/restart loses no accepted inbound event;
 - dashboard and CLI accurately distinguish platform, endpoint, conversation, and session.
 
+**Implementation evidence (2026-08-02):** `/health` now combines runner
+readiness with persisted endpoint lifecycle, runtime connection state,
+redacted/bounded Buzz diagnosis, subscriptions, queue depth, conversations,
+sessions, and outbox state. Prometheus adds configured platform/endpoint
+lifecycle, connection, subscription, conversation, session, queue, and outbox
+families; no conversation, session, turn, event, user, or channel identifier is
+used as a metric label. Dispatch and outbox logs carry the corresponding
+operator dimensions without changing metric cardinality.
+
+`torana conversations list`, `sessions list|reset`, `outbox
+list|replay|dead-letter`, endpoint lifecycle/status commands, and `gateway
+drain` provide local administration. The authenticated `/v1/admin/*` surface
+mirrors endpoint, conversation, session, rotation, outbox, resume/drain, and
+explicitly acknowledged forced-dead-letter operations while filtering every
+result and action to the token's allowed agents. Outbox inspection omits
+payload bodies and replay republishes the exact stored payload/signed event.
+Doctor C025 diagnoses durable backlog without identifiers, C026 validates the
+platform-neutral alert target or log fallback, and C027 validates the hard
+shutdown budget.
+
+Shutdown now unregisters HTTP intake and stops transports, drains work accepted
+before the cutoff within the runner budget, preserves undispatched rows for
+restart, cancels unfinished stream cadence, drains the durable outbox, stops
+sessions/runners/broker, and closes sockets/SQLite last. Focused tests prove
+agent-scoped admin authorization, explicit data-loss acknowledgement, exact
+outbox replay, bounded metric labels, platform-neutral Buzz alerts, and both
+successful and over-budget accepted-turn drain behavior. The complete
+repository suite passes with 1,370 tests passed, 13 intentionally skipped, and
+zero failures; typecheck, lint, formatting, build, whitespace, official Codex
+plugin validation, and the Phase 0 transport test/typecheck/manifest/provenance
+regression gates also pass. Phase 10 is complete; Phase 11 is ready to
+implement.
+
 ### Phase 11 — security review, soak, documentation, and release
 
 **Purpose:** finish the production rollout.

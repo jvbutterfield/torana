@@ -29,11 +29,30 @@
       "disabled_reason": null
     }
   },
+  "endpoints": [
+    {
+      "endpoint_id": "cato-buzz",
+      "agent_id": "cato",
+      "platform": "buzz",
+      "lifecycle_state": "active",
+      "runtime_state": "healthy",
+      "connected": true,
+      "diagnosis": "none",
+      "last_error": null,
+      "subscriptions": 4,
+      "queue": { "queued": 0, "running": 0 },
+      "conversations": 12,
+      "sessions": 8,
+      "outbox": { "pending": 0, "dead": 0 }
+    }
+  ],
   "uptime_secs": 3600
 }
 ```
 
-Returns HTTP 503 if any bot's runner isn't ready.
+Returns HTTP 503 if any bot's runner isn't ready or a Buzz endpoint is
+unhealthy. `diagnosis` is a bounded operator hint (`key`, `auth`, `membership`,
+or `reconnect`); the redacted `last_error` carries the supporting detail.
 
 ## Metrics endpoint
 
@@ -45,11 +64,17 @@ bot_state{bot_id="cato"} 2
 turns_total{bot_id="cato",status="completed"} 142
 turns_total{bot_id="cato",status="failed"} 3
 telegram_api_calls_total{status="2xx"} 1024
+torana_endpoint_connection_state{platform="buzz",endpoint_id="cato-buzz",state="healthy"} 1
+torana_conversation_queue_depth{platform="buzz",endpoint_id="cato-buzz",state="queued"} 0
+torana_endpoint_outbox_depth{platform="buzz",endpoint_id="cato-buzz",status="dead"} 0
 ```
 
 `bot_state` values: `0=disabled`, `1=starting`, `2=ready`, `3=busy`, `4=crash_loop`.
 
-No auth on the endpoint in v1 — don't expose the port publicly. Scrape it from within the same network.
+The endpoint/platform labels are bounded by configured endpoints. Conversation,
+session, event, and turn identifiers are deliberately excluded from metric
+labels. No auth on the endpoint in v1 — don't expose the port publicly. Scrape
+it from within the same network.
 
 ## Logs
 
@@ -119,9 +144,14 @@ A v0 process cannot run against a v1 DB. Rollback = restore from the snapshot; y
 On `SIGTERM`/`SIGINT`:
 
 1. Transports stop accepting new updates; in-flight webhook handlers complete their enqueue transaction.
-2. Outbox drains for up to `shutdown.outbox_drain_secs` (default 10).
-3. Each runner's `stop()` forwards `SIGTERM` to its subprocess with a grace window; then `SIGKILL`.
-4. DB closes (checkpoints the WAL). Exit 0.
+2. Accepted conversation turns drain for up to `shutdown.runner_grace_secs`;
+   undispatched rows remain durable, while over-budget active turns are marked
+   interrupted.
+3. Streaming cadence is cancelled, then the durable outbox drains for up to
+   `shutdown.outbox_drain_secs` (default 10).
+4. Agent API sessions, conversation sessions, runners, and the Buzz credential
+   broker stop within the remaining runner grace.
+5. HTTP/relay sockets close, then SQLite checkpoints and closes. Exit 0.
 
 Hard-cutoff at `shutdown.hard_timeout_secs` (default 25). Tuned to fit within Railway's 30s SIGKILL window.
 
@@ -131,16 +161,26 @@ v1 reads config once at startup. SIGHUP is **not** handled — restart to apply 
 
 ## Runbook snippets
 
-### Clear a stuck turn
+### Inspect and rotate conversation sessions
 
 ```
-sqlite3 /data/gateway/gateway.db "UPDATE turns SET status='failed' WHERE id=?"
+torana sessions list --config /data/torana.yaml
+torana sessions reset <session-key> --config /data/torana.yaml
 ```
 
 ### Inspect pending outbox
 
 ```
-sqlite3 /data/gateway/gateway.db "SELECT id, bot_id, kind, attempt_count, last_error FROM outbox WHERE status IN ('pending','retrying') ORDER BY id"
+torana outbox list --config /data/torana.yaml
+torana outbox dead-letter <id> --config /data/torana.yaml
+torana outbox replay <id> --config /data/torana.yaml
+```
+
+Replay republishes the exact stored payload and signed Buzz event; it never
+re-signs. To stop new intake and let accepted work drain gateway-wide:
+
+```sh
+torana gateway drain --config /data/torana.yaml
 ```
 
 ### Force re-poll from scratch (one bot)

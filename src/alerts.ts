@@ -1,10 +1,11 @@
-// Operational alerts — one delivery bot + one chat_id, decoupled from the
-// subject bot (§3.9). If the `alerts` block is absent, alerts are logged at
-// warn level only.
+// Platform-neutral operational alerts. If no normalized or legacy target is
+// configured, alerts are logged at warn level only.
 
 import { logger, redactString } from "./log.js";
 import type { BotId, Config } from "./config/schema.js";
+import type { NormalizedConfigModel } from "./config/v2.js";
 import type { PlatformAdapter } from "./platform/capabilities.js";
+import type { ConversationRef } from "./platform/types.js";
 import { telegramConversation } from "./platform/telegram/adapter.js";
 
 const log = logger("alerts");
@@ -22,17 +23,46 @@ export type AlertKind =
 export class AlertManager {
   private cooldowns = new Map<string, number>();
   private cooldownMs: number;
-  private chatId: number | null;
   private deliveryAdapter: PlatformAdapter | null;
+  private target: ConversationRef | null;
 
-  constructor(config: Config, endpoints: ReadonlyMap<BotId, PlatformAdapter>) {
+  constructor(
+    config: Config,
+    endpoints: ReadonlyMap<string, PlatformAdapter>,
+    normalized?: NormalizedConfigModel,
+  ) {
     const alerts = config.alerts;
     const adapters = new Map(endpoints);
     this.cooldownMs = alerts?.cooldown_ms ?? 600_000;
-    this.chatId = alerts?.chat_id ?? null;
-    this.deliveryAdapter = alerts?.via_bot
-      ? (adapters.get(alerts.via_bot) ?? null)
+    const configuredTarget = normalized?.alertsTarget;
+    const endpoint = configuredTarget
+      ? normalized.endpoints.find(
+          (candidate) => candidate.id === configuredTarget.endpointId,
+        )
       : null;
+    if (configuredTarget && endpoint) {
+      this.deliveryAdapter = adapters.get(endpoint.id) ?? null;
+      this.target = {
+        platform: endpoint.platform,
+        communityId: endpoint.communityId,
+        endpointId: endpoint.id,
+        channelId: configuredTarget.externalConversationId,
+        threadRootId: null,
+        workflowRunId: null,
+        type: endpoint.platform === "buzz" ? "stream" : "direct",
+      };
+    } else {
+      this.deliveryAdapter = alerts?.via_bot
+        ? (adapters.get(alerts.via_bot) ?? null)
+        : null;
+      this.target =
+        this.deliveryAdapter && alerts?.chat_id !== undefined
+          ? telegramConversation(
+              this.deliveryAdapter.endpoint.id,
+              alerts.chat_id,
+            )
+          : null;
+    }
   }
 
   private shouldAlert(key: string): boolean {
@@ -58,15 +88,16 @@ export class AlertManager {
     // were the gap that fix didn't cover.
     const redacted = redactString(text);
 
-    if (!this.deliveryAdapter || !this.chatId) {
+    if (!this.deliveryAdapter || !this.target) {
       log.warn(`alert: ${redacted}`, { alert_kind: kind, bot_id: botId });
       return;
     }
     try {
-      const result = await this.deliveryAdapter.deliver(
-        telegramConversation(this.deliveryAdapter.endpoint.id, this.chatId),
-        { kind: "send", text: redacted, files: [] },
-      );
+      const result = await this.deliveryAdapter.deliver(this.target, {
+        kind: "send",
+        text: redacted,
+        files: [],
+      });
       // sendMessage swallows Telegram errors and returns {ok:false,...}.
       // The catch block below would never fire on Telegram-side failures;
       // check the result explicitly so a failed alert isn't silently

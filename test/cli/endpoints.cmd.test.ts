@@ -137,3 +137,100 @@ test("endpoint status, drain, disable, and resume persist lifecycle state", asyn
     lifecycleState: "active",
   });
 });
+
+test("operator lists conversations/sessions and controls exact outbox replay", async () => {
+  const configPath = phase4Config();
+  const loaded = loadConfigFromFile(configPath);
+  const db = new GatewayDB(loaded.config.gateway.db_path!);
+  const conversation = {
+    platform: "buzz" as const,
+    communityId: "primary",
+    endpointId: "alpha-buzz",
+    channelId: "11111111-2222-4333-8444-555555555555",
+    threadRootId: null,
+    workflowRunId: null,
+    type: "stream" as const,
+  };
+  db.resolveConversation("alpha", conversation, "owner");
+  const outboxId = db.insertOutboundOperation({
+    turnId: null,
+    agentId: "alpha",
+    conversation,
+    operation: { kind: "send", text: "durable", files: [] },
+    signedPayloadJson: '{"id":"signed"}',
+    signedEventId: "ab".repeat(32),
+  });
+  db.close();
+
+  const conversations = await runCli([
+    "conversations",
+    "list",
+    "--format",
+    "json",
+    "--config",
+    configPath,
+  ]);
+  expect(conversations.exitCode).toBe(0);
+  expect(parseJsonArray(conversations.stdout)[0]).toMatchObject({
+    platform: "buzz",
+    endpointId: "alpha-buzz",
+  });
+
+  const sessions = await runCli([
+    "sessions",
+    "list",
+    "--format=json",
+    "--config",
+    configPath,
+  ]);
+  expect(sessions.exitCode).toBe(0);
+  expect(parseJsonArray(sessions.stdout)[0]).toMatchObject({
+    agentId: "alpha",
+    state: "stopped",
+    bindings: 1,
+  });
+
+  const dead = await runCli([
+    "outbox",
+    "dead-letter",
+    String(outboxId),
+    "--config",
+    configPath,
+  ]);
+  expect(dead.exitCode).toBe(0);
+  expect(dead.stdout).toContain("dead-lettered");
+
+  const listed = await runCli([
+    "outbox",
+    "list",
+    "--format=json",
+    "--config",
+    configPath,
+  ]);
+  expect(listed.exitCode).toBe(0);
+  expect(parseJsonArray(listed.stdout)[0]).toMatchObject({
+    id: outboxId,
+    status: "dead",
+    signedEventId: "ab".repeat(32),
+  });
+  expect(listed.stdout).not.toContain("durable");
+
+  const replay = await runCli([
+    "outbox",
+    "replay",
+    String(outboxId),
+    "--config",
+    configPath,
+  ]);
+  expect(replay.exitCode).toBe(0);
+  expect(replay.stdout).toContain("exact-payload replay");
+
+  const verify = new GatewayDB(loaded.config.gateway.db_path!);
+  expect(verify.listOperationalOutbox()[0]).toMatchObject({
+    id: outboxId,
+    status: "pending",
+    attempts: 0,
+    signedEventId: "ab".repeat(32),
+  });
+  verify.close();
+});

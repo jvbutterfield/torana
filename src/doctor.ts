@@ -705,6 +705,101 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
+  // C025 — durable operational backlog. This is intentionally aggregate-only:
+  // doctor must diagnose stuck work without printing conversation identifiers
+  // or payloads from the database.
+  if (!existsSync(config.gateway.db_path!)) {
+    checks.push({
+      id: "C025",
+      status: "skip",
+      detail: "database does not exist; operational backlog not inspected",
+    });
+  } else {
+    try {
+      const operationalDb = new Database(config.gateway.db_path!, {
+        readonly: true,
+      });
+      try {
+        const version = operationalDb.query("PRAGMA user_version").get() as {
+          user_version: number;
+        };
+        if (Number(version.user_version) < 5) {
+          checks.push({
+            id: "C025",
+            status: "skip",
+            detail: "schema v5 is required for normalized backlog diagnostics",
+          });
+        } else {
+          const outbox = operationalDb
+            .query(
+              `SELECT
+                 SUM(CASE WHEN status IN ('dead','failed') THEN 1 ELSE 0 END) AS dead,
+                 SUM(CASE WHEN status IN ('pending','retrying','in_flight')
+                           AND COALESCE(next_attempt_at, created_at) < datetime('now', '-5 minutes')
+                          THEN 1 ELSE 0 END) AS stale
+               FROM outbox`,
+            )
+            .get() as { dead: number | null; stale: number | null };
+          const sessions = operationalDb
+            .query(
+              `SELECT COUNT(*) AS count FROM conversation_sessions
+               WHERE state IN ('starting','busy')
+                 AND COALESCE(last_used_at, started_at) < datetime('now', ?)`,
+            )
+            .get(`-${config.worker_tuning.turn_timeout_secs} seconds`) as {
+            count: number;
+          };
+          const dead = Number(outbox.dead ?? 0);
+          const stale = Number(outbox.stale ?? 0);
+          const stuck = Number(sessions.count ?? 0);
+          checks.push({
+            id: "C025",
+            status: dead || stale || stuck ? "warn" : "ok",
+            detail: `operational backlog: dead_outbox=${dead}, stale_outbox=${stale}, stuck_sessions=${stuck}`,
+          });
+        }
+      } finally {
+        operationalDb.close();
+      }
+    } catch (error) {
+      checks.push({
+        id: "C025",
+        status: "warn",
+        detail: `operational backlog unavailable: ${redactString(error instanceof Error ? error.message : String(error))}`,
+      });
+    }
+  }
+
+  // C026 — platform-neutral alert delivery, with log-only as the safe fallback.
+  const alertTarget = opts.normalized?.alertsTarget;
+  if (!alertTarget) {
+    checks.push({
+      id: "C026",
+      status: "skip",
+      detail: "no alert target configured; alerts use the log-only fallback",
+    });
+  } else {
+    const endpoint = opts.normalized?.endpoints.find(
+      (candidate) => candidate.id === alertTarget.endpointId,
+    );
+    checks.push({
+      id: "C026",
+      status: endpoint?.enabled ? "ok" : "warn",
+      detail: endpoint
+        ? `alerts target configured on ${endpoint.platform} endpoint '${endpoint.id}'${endpoint.enabled ? "" : " (disabled)"}`
+        : "alerts target endpoint is unavailable",
+    });
+  }
+
+  // C027 — hard shutdown budget must cover the two bounded drain windows.
+  const orderlyBudget =
+    config.shutdown.outbox_drain_secs + config.shutdown.runner_grace_secs;
+  checks.push({
+    id: "C027",
+    status: config.shutdown.hard_timeout_secs >= orderlyBudget ? "ok" : "warn",
+    detail: `shutdown budget: hard=${config.shutdown.hard_timeout_secs}s, outbox+runner=${orderlyBudget}s`,
+  });
+
   return { checks };
 }
 

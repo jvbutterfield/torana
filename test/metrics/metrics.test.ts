@@ -6,6 +6,8 @@ import { Metrics } from "../../src/metrics.js";
 import { AlertManager } from "../../src/alerts.js";
 import { TelegramClient } from "../../src/telegram/client.js";
 import { coerceTelegramAdapters } from "../../src/platform/telegram/adapter.js";
+import type { PlatformAdapter } from "../../src/platform/capabilities.js";
+import type { ConversationRef } from "../../src/platform/types.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 describe("Metrics", () => {
@@ -121,6 +123,39 @@ describe("Metrics", () => {
     );
     // Ends with trailing newline.
     expect(body.endsWith("\n")).toBe(true);
+  });
+
+  test("operational metrics use bounded endpoint labels, never conversation ids", () => {
+    const m = new Metrics(makeTestConfig([makeTestBotConfig("alpha")]));
+    const body = m.renderPrometheus(
+      { alpha: 2 },
+      [
+        {
+          endpointId: "alpha-buzz",
+          agentId: "alpha",
+          platform: "buzz",
+          lifecycleState: "active",
+          conversations: 3,
+          queued: 2,
+          running: 1,
+          sessions: 2,
+          outboxPending: 4,
+          outboxDead: 1,
+        },
+      ],
+      [{ endpointId: "alpha-buzz", state: "healthy", channels: 5 }],
+    );
+    expect(body).toContain(
+      'torana_conversation_queue_depth{platform="buzz",endpoint_id="alpha-buzz",state="queued"} 2',
+    );
+    expect(body).toContain(
+      'torana_endpoint_connection_state{platform="buzz",endpoint_id="alpha-buzz",state="healthy"} 1',
+    );
+    expect(body).toContain(
+      'torana_endpoint_outbox_depth{platform="buzz",endpoint_id="alpha-buzz",status="dead"} 1',
+    );
+    expect(body).not.toContain("conversation_id=");
+    expect(body).not.toContain("session_key=");
   });
 });
 
@@ -263,5 +298,56 @@ describe("AlertManager", () => {
     const a = new AlertManager(config, new Map());
     // Should NOT throw.
     await a.tokenInvalid("alpha");
+  });
+
+  test("v2 alert target delivers through a Buzz endpoint", async () => {
+    const config = makeTestConfig([makeTestBotConfig("alpha")]);
+    const conversations: ConversationRef[] = [];
+    const buzz = {
+      endpoint: {
+        id: "alpha-buzz",
+        agentId: "alpha",
+        platform: "buzz",
+        communityId: "primary",
+        capabilities: new Set(["send"]),
+      },
+      normalizeInbound: () => null,
+      deliver: async (conversation: ConversationRef) => {
+        conversations.push(conversation);
+        return { ok: true as const, externalMessageId: "event" };
+      },
+      signal: async () => true,
+      materializeAttachments: async () => ({ attachments: [], errors: [] }),
+    } satisfies PlatformAdapter;
+    const a = new AlertManager(config, new Map([["alpha-buzz", buzz]]), {
+      sourceVersion: 2,
+      endpoints: [
+        {
+          id: "alpha-buzz",
+          agentId: "alpha",
+          platform: "buzz",
+          enabled: true,
+          communityId: "primary",
+          externalIdentity: "pubkey",
+        },
+      ],
+      sessions: {} as never,
+      alertsTarget: {
+        endpointId: "alpha-buzz",
+        externalConversationId: "11111111-2222-4333-8444-555555555555",
+      },
+    });
+    await a.workerDegraded("alpha", "relay unhealthy");
+    expect(conversations).toEqual([
+      {
+        platform: "buzz",
+        communityId: "primary",
+        endpointId: "alpha-buzz",
+        channelId: "11111111-2222-4333-8444-555555555555",
+        threadRootId: null,
+        workflowRunId: null,
+        type: "stream",
+      },
+    ]);
   });
 });

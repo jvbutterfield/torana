@@ -357,4 +357,115 @@ describe("ConversationScheduler", () => {
     expect(agentUpdates).toBe(0);
     scheduler.stop();
   });
+
+  test("drains a turn accepted before intake stopped", async () => {
+    const row = {
+      id: 40,
+      bot_id: "alpha",
+      chat_id: 40,
+      source_update_id: 40,
+      conversation_id: 40,
+      session_key: "conversation:drain",
+      endpoint_id: "alpha-buzz",
+      platform: "buzz",
+      agent_api_token_name: null,
+      received_at: new Date().toISOString(),
+      conversation_archived: 0,
+    };
+    let dispatched = false;
+    let completed = false;
+    const scheduler = new ConversationScheduler({
+      db: {
+        getQueuedConversationTurns: () => (dispatched ? [] : [row]),
+        getTurnText: () => "finish me",
+        getTurnAttachments: () => [],
+        setConversationSessionError: () => {},
+        getConversationSession: () => null,
+      } as never,
+      registry: {
+        bot: () => ({
+          dispatchSessionTurn: (...args: unknown[]) => {
+            dispatched = true;
+            const terminal = args.at(-1) as (
+              outcome: ManagedTurnOutcome,
+            ) => void;
+            setTimeout(() => {
+              completed = true;
+              terminal({ kind: "completed" });
+            }, 15);
+            return true;
+          },
+          cancelManagedTurn: () => true,
+        }),
+      } as never,
+      manager: {
+        acquireConversation: async () => ({
+          kind: "ok" as const,
+          sessionId: "session-drain",
+          ephemeral: false,
+          runnerSession: session,
+          durableSessionKey: row.session_key,
+        }),
+        release: () => {},
+      } as never,
+      normalized: normalizedSchedulerConfig(),
+    });
+
+    expect(await scheduler.drainAccepted(200)).toBe(true);
+    expect(dispatched).toBe(true);
+    expect(completed).toBe(true);
+  });
+
+  test("leaves an undispatched accepted turn durable when drain budget expires", async () => {
+    const row = {
+      id: 41,
+      bot_id: "alpha",
+      chat_id: 41,
+      source_update_id: 41,
+      conversation_id: 41,
+      session_key: "conversation:durable",
+      endpoint_id: "alpha-buzz",
+      platform: "buzz",
+      agent_api_token_name: null,
+      received_at: new Date().toISOString(),
+      conversation_archived: 0,
+    };
+    const rows = [row];
+    const scheduler = new ConversationScheduler({
+      db: {
+        getQueuedConversationTurns: () => rows,
+        getConversationSession: () => null,
+      } as never,
+      registry: { bot: () => undefined } as never,
+      manager: {
+        acquireConversation: async () => ({ kind: "capacity" as const }),
+      } as never,
+      normalized: normalizedSchedulerConfig(),
+    });
+
+    expect(await scheduler.drainAccepted(20)).toBe(false);
+    expect(rows).toEqual([row]);
+  });
 });
+
+function normalizedSchedulerConfig() {
+  return {
+    sourceVersion: 2 as const,
+    endpoints: [],
+    sessions: {
+      scope: "conversation" as const,
+      idle_process_ttl_ms: 60_000,
+      hard_process_ttl_ms: 60_000,
+      context_retention_ms: 60_000,
+      max_per_agent: 8,
+      max_global: 32,
+      max_per_token_default: 8,
+      max_concurrent_turns_per_agent: 2,
+      max_concurrent_turns_global: 2,
+      max_queue_depth_per_conversation: 50,
+      max_queue_depth_per_agent: 500,
+      overflow: "queue" as const,
+      aliases: [],
+    },
+  };
+}
