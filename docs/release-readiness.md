@@ -63,9 +63,17 @@ manifest parity, release archive checksum, installed CLI checksum, and artifact
 provenance also passed.
 
 The real Telegram sandbox regression remains pending because no
-`TELEGRAM_TEST_BOT_TOKEN` and `TELEGRAM_TEST_CHAT_ID` are configured. Production
-`agent-team` remains a separate rollout gate and must not be changed until its
-repository is the active writable workspace and the canary identity is approved.
+`TELEGRAM_TEST_BOT_TOKEN` and `TELEGRAM_TEST_CHAT_ID` are configured.
+
+The production `agent-team` Jules canary is active on Railway deployment
+`461e49af-a1ae-4b6f-acef-1246a9f887f7`, pinned to `torana@2.0.0-rc.1` and the
+Block Buzz CLI `desktop-v0.5.3` source. Buzz Desktop registers Jules as a
+deployed provider-backed agent, preventing an explicit mention from starting a
+second local runtime. The corrected canary test dispatched exactly one Torana
+turn (`4079`), produced one visible reply, and left the Desktop local-worker
+process set unchanged. The endpoint remained healthy and connected with empty
+queues and outbox. The 24-hour canary observation window began at
+2026-08-02 21:00:20 UTC (15:00:20 MDT).
 
 The mixed-platform harness uses five personas, Telegram plus cryptographically
 signed Buzz delivery, configurable realistic conversation counts, durable
@@ -83,5 +91,6 @@ Omit the duration and interval overrides for the 24-hour release gate. Set
 
 Production approval still requires the real Telegram regression E2E, a real
 external open-relay E2E, fresh cross-process Codex and Claude restart checks,
-the 24-hour soak, canary observation, full-team rollout, and rollback
+completion of the 24-hour canary observation and mixed-platform soak, full-team
+rollout, and rollback
 rehearsal. Do not tag or publish 2.0.0 until those gates are recorded.

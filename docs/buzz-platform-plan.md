@@ -1,6 +1,7 @@
 # Implementation Plan: Multi-platform Torana with Native Buzz Support
 
-**Status:** Phases 0–5 complete; Phase 6 is ready to implement
+**Status:** Phases 0–10 complete; Phase 11 implementation is complete and its
+production release gates are in progress
 
 **Date:** 2026-08-01 (refined same day; see §21)
 
@@ -1654,14 +1655,22 @@ Codex and Claude Agent API request/response and same-session continuity passed
 manifest, installed-binary checksum, release-artifact checksum, and provenance
 gates all passed.
 
-The production `agent-team` canary also passed on Railway deployment
-`21917563-5a07-426f-9f25-795382a87847`, pinned to `torana@2.0.0-rc.1` and the
-Block Buzz CLI `desktop-v0.5.3` source. Jules's local Buzz Desktop runtime was
-stopped with launch-at-login disabled before activation. The remote
-`jules-buzz` endpoint became active, healthy, and connected while all five
-Telegram runners remained ready. An owner mention created exactly one Buzz
-conversation/session and one Jules turn, produced one visible reply, and left
-zero queued/running work and zero pending/dead outbox rows.
+The first production `agent-team` canary activation exposed an operator-side
+duplicate-runtime hazard: stopping Jules's local Buzz Desktop runtime and
+disabling launch-at-login did not prevent an explicit mention from starting it
+again, so both Desktop and Torana replied. Remote intake was disabled while
+Jules's managed-agent record was changed to a deployed provider-backed runtime;
+deleting the managed identity was neither necessary nor desirable.
+
+The corrected canary passed on Railway deployment
+`461e49af-a1ae-4b6f-acef-1246a9f887f7`, pinned to `torana@2.0.0-rc.1` and the
+Block Buzz CLI `desktop-v0.5.3` source. The remote `jules-buzz` endpoint became
+active, healthy, and connected while all five Telegram runners remained ready.
+The final owner message dispatched exactly one Torana turn (`4079`), produced
+one visible reply, left the Buzz Desktop local-worker process set unchanged,
+and ended with zero queued/running work and zero pending/dead Buzz outbox rows.
+The 24-hour canary observation window began at 2026-08-02 21:00:20 UTC
+(15:00:20 MDT).
 
 Remaining operator gates are the real Telegram sandbox and external open-relay
 E2Es, fresh cross-process Codex/Claude restart checks, the 24-hour
@@ -1803,11 +1812,12 @@ Materialize secret files mode `0600` when subprocess compatibility requires file
 
 1. Deploy platform-neutral refactor with v1 Telegram config only.
 2. Enable conversation sessions for one Telegram canary agent.
-3. Add one Buzz endpoint for a non-critical canary persona: configure it, then flip `platforms.buzz.enabled: true` **and** that endpoint's `enabled: true`. Every other Buzz endpoint stays `enabled: false`, so the master switch alone activates nothing.
-4. Test owner DM, one team channel, one forum thread, restart, key rotation (§14.5), and membership removal.
-5. Add remaining personas one at a time.
-6. Enable sibling-agent author allowlists only after loop-budget metrics are visible.
-7. Enable rich triggers, workflows, and heartbeats last.
+3. Add one Buzz endpoint for a non-critical canary persona. If Buzz Desktop also manages that identity, register the hosted runtime as a deployed provider-backed agent; a stopped local managed agent can be restarted by an explicit mention and cause duplicate replies.
+4. Flip `platforms.buzz.enabled: true` **and** the canary endpoint's `enabled: true`. Every other Buzz endpoint stays `enabled: false`, so the master switch alone activates nothing.
+5. Test owner DM, one team channel, one forum thread, restart, key rotation (§14.5), and membership removal.
+6. Add remaining personas one at a time.
+7. Enable sibling-agent author allowlists only after loop-budget metrics are visible.
+8. Enable rich triggers, workflows, and heartbeats last.
 
 ### 14.3 Rollback
 

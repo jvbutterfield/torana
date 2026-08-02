@@ -177,11 +177,15 @@ fault.
 ## Buzz canary rollout
 
 1. Deploy with `platforms.buzz.enabled: false`; run validate and doctor.
-2. Mark exactly one Buzz endpoint enabled, then turn on the master switch.
-3. Observe health, reconnect age, queue/outbox depth, dedup, and conversation
+2. If Buzz Desktop also manages the canary identity, register the hosted runtime
+   as a deployed provider-backed agent before enabling it. Merely stopping a
+   local managed agent is insufficient: an explicit mention can start that
+   local runtime and produce a duplicate reply alongside Torana.
+3. Mark exactly one Buzz endpoint enabled, then turn on the master switch.
+4. Observe health, reconnect age, queue/outbox depth, dedup, and conversation
    isolation across ordinary mentions, DMs, and one restart.
-4. Enable remaining endpoints individually. Keep proactive triggers off.
-5. Rehearse a drain and binary rollback before tagging 2.0.0.
+5. Enable remaining endpoints individually. Keep proactive triggers off.
+6. Rehearse a drain and binary rollback before tagging 2.0.0.
 
 See [`release-readiness.md`](release-readiness.md) for the 24-hour soak and
 real-relay release gates.
