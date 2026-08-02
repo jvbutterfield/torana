@@ -281,7 +281,12 @@ export const BotCommandSchema = z
         /^\/[A-Za-z0-9_]+$/,
         "trigger must start with / and be alphanumeric",
       ),
-    action: z.enum(["builtin:reset", "builtin:status", "builtin:health"]),
+    action: z.enum([
+      "builtin:reset",
+      "builtin:cancel",
+      "builtin:status",
+      "builtin:health",
+    ]),
   })
   .strict();
 
@@ -384,6 +389,8 @@ export const CommandRunnerSchema = z
     /** See `ClaudeCodeRunnerSchema.secrets`. */
     secrets: z.record(z.string(), z.string()).optional(),
     on_reset: z.enum(["signal", "restart"]).default("signal"),
+    process_model: z.enum(["resident", "per_turn", "stateless"]).optional(),
+    resume_model: z.enum(["stable_session_id", "none"]).optional(),
   })
   .strict();
 

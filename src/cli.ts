@@ -16,6 +16,7 @@ import { isAbsolute, resolve } from "node:path";
 import { loadConfigFromFile, ConfigLoadError } from "./config/load.js";
 import { logger, setLogFormat, setLogLevel, setSecrets } from "./log.js";
 import { applyMigrations, planMigration } from "./db/migrate.js";
+import { GatewayDB } from "./db/gateway-db.js";
 import { startGateway } from "./main.js";
 import { runDoctor, runRemoteDoctor, type DoctorCheck } from "./doctor.js";
 import {
@@ -66,6 +67,7 @@ interface ParsedArgs {
   token: string | null;
   profile: string | null;
   migrationTo: number | null;
+  confirmShared: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -82,6 +84,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     token: null,
     profile: null,
     migrationTo: null,
+    confirmShared: false,
   };
 
   for (let i = isHelpFlag ? 0 : 1; i < argv.length; i += 1) {
@@ -94,6 +97,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.autoMigrate = true;
     } else if (a === "--dry-run") {
       args.dryRun = true;
+    } else if (a === "--confirm-shared") {
+      args.confirmShared = true;
     } else if (a === "--to") {
       const next = argv[++i];
       if (!next) throw new Error("--to requires a schema version");
@@ -264,6 +269,36 @@ async function main(argv: string[]): Promise<void> {
       process.exit(result.checks.some((c) => c.status === "fail") ? 1 : 0);
       return;
     }
+    case "sessions": {
+      const action = argv[1];
+      const sessionKey = argv[2];
+      if (action !== "reset" || !sessionKey || sessionKey.startsWith("-")) {
+        throw new Error(
+          "usage: torana sessions reset <session-key> [--confirm-shared] [--config <path>]",
+        );
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const db = new GatewayDB(config.gateway.db_path!);
+      try {
+        const session = db.getConversationSession(sessionKey);
+        if (!session) throw new Error(`session '${sessionKey}' not found`);
+        const bindings = db.conversationSessionBindingCount(sessionKey);
+        if (bindings > 1 && !args.confirmShared) {
+          throw new Error(
+            `session '${sessionKey}' is shared by ${bindings} conversations; rerun with --confirm-shared`,
+          );
+        }
+        db.resetConversationSession(sessionKey);
+        console.log(
+          `reset session '${sessionKey}' (${bindings} conversation binding${bindings === 1 ? "" : "s"}); the next turn starts fresh`,
+        );
+      } finally {
+        db.close();
+      }
+      return;
+    }
     case "migrate": {
       if (args.migrationTo !== null && args.migrationTo !== 5) {
         throw new Error("migrate currently supports only --to 5");
@@ -322,6 +357,7 @@ Gateway commands:
   doctor       Validate config and check Telegram reachability
   validate     Offline config check (no Telegram, no DB)
   migrate      Apply pending DB migrations (--dry-run to preview)
+  sessions reset <key>  Clear a conversation session (shared sessions require --confirm-shared)
   version      Print package + runtime version
 
 Agent-API client commands (require --server + --token, env equivalents, or a profile):

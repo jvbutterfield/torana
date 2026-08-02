@@ -17,6 +17,7 @@ import type { StreamManager } from "../streaming.js";
 import type { OutboxProcessor } from "../outbox.js";
 import type { PlatformAdapter } from "../platform/capabilities.js";
 import type { ConversationRef } from "../platform/types.js";
+import type { ConversationScheduler } from "../conversation/scheduler.js";
 
 const log = logger("registry");
 
@@ -39,6 +40,7 @@ export class BotRegistry {
   private metrics: Metrics;
   private alerts: AlertManager;
   private dispatchTimer: ReturnType<typeof setInterval> | null = null;
+  private conversationScheduler: ConversationScheduler | null = null;
 
   constructor(opts: BotRegistryOptions) {
     this.config = opts.config;
@@ -57,12 +59,25 @@ export class BotRegistry {
     return [...this.bots.keys()];
   }
 
+  setConversationScheduler(scheduler: ConversationScheduler): void {
+    this.conversationScheduler = scheduler;
+  }
+
   async startAll(): Promise<void> {
-    await Promise.all([...this.bots.values()].map((b) => b.start()));
-    this.dispatchTimer = setInterval(() => this.dispatchAll(), 2000);
+    if (this.conversationScheduler) {
+      // V2 dispatches only through independent RunnerSession instances. The
+      // legacy main runner is a session factory host and must not consume an
+      // extra resident process or create a second dispatch path.
+      for (const bot of this.bots.values()) bot.startSessionHost();
+      this.conversationScheduler.start();
+    } else {
+      await Promise.all([...this.bots.values()].map((b) => b.start()));
+      this.dispatchTimer = setInterval(() => this.dispatchAll(), 2000);
+    }
   }
 
   async stopAll(graceMs?: number): Promise<void> {
+    this.conversationScheduler?.stop();
     if (this.dispatchTimer) {
       clearInterval(this.dispatchTimer);
       this.dispatchTimer = null;
@@ -99,7 +114,17 @@ export class BotRegistry {
         botConfig: bot.botConfig,
         adapter,
         alerts: this.alerts,
-        onEnqueued: () => this.dispatchFor(botId),
+        acceptInbound: this.conversationScheduler
+          ? (inbound) =>
+              this.conversationScheduler!.canAccept(
+                botId,
+                inbound.conversation!,
+              )
+          : undefined,
+        onEnqueued: () => {
+          if (this.conversationScheduler) this.conversationScheduler.wake();
+          else this.dispatchFor(botId);
+        },
         commandContextFactory: (args) =>
           this.buildCommandContext(bot, adapter, event.conversation!, args),
       },
@@ -113,6 +138,10 @@ export class BotRegistry {
 
   /** Dispatch the next queued turn for `botId` if the runner is idle. */
   dispatchFor(botId: BotId): void {
+    if (this.conversationScheduler) {
+      this.conversationScheduler.wake();
+      return;
+    }
     const bot = this.bots.get(botId);
     if (!bot || !bot.isReady) return;
 
@@ -157,6 +186,18 @@ export class BotRegistry {
       conversation,
       runner: bot.runner,
       getStatus: () => this.snapshotFor(bot),
+      resetConversation: this.conversationScheduler
+        ? () =>
+            this.conversationScheduler!.resetConversation(bot.id, conversation)
+        : undefined,
+      cancelConversation: this.conversationScheduler
+        ? () =>
+            this.conversationScheduler!.cancelConversation(bot.id, conversation)
+        : undefined,
+      getConversationStatus: this.conversationScheduler
+        ? () =>
+            this.conversationScheduler!.conversationStatus(bot.id, conversation)
+        : undefined,
     };
   }
 

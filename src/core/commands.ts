@@ -20,6 +20,9 @@ export interface CommandContext {
   runner: AgentRunner;
   /** Bot-level snapshot getter for builtin:status / builtin:health. */
   getStatus: () => BotStatusSnapshot;
+  resetConversation?: () => Promise<string>;
+  cancelConversation?: () => Promise<string>;
+  getConversationStatus?: () => string;
 }
 
 export interface BotStatusSnapshot {
@@ -57,6 +60,9 @@ export async function dispatchCommand(
     case "builtin:reset":
       await handleReset(ctx);
       return { handled: true };
+    case "builtin:cancel":
+      await handleCancel(ctx);
+      return { handled: true };
     case "builtin:status":
       await handleStatus(ctx);
       return { handled: true };
@@ -67,6 +73,10 @@ export async function dispatchCommand(
 }
 
 async function handleReset(ctx: CommandContext): Promise<void> {
+  if (ctx.resetConversation) {
+    await sendReply(ctx, await ctx.resetConversation());
+    return;
+  }
   if (!ctx.runner.supportsReset()) {
     await sendReply(ctx, "This bot does not support /reset.");
     log.warn("reset requested but runner doesn't support it", {
@@ -86,7 +96,22 @@ async function handleReset(ctx: CommandContext): Promise<void> {
   }
 }
 
+async function handleCancel(ctx: CommandContext): Promise<void> {
+  if (!ctx.cancelConversation) {
+    await sendReply(
+      ctx,
+      "No independently cancellable conversation session is active.",
+    );
+    return;
+  }
+  await sendReply(ctx, await ctx.cancelConversation());
+}
+
 async function handleStatus(ctx: CommandContext): Promise<void> {
+  if (ctx.getConversationStatus) {
+    await sendReply(ctx, ctx.getConversationStatus());
+    return;
+  }
   const snap = ctx.getStatus();
   const lines = [
     `Bot: ${snap.botId}`,

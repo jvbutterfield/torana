@@ -7,9 +7,25 @@ import { telegramConversation } from "./platform/telegram/adapter.js";
 
 const log = logger("streaming");
 
+interface ActiveStreamTurn {
+  turnId: number;
+  chatId: number;
+  buffer: string;
+  telegramMessageId: number | null;
+  segmentIndex: number;
+  lastFlushTime: number;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+  hadFirstOutput: boolean;
+  typingTimer: ReturnType<typeof setInterval> | null;
+  firstSendInFlight: boolean;
+  lastDispatchedText: string;
+  deferredFinalChunks: string[] | null;
+}
+
 /**
- * Streaming UX for one active turn: buffers text_delta events, flushes edits
- * to Telegram at a throttled cadence, splits long messages.
+ * Streaming UX for active turns: buffers text_delta events, flushes edits to
+ * Telegram at a throttled cadence, and isolates concurrent conversations by
+ * turn id.
  */
 export class StreamManager {
   private config: Config;
@@ -30,39 +46,7 @@ export class StreamManager {
    */
   private rateLimitedUntil = new Map<BotId, number>();
 
-  private activeTurns = new Map<
-    BotId,
-    {
-      turnId: number;
-      chatId: number;
-      buffer: string;
-      telegramMessageId: number | null;
-      segmentIndex: number;
-      lastFlushTime: number;
-      flushTimer: ReturnType<typeof setTimeout> | null;
-      hadFirstOutput: boolean;
-      typingTimer: ReturnType<typeof setInterval> | null;
-      // True between queuing the lazy first sendMessage and its callback
-      // resolving the messageId. While true, appendText must NOT queue a
-      // second fresh send — the buffer keeps accumulating; the next
-      // appendText after the callback fires (or finalizeTurn) flushes
-      // whatever has accumulated.
-      firstSendInFlight: boolean;
-      // Text most recently queued for sendMessage or editMessageText
-      // against this turn's active message. finalizeTurn compares the
-      // final buffer against this and skips the trailing edit when the
-      // active message already shows the final text — saves a redundant
-      // editMessageText call (which would also be a "message not modified"
-      // no-op on Telegram's side) per turn.
-      lastDispatchedText: string;
-      // Set by finalizeTurn when it runs while firstSendInFlight is true
-      // (fast-runner race: runner finished before Telegram returned the
-      // initial send's messageId). The send-callback drains these chunks
-      // by editing the just-sent message with chunks[0] and queuing fresh
-      // sends for the remainder, then removes the turn from activeTurns.
-      deferredFinalChunks: string[] | null;
-    }
-  >();
+  private activeTurns = new Map<string, ActiveStreamTurn>();
 
   constructor(
     config: Config,
@@ -77,8 +61,9 @@ export class StreamManager {
   }
 
   /** Cancel an in-flight stream (e.g. after fatal runner error). */
-  cancelTurn(botId: BotId): void {
-    const prev = this.activeTurns.get(botId);
+  cancelTurn(botId: BotId, turnId?: number): void {
+    const found = this.findTurn(botId, turnId);
+    const prev = found?.state;
     if (!prev) return;
 
     if (prev.typingTimer) clearInterval(prev.typingTimer);
@@ -95,17 +80,20 @@ export class StreamManager {
       );
     }
 
-    this.activeTurns.delete(botId);
+    this.activeTurns.delete(found!.key);
     log.info("turn cancelled", { bot_id: botId, turn_id: prev.turnId });
   }
 
   startTurn(botId: BotId, turnId: number, chatId: number): void {
-    this.cancelTurn(botId);
+    this.cancelTurn(botId, turnId);
     this.db.initStreamState(turnId);
 
-    const typingTimer = setInterval(() => this.sendTyping(botId), 4_000);
+    const typingTimer = setInterval(
+      () => this.sendTyping(botId, turnId),
+      4_000,
+    );
 
-    this.activeTurns.set(botId, {
+    this.activeTurns.set(this.turnKey(botId, turnId), {
       turnId,
       chatId,
       buffer: "",
@@ -128,11 +116,11 @@ export class StreamManager {
     // pre-existing placeholder does not. The sendChatAction typing ping
     // (every 4s) covers the "torana received your message" feedback while
     // the runner thinks.
-    this.sendTyping(botId);
+    this.sendTyping(botId, turnId);
   }
 
-  appendText(botId: BotId, text: string): void {
-    const state = this.activeTurns.get(botId);
+  appendText(botId: BotId, text: string, turnId?: number): void {
+    const state = this.findTurn(botId, turnId)?.state;
     if (!state) return;
 
     if (!state.hadFirstOutput) {
@@ -149,7 +137,7 @@ export class StreamManager {
       // in the buffer; the send-callback will catch up via flush() once
       // Telegram returns the messageId.
       if (!state.firstSendInFlight) {
-        this.queueInitialSend(botId);
+        this.queueInitialSend(botId, state.turnId);
       }
       return;
     }
@@ -157,29 +145,29 @@ export class StreamManager {
     if (
       state.buffer.length >= this.config.streaming.message_length_safe_margin
     ) {
-      this.flushAndSplit(botId);
+      this.flushAndSplit(botId, state.turnId);
       return;
     }
 
     const now = Date.now();
     if (now - state.lastFlushTime >= this.config.streaming.edit_cadence_ms) {
-      void this.flush(botId);
+      void this.flush(botId, state.turnId);
     } else if (!state.flushTimer) {
       const delay =
         this.config.streaming.edit_cadence_ms - (now - state.lastFlushTime);
       state.flushTimer = setTimeout(() => {
         state.flushTimer = null;
-        void this.flush(botId);
+        void this.flush(botId, state.turnId);
       }, delay);
     }
   }
 
-  private queueInitialSend(botId: BotId): void {
-    const state = this.activeTurns.get(botId);
+  private queueInitialSend(botId: BotId, turnId: number): void {
+    const state = this.findTurn(botId, turnId)?.state;
     if (!state) return;
     state.firstSendInFlight = true;
     state.lastDispatchedText = state.buffer;
-    const turnId = state.turnId;
+    turnId = state.turnId;
     const chatId = state.chatId;
     this.outbox.queueSendWithCallback(
       turnId,
@@ -187,7 +175,8 @@ export class StreamManager {
       chatId,
       state.buffer,
       (messageId) => {
-        const s = this.activeTurns.get(botId);
+        const found = this.findTurn(botId, turnId);
+        const s = found?.state;
         if (!s || s.turnId !== turnId) {
           // Turn was cancelled or replaced before the initial send
           // completed. The Telegram message exists in the chat but we no
@@ -224,7 +213,7 @@ export class StreamManager {
           for (let i = 1; i < chunks.length; i++) {
             this.outbox.queueSend(s.turnId, botId, s.chatId, chunks[i]);
           }
-          this.activeTurns.delete(botId);
+          this.activeTurns.delete(found!.key);
           return;
         }
 
@@ -236,13 +225,18 @@ export class StreamManager {
         // catch-up edit here just produces a redundant edit before the
         // final one — measurable as an extra editMessageText call per
         // turn, which trips downstream "no-new-Telegram-activity" tests.
-        this.sendTyping(botId);
+        this.sendTyping(botId, turnId);
       },
     );
   }
 
-  async finalizeTurn(botId: BotId, finalText: string): Promise<void> {
-    const state = this.activeTurns.get(botId);
+  async finalizeTurn(
+    botId: BotId,
+    finalText: string,
+    turnId?: number,
+  ): Promise<void> {
+    const found = this.findTurn(botId, turnId);
+    const state = found?.state;
     if (!state) return;
 
     if (state.typingTimer) {
@@ -262,7 +256,7 @@ export class StreamManager {
       // Empty response and no streamed text. Nothing was ever sent to the
       // user (no eager placeholder), so there is nothing to clean up in
       // the chat. Silent close.
-      this.activeTurns.delete(botId);
+      this.activeTurns.delete(found!.key);
       return;
     }
 
@@ -286,7 +280,7 @@ export class StreamManager {
       for (const chunk of chunks) {
         this.outbox.queueSend(state.turnId, botId, state.chatId, chunk);
       }
-      this.activeTurns.delete(botId);
+      this.activeTurns.delete(found!.key);
       return;
     }
 
@@ -310,7 +304,7 @@ export class StreamManager {
       this.outbox.queueSend(state.turnId, botId, state.chatId, chunks[i]);
     }
 
-    this.activeTurns.delete(botId);
+    this.activeTurns.delete(found!.key);
   }
 
   stopAll(): void {
@@ -324,8 +318,8 @@ export class StreamManager {
 
   // --- internals ---
 
-  private sendTyping(botId: BotId): void {
-    const state = this.activeTurns.get(botId);
+  private sendTyping(botId: BotId, turnId?: number): void {
+    const state = this.findTurn(botId, turnId)?.state;
     if (!state) return;
     // Skip the typing ping while we're inside a Telegram cooldown — the
     // sendChatAction call counts against per-bot rate limits and
@@ -344,8 +338,8 @@ export class StreamManager {
     }
   }
 
-  private async flush(botId: BotId): Promise<void> {
-    const state = this.activeTurns.get(botId);
+  private async flush(botId: BotId, turnId?: number): Promise<void> {
+    const state = this.findTurn(botId, turnId)?.state;
     if (!state || !state.telegramMessageId || !state.buffer.trim()) return;
 
     // Skip the edit if we're inside a Telegram-asked cooldown for this
@@ -392,7 +386,7 @@ export class StreamManager {
       this.rateLimitedUntil.delete(botId);
     }
 
-    this.sendTyping(botId);
+    this.sendTyping(botId, state.turnId);
 
     this.db.setTurnLastOutput(state.turnId);
     this.db.updateStreamState(state.turnId, {
@@ -401,8 +395,8 @@ export class StreamManager {
     });
   }
 
-  private flushAndSplit(botId: BotId): void {
-    const state = this.activeTurns.get(botId);
+  private flushAndSplit(botId: BotId, turnId?: number): void {
+    const state = this.findTurn(botId, turnId)?.state;
     if (!state) return;
 
     if (!state.telegramMessageId) {
@@ -440,7 +434,7 @@ export class StreamManager {
       state.chatId,
       "...",
       (messageId) => {
-        const s = this.activeTurns.get(botId);
+        const s = this.findTurn(botId, state.turnId)?.state;
         if (s && s.turnId === state.turnId) {
           s.telegramMessageId = messageId;
           s.firstSendInFlight = false;
@@ -448,7 +442,7 @@ export class StreamManager {
             active_telegram_message_id: messageId,
           });
           if (s.buffer.length > 0) {
-            void this.flush(botId);
+            void this.flush(botId, state.turnId);
           }
         }
       },
@@ -472,5 +466,30 @@ export class StreamManager {
       remaining = remaining.slice(splitAt);
     }
     return chunks;
+  }
+
+  private turnKey(botId: BotId, turnId: number): string {
+    return `${botId}\u0000${turnId}`;
+  }
+
+  private findTurn(
+    botId: BotId,
+    turnId?: number,
+  ):
+    | {
+        key: string;
+        state: ActiveStreamTurn;
+      }
+    | undefined {
+    if (turnId !== undefined) {
+      const key = this.turnKey(botId, turnId);
+      const state = this.activeTurns.get(key);
+      return state ? { key, state } : undefined;
+    }
+    const prefix = `${botId}\u0000`;
+    for (const [key, state] of this.activeTurns) {
+      if (key.startsWith(prefix)) return { key, state };
+    }
+    return undefined;
   }
 }

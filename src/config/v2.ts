@@ -88,6 +88,8 @@ const SessionsSchema = z
     max_per_token_default: Int.min(1).max(512).default(8),
     max_concurrent_turns_per_agent: Int.min(1).max(64).default(2),
     max_concurrent_turns_global: Int.min(1).max(512).default(12),
+    max_queue_depth_per_conversation: Int.min(1).default(50),
+    max_queue_depth_per_agent: Int.min(1).default(500),
     overflow: z.enum(["queue", "reject"]).default("queue"),
     aliases: z
       .array(z.object({ name: EndpointId, agent_id: BotIdSchema }).strict())
@@ -283,6 +285,19 @@ export const ConfigV2Schema = z
             "Phase 2 runtime requires exactly one enabled Telegram endpoint per agent",
         });
       }
+      if (
+        agent.runner.type === "command" &&
+        agent.runner.resume_model !== "stable_session_id" &&
+        config.sessions.scope !== "ephemeral" &&
+        config.sessions.scope !== "legacy_agent"
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["agents", agentIndex, "runner", "resume_model"],
+          message:
+            "explicit v2 durable session scopes require resume_model: stable_session_id; otherwise use sessions.scope: ephemeral",
+        });
+      }
     }
     for (const [index, alias] of config.sessions.aliases.entries()) {
       if (!agentIds.has(alias.agent_id)) {
@@ -348,6 +363,7 @@ export interface NormalizedEndpointConfig {
   enabled: boolean;
   communityId: string | null;
   externalIdentity: string | null;
+  sessionScopes?: Record<string, string>;
 }
 
 export interface NormalizedConfigModel {
@@ -432,6 +448,17 @@ export function normalizeV2(config: ConfigV2): {
                   .digest("hex")
                   .slice(0, 64)
               : null,
+          sessionScopes:
+            endpoint.platform === "telegram"
+              ? Object.fromEntries(
+                  Object.entries(endpoint.chat_overrides).flatMap(
+                    ([id, override]) =>
+                      override.session_scope
+                        ? [[id, override.session_scope]]
+                        : [],
+                  ),
+                )
+              : {},
         })),
         {
           id: `${agent.id}-agent-api`,
@@ -440,6 +467,7 @@ export function normalizeV2(config: ConfigV2): {
           enabled: config.agent_api.enabled,
           communityId: null,
           externalIdentity: null,
+          sessionScopes: {},
         },
       ]),
       sessions: config.sessions,
@@ -494,6 +522,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
         enabled: true,
         communityId: null,
         externalIdentity: null,
+        sessionScopes: {},
       },
       {
         id: `${bot.id}-agent-api`,
@@ -502,6 +531,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
         enabled: config.agent_api.enabled,
         communityId: null,
         externalIdentity: null,
+        sessionScopes: {},
       },
     ]),
     sessions: {
@@ -515,6 +545,8 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
         config.agent_api.side_sessions.max_per_token_default,
       max_concurrent_turns_per_agent: 2,
       max_concurrent_turns_global: 12,
+      max_queue_depth_per_conversation: 50,
+      max_queue_depth_per_agent: 500,
       overflow: "queue",
       aliases: [],
     },

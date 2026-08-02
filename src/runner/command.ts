@@ -3,14 +3,14 @@
 // depends on `on_reset`: "signal" sends a reset envelope on stdin, "restart"
 // kills and respawns.
 //
-// Side-sessions (Phase 2c, US-007) are supported for `claude-ndjson` and
-// `codex-jsonl` protocols. Each side-session runs as its own long-lived
+// Side-sessions (Phase 2c, US-007) are natively supported for
+// `claude-ndjson` and `codex-jsonl`. The Phase 3 conversation manager can
+// additionally create managed `jsonl-text` sessions. Each side-session runs
+// as its own long-lived
 // subprocess (the user's `cmd` re-spawned) with `TORANA_SESSION_ID=<id>` in
 // env so the user's wrapper can distinguish main vs side. Events parsed
 // from a side-session's stdout flow *only* to that session's emitter — never
-// to the main emitter, never to another side session. `jsonl-text` has no
-// session semantics and throws `RunnerDoesNotSupportSideSessions` from the
-// side-session methods.
+// to the main emitter, never to another side session.
 
 import { spawn, type Subprocess } from "bun";
 import { createWriteStream, type WriteStream } from "node:fs";
@@ -33,6 +33,7 @@ import {
   type RunnerEventKind,
   type RunnerStatus,
   type SendTurnResult,
+  type SideSessionStartOptions,
   type TurnId,
   type Unsubscribe,
 } from "./types.js";
@@ -144,8 +145,11 @@ export class CommandRunner implements AgentRunner {
     return this.protocolCapabilities().sideSessions;
   }
 
-  async startSideSession(sessionId: string): Promise<void> {
-    this.requireSideSessionSupport();
+  async startSideSession(
+    sessionId: string,
+    options: SideSessionStartOptions = {},
+  ): Promise<void> {
+    this.requireSideSessionSupport(undefined, options.managed === true);
     if (!SIDE_SESSION_ID_REGEX.test(sessionId)) {
       throw new InvalidSideSessionId(sessionId);
     }
@@ -173,6 +177,12 @@ export class CommandRunner implements AgentRunner {
       entry.rejectReady = reject;
     });
     this.sideSessions.set(sessionId, entry);
+    // Command wrappers that opt into stable-session continuity use the
+    // deterministic TORANA_SESSION_ID itself as their provider state.
+    options.onResumeStateChanged?.({
+      version: 1,
+      stable_session_id: sessionId,
+    });
 
     try {
       const env = this.buildEnv();
@@ -241,7 +251,7 @@ export class CommandRunner implements AgentRunner {
     text: string,
     attachments: Attachment[],
   ): SendTurnResult {
-    this.requireSideSessionSupport();
+    this.requireSideSessionSupport(sessionId);
     const entry = this.sideSessions.get(sessionId);
     if (!entry || entry.status === "stopping" || entry.status === "stopped") {
       return { accepted: false, reason: "not_ready" };
@@ -280,7 +290,7 @@ export class CommandRunner implements AgentRunner {
   }
 
   async stopSideSession(sessionId: string, graceMs = 5000): Promise<void> {
-    this.requireSideSessionSupport();
+    this.requireSideSessionSupport(sessionId);
     const entry = this.sideSessions.get(sessionId);
     if (!entry) return;
     if (entry.stopPromise) return entry.stopPromise;
@@ -328,14 +338,21 @@ export class CommandRunner implements AgentRunner {
     event: E,
     handler: RunnerEventHandler<E>,
   ): Unsubscribe {
-    this.requireSideSessionSupport();
+    this.requireSideSessionSupport(sessionId);
     const entry = this.sideSessions.get(sessionId);
     if (!entry) throw new SideSessionNotFound(sessionId);
     return entry.emitter.on(event, handler);
   }
 
-  private requireSideSessionSupport(): void {
-    if (!this.protocolCapabilities().sideSessions) {
+  private requireSideSessionSupport(
+    sessionId?: string,
+    managedStart = false,
+  ): void {
+    if (
+      !managedStart &&
+      !this.sideSessions.has(sessionId ?? "") &&
+      !this.protocolCapabilities().sideSessions
+    ) {
       throw new RunnerDoesNotSupportSideSessions(
         `command runner with protocol '${this.config.protocol}' does not support side sessions`,
       );
@@ -363,9 +380,11 @@ export class CommandRunner implements AgentRunner {
     const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
     const decoder = new TextDecoder();
     const parser =
-      this.config.protocol === "claude-ndjson"
-        ? createClaudeNdjsonParser({ currentTurnId: () => entry.activeTurn })
-        : createCodexJsonlParser({ currentTurnId: () => entry.activeTurn });
+      this.config.protocol === "jsonl-text"
+        ? createJsonlTextParser()
+        : this.config.protocol === "claude-ndjson"
+          ? createClaudeNdjsonParser({ currentTurnId: () => entry.activeTurn })
+          : createCodexJsonlParser({ currentTurnId: () => entry.activeTurn });
 
     try {
       while (true) {

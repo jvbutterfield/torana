@@ -28,6 +28,7 @@ export interface ProcessInboundOutcome {
     | "rejected_acl"
     | "rejected_unsupported_media"
     | "rejected_command_handled"
+    | "rejected_queue_full"
     | "dropped_malformed"
     | "dropped_no_text";
   turnId?: number;
@@ -47,6 +48,9 @@ export interface ProcessInboundDeps {
     fromUserId: number;
     rawText: string;
   }) => CommandContext | null;
+  acceptInbound?: (
+    event: InboundEvent,
+  ) => { accepted: true } | { accepted: false; reason: string };
 }
 
 export async function processInboundEvent(
@@ -91,17 +95,6 @@ export async function processInboundEvent(
       external_principal_id: event.sender.id,
     });
     return { status: "rejected_acl" };
-  }
-
-  const receivedEmoji = botConfig.reactions.received_emoji;
-  if (receivedEmoji && supports(adapter, "reaction_add")) {
-    void adapter
-      .deliver(event.conversation, {
-        kind: "reaction_add",
-        externalMessageId: event.externalMessageId,
-        emoji: receivedEmoji,
-      })
-      .catch(() => {});
   }
 
   const parsed = parseCommand(event.text);
@@ -152,6 +145,25 @@ export async function processInboundEvent(
 
   if (!hasText && downloadable.length === 0) {
     return { status: "dropped_no_text" };
+  }
+
+  const acceptance = deps.acceptInbound?.(event);
+  if (acceptance && !acceptance.accepted) {
+    db.insertUpdate(
+      botConfig.id,
+      updateId,
+      chatId,
+      messageId,
+      event.sender.id,
+      payloadJson,
+      "rejected",
+    );
+    await deliverNotice(
+      adapter,
+      event,
+      "This conversation is busy. Please try again later.",
+    );
+    return { status: "rejected_queue_full", errors: [acceptance.reason] };
   }
 
   let attachmentPaths: string[] = [];
@@ -220,6 +232,16 @@ export async function processInboundEvent(
   }
 
   if (turnId === null) return { status: "replay_skipped" };
+  const receivedEmoji = botConfig.reactions.received_emoji;
+  if (receivedEmoji && supports(adapter, "reaction_add")) {
+    void adapter
+      .deliver(event.conversation, {
+        kind: "reaction_add",
+        externalMessageId: event.externalMessageId,
+        emoji: receivedEmoji,
+      })
+      .catch(() => {});
+  }
   deps.onEnqueued?.(turnId);
   return {
     status: "enqueued",

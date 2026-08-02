@@ -19,9 +19,9 @@ import { randomUUID } from "node:crypto";
 
 import type { LocalAttachment as Attachment } from "../../platform/types.js";
 import type {
-  AgentRunner,
   RunnerEvent,
   RunnerEventHandler,
+  RunnerSession,
   Unsubscribe,
 } from "../../runner/types.js";
 import type { AgentApiDeps, AuthedHandler } from "../types.js";
@@ -172,12 +172,12 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
         sessionId,
         textPreview: body.text,
         attachmentPaths: attachments.map((a) => a.path),
+        sessionKey: acquire.durableSessionKey,
       });
 
       // 5. Subscribe + send.
       const result = await awaitSideTurn({
-        runner: bot.runner,
-        sessionId,
+        session: acquire.runnerSession,
         turnId,
         text: body.text,
         attachments,
@@ -205,7 +205,7 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
         // Transfer pool-release ownership to the orphan listener.
         releasedBySync = true;
         deps.orphans.attach({
-          runner: bot.runner,
+          session: acquire.runnerSession,
           botId,
           sessionId,
           turnId,
@@ -253,8 +253,7 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
 }
 
 interface AwaitSideTurnOptions {
-  runner: AgentRunner;
-  sessionId: string;
+  session: RunnerSession;
   turnId: number;
   text: string;
   attachments?: Attachment[];
@@ -275,7 +274,7 @@ type AwaitSideTurnResult =
 export async function awaitSideTurn(
   opts: AwaitSideTurnOptions,
 ): Promise<AwaitSideTurnResult> {
-  const { runner, sessionId, turnId, text, timeoutMs } = opts;
+  const { session, turnId, text, timeoutMs } = opts;
   const attachments = opts.attachments ?? [];
   let buffer = "";
   const unsubs: Unsubscribe[] = [];
@@ -319,15 +318,15 @@ export async function awaitSideTurn(
       done({ kind: "fatal", message: ev.message });
     };
 
-    unsubs.push(runner.onSide(sessionId, "done", onDone));
-    unsubs.push(runner.onSide(sessionId, "text_delta", onText));
-    unsubs.push(runner.onSide(sessionId, "error", onErr));
-    unsubs.push(runner.onSide(sessionId, "fatal", onFatal));
+    unsubs.push(session.on("done", onDone));
+    unsubs.push(session.on("text_delta", onText));
+    unsubs.push(session.on("error", onErr));
+    unsubs.push(session.on("fatal", onFatal));
 
     const timer = setTimeout(() => done({ kind: "timeout" }), timeoutMs);
     (timer as unknown as { unref?: () => void }).unref?.();
 
-    const send = runner.sendSideTurn(sessionId, turnIdStr, text, attachments);
+    const send = session.sendTurn(turnIdStr, text, attachments);
     if (!send.accepted) {
       done({
         kind: "error",

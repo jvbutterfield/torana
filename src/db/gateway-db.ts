@@ -9,8 +9,24 @@ import type {
   OutboundOperation,
 } from "../platform/types.js";
 import { createHash } from "node:crypto";
+import { runnerSessionId } from "../conversation/session-key.js";
 
 const log = logger("db");
+
+export interface ConversationSessionRow {
+  session_key: string;
+  agent_id: string;
+  runner_session_id: string;
+  runner_type: string;
+  provider_state_json: string | null;
+  generation: number;
+  state: string;
+  started_at: string | null;
+  last_used_at: string | null;
+  hard_expires_at: string | null;
+  context_expires_at: string | null;
+  last_error: string | null;
+}
 
 /**
  * Lock down the DB file + its WAL / SHM siblings to 0600 (owner rw, nobody
@@ -47,6 +63,7 @@ export class GatewayDB {
   private normalizedSchema: boolean;
   private endpointByAgentPlatform = new Map<string, string>();
   private sessionScopeByAgent = new Map<string, string>();
+  private sessionScopeOverrides = new Map<string, string>();
   private enabledEndpointIds = new Set<string>();
   private stmts!: {
     insertUpdate: Statement;
@@ -599,6 +616,7 @@ export class GatewayDB {
   syncNormalizedConfig(model: NormalizedConfigModel): void {
     if (!this.normalizedSchema) return;
     this.enabledEndpointIds.clear();
+    this.sessionScopeOverrides.clear();
     const upsert = this._db.prepare(`
       INSERT INTO endpoints
         (endpoint_id, agent_id, platform, external_identity, lifecycle_state)
@@ -627,6 +645,14 @@ export class GatewayDB {
           endpoint.agentId,
           model.sourceVersion === 1 ? "legacy_agent" : model.sessions.scope,
         );
+        for (const [externalId, scope] of Object.entries(
+          endpoint.sessionScopes ?? {},
+        )) {
+          this.sessionScopeOverrides.set(
+            `${endpoint.id}\u0000${externalId}`,
+            scope,
+          );
+        }
         if (endpoint.enabled) this.enabledEndpointIds.add(endpoint.id);
       }
     });
@@ -681,7 +707,14 @@ export class GatewayDB {
       ) as { id: number; session_key: string | null } | null;
     if (existing) return { id: existing.id, sessionKey: existing.session_key };
 
-    const policy = this.sessionScopeByAgent.get(agentId) ?? "legacy_agent";
+    const configuredPolicy =
+      this.sessionScopeOverrides.get(
+        `${conversation.endpointId}\u0000${conversation.channelId}`,
+      ) ??
+      this.sessionScopeByAgent.get(agentId) ??
+      "legacy_agent";
+    const policy =
+      configuredPolicy === "channel" ? "conversation" : configuredPolicy;
     const keyMaterial = [
       conversation.platform,
       conversation.communityId ?? "",
@@ -693,16 +726,26 @@ export class GatewayDB {
     const conversationKey = createHash("sha256")
       .update(keyMaterial)
       .digest("hex");
+    const sessionMaterial = [
+      conversation.platform,
+      conversation.communityId ?? "",
+      conversation.endpointId,
+      conversation.channelId,
+      policy === "thread" ? threadRoot : "",
+      workflowRun,
+    ].join("\u001f");
+    const scopedSessionHash = createHash("sha256")
+      .update(sessionMaterial)
+      .digest("hex");
     const sessionKey =
       policy === "ephemeral"
         ? null
         : policy === "legacy_agent"
-          ? `legacy:${agentId}`
-          : `conversation:${conversationKey}`;
+          ? `legacy-agent:${agentId}`
+          : policy.startsWith("alias:")
+            ? `alias:${agentId}:${policy.slice(6)}`
+            : `conversation:${scopedSessionHash}`;
     if (sessionKey) {
-      const runnerSessionId = createHash("sha256")
-        .update(sessionKey)
-        .digest("hex");
       this._db
         .prepare(
           `
@@ -711,7 +754,7 @@ export class GatewayDB {
           VALUES (?, ?, ?, 'pending', 'stopped')
         `,
         )
-        .run(sessionKey, agentId, runnerSessionId);
+        .run(sessionKey, agentId, runnerSessionId(sessionKey));
     }
     this._db
       .prepare(
@@ -1073,6 +1116,47 @@ export class GatewayDB {
     this.stmts.interruptTurn.run(reason, turnId);
   }
 
+  /** Terminally dead-letter a queued normalized turn and its source event. */
+  deadLetterTurn(turnId: number, reason: string): boolean {
+    if (!this.normalizedSchema) return false;
+    const row = this._db
+      .query(
+        "SELECT source_update_id FROM turns WHERE id=? AND status='queued'",
+      )
+      .get(turnId) as { source_update_id: number } | null;
+    if (!row) return false;
+    this._db
+      .prepare(
+        "UPDATE turns SET status='dead', completed_at=datetime('now'), error_text=? WHERE id=? AND status='queued'",
+      )
+      .run(reason, turnId);
+    this.setUpdateStatus(row.source_update_id, "dead");
+    const update = this._db
+      .query(
+        "SELECT bot_id, telegram_update_id FROM inbound_updates WHERE id=?",
+      )
+      .get(row.source_update_id) as {
+      bot_id: string;
+      telegram_update_id: number;
+    } | null;
+    if (update) {
+      const endpointId = this.getEndpointId(
+        update.bot_id,
+        update.telegram_update_id < 0 ? "agent_api" : "telegram",
+      );
+      const externalEventId =
+        update.telegram_update_id < 0
+          ? `agentapi:${Math.abs(update.telegram_update_id)}`
+          : String(update.telegram_update_id);
+      this._db
+        .prepare(
+          "UPDATE inbound_events SET status_reason=? WHERE endpoint_id=? AND external_event_id=?",
+        )
+        .run(reason, endpointId, externalEventId);
+    }
+    return true;
+  }
+
   setTurnFirstOutput(turnId: number): void {
     this.stmts.setTurnFirstOutput.run(turnId);
   }
@@ -1106,6 +1190,45 @@ export class GatewayDB {
       id: number;
       chat_id: number;
       source_update_id: number;
+    }>;
+  }
+
+  getQueuedConversationTurns(): Array<{
+    id: number;
+    bot_id: BotId;
+    chat_id: number;
+    source_update_id: number;
+    conversation_id: number | null;
+    session_key: string | null;
+    agent_api_token_name: string | null;
+    received_at: string;
+    conversation_archived: number;
+  }> {
+    if (!this.normalizedSchema) return [];
+    return this._db
+      .query(
+        `
+        SELECT t.id, t.bot_id, t.chat_id, t.source_update_id,
+               t.conversation_id, t.session_key, t.agent_api_token_name,
+               COALESCE(ie.received_at, datetime('now')) AS received_at,
+               c.archived AS conversation_archived
+        FROM turns t
+        JOIN conversations c ON c.id=t.conversation_id
+        LEFT JOIN inbound_events ie ON ie.id=t.source_event_id
+        WHERE t.status='queued' AND t.conversation_id IS NOT NULL
+        ORDER BY t.conversation_id ASC, t.id ASC
+      `,
+      )
+      .all() as Array<{
+      id: number;
+      bot_id: BotId;
+      chat_id: number;
+      source_update_id: number;
+      conversation_id: number | null;
+      session_key: string | null;
+      agent_api_token_name: string | null;
+      received_at: string;
+      conversation_archived: number;
     }>;
   }
 
@@ -1804,6 +1927,207 @@ export class GatewayDB {
     return Number(res.changes ?? 0);
   }
 
+  getConversationSession(sessionKey: string): ConversationSessionRow | null {
+    if (!this.normalizedSchema) return null;
+    return this._db
+      .query("SELECT * FROM conversation_sessions WHERE session_key=?")
+      .get(sessionKey) as ConversationSessionRow | null;
+  }
+
+  persistConversationSession(args: {
+    sessionKey: string;
+    agentId: string;
+    runnerSessionId: string;
+    runnerType: string;
+    providerState: Record<string, unknown> | null;
+    state: "starting" | "ready" | "busy" | "stopping" | "stopped";
+    startedAt?: string | null;
+    hardExpiresAt?: string | null;
+    contextExpiresAt?: string | null;
+    lastError?: string | null;
+  }): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        `
+        INSERT INTO conversation_sessions
+          (session_key, agent_id, runner_session_id, runner_type,
+           provider_state_json, state, started_at, last_used_at,
+           hard_expires_at, context_expires_at, last_error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?)
+        ON CONFLICT(session_key) DO UPDATE SET
+          runner_session_id=excluded.runner_session_id,
+          runner_type=excluded.runner_type,
+          provider_state_json=excluded.provider_state_json,
+          state=excluded.state,
+          started_at=COALESCE(excluded.started_at, started_at),
+          last_used_at=datetime('now'),
+          hard_expires_at=excluded.hard_expires_at,
+          context_expires_at=excluded.context_expires_at,
+          last_error=excluded.last_error
+      `,
+      )
+      .run(
+        args.sessionKey,
+        args.agentId,
+        args.runnerSessionId,
+        args.runnerType,
+        args.providerState === null ? null : JSON.stringify(args.providerState),
+        args.state,
+        args.startedAt ?? null,
+        args.hardExpiresAt ?? null,
+        args.contextExpiresAt ?? null,
+        args.lastError ?? null,
+      );
+  }
+
+  updateConversationSessionState(
+    sessionKey: string,
+    state: "starting" | "ready" | "busy" | "stopping" | "stopped",
+  ): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        "UPDATE conversation_sessions SET state=?, last_used_at=datetime('now') WHERE session_key=?",
+      )
+      .run(state, sessionKey);
+  }
+
+  updateConversationSessionProviderState(
+    sessionKey: string,
+    state: Record<string, unknown>,
+    contextExpiresAt: string,
+  ): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        "UPDATE conversation_sessions SET provider_state_json=?, context_expires_at=?, last_used_at=datetime('now') WHERE session_key=?",
+      )
+      .run(JSON.stringify(state), contextExpiresAt, sessionKey);
+  }
+
+  resetConversationSession(sessionKey: string): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        "UPDATE conversation_sessions SET provider_state_json=NULL, generation=generation+1, state='stopped', started_at=NULL, hard_expires_at=NULL, context_expires_at=NULL, last_error=NULL WHERE session_key=?",
+      )
+      .run(sessionKey);
+  }
+
+  setConversationSessionError(sessionKey: string, reason: string): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        "UPDATE conversation_sessions SET last_error=?, last_used_at=datetime('now') WHERE session_key=?",
+      )
+      .run(reason || null, sessionKey);
+  }
+
+  deadLetterNextQueuedSessionTurn(
+    sessionKey: string,
+    reason: string,
+  ): number | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        "SELECT id FROM turns WHERE session_key=? AND status='queued' ORDER BY id LIMIT 1",
+      )
+      .get(sessionKey) as { id: number } | null;
+    if (!row) return null;
+    this.deadLetterTurn(row.id, reason);
+    return row.id;
+  }
+
+  conversationSessionBindingCount(sessionKey: string): number {
+    if (!this.normalizedSchema) return 0;
+    const row = this._db
+      .query(
+        "SELECT COUNT(*) AS count FROM conversations WHERE session_key=? AND archived=0",
+      )
+      .get(sessionKey) as { count: number };
+    return Number(row.count);
+  }
+
+  conversationSessionQueueDepth(sessionKey: string): number {
+    if (!this.normalizedSchema) return 0;
+    const row = this._db
+      .query(
+        "SELECT COUNT(*) AS count FROM turns WHERE session_key=? AND status IN ('queued','running')",
+      )
+      .get(sessionKey) as { count: number };
+    return Number(row.count);
+  }
+
+  conversationQueueDepth(conversationId: number): number {
+    if (!this.normalizedSchema) return 0;
+    const row = this._db
+      .query(
+        "SELECT COUNT(*) AS count FROM turns WHERE conversation_id=? AND status IN ('queued','running')",
+      )
+      .get(conversationId) as { count: number };
+    return Number(row.count);
+  }
+
+  agentQueueDepth(agentId: string): number {
+    if (!this.normalizedSchema) return this.getMailboxDepth(agentId as BotId);
+    const row = this._db
+      .query(
+        "SELECT COUNT(*) AS count FROM turns WHERE agent_id=? AND status IN ('queued','running')",
+      )
+      .get(agentId) as { count: number };
+    return Number(row.count);
+  }
+
+  findObservedConversationTarget(
+    agentId: string,
+    target: {
+      endpointId: string;
+      externalConversationId: string;
+      threadRootId?: string;
+      workflowRunId?: string;
+    },
+  ): {
+    id: number;
+    sessionKey: string | null;
+    platform: string;
+    externalConversationId: string;
+  } | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        `
+        SELECT c.id, c.session_key, c.platform, c.external_conversation_id
+        FROM conversations c
+        JOIN endpoints e ON e.endpoint_id=c.endpoint_id
+        WHERE c.agent_id=? AND c.endpoint_id=?
+          AND c.external_conversation_id=?
+          AND c.thread_root_id=? AND c.workflow_run_id=?
+          AND c.archived=0 AND e.lifecycle_state IN ('active','draining')
+      `,
+      )
+      .get(
+        agentId,
+        target.endpointId,
+        target.externalConversationId,
+        target.threadRootId ?? "",
+        target.workflowRunId ?? "",
+      ) as {
+      id: number;
+      session_key: string | null;
+      platform: string;
+      external_conversation_id: string;
+    } | null;
+    return row
+      ? {
+          id: row.id,
+          sessionKey: row.session_key,
+          platform: row.platform,
+          externalConversationId: row.external_conversation_id,
+        }
+      : null;
+  }
+
   upsertSideSession(row: {
     botId: BotId;
     sessionId: string;
@@ -1912,6 +2236,15 @@ export class GatewayDB {
     }
   }
 
+  markAllConversationSessionsStopped(): void {
+    if (!this.normalizedSchema) return;
+    this._db
+      .prepare(
+        "UPDATE conversation_sessions SET state='stopped' WHERE state!='stopped'",
+      )
+      .run();
+  }
+
   /**
    * Insert an agent-API `ask` turn. Creates a synthetic inbound row + a
    * `turns` row with status='running' (never 'queued' — the ask handler
@@ -1923,6 +2256,7 @@ export class GatewayDB {
     sessionId: string;
     textPreview: string;
     attachmentPaths: string[];
+    sessionKey?: string;
   }): number {
     return this.transactionImmediate(() => {
       const inboundId = this.allocateSyntheticInbound({
@@ -1950,6 +2284,11 @@ export class GatewayDB {
             ]
           : [args.botId, inboundId, attachmentJson, args.tokenName]),
       ) as { id: number };
+      if (this.normalizedSchema && args.sessionKey) {
+        this._db
+          .prepare("UPDATE turns SET session_key=? WHERE id=?")
+          .run(args.sessionKey, row.id);
+      }
       return row.id;
     });
   }
@@ -1967,6 +2306,11 @@ export class GatewayDB {
     idempotencyKey: string;
     sourceLabel: string;
     attachmentPaths: string[];
+    targetConversation?: {
+      id: number;
+      sessionKey: string | null;
+      platform: string;
+    };
   }): { replay: boolean; turnId: number } {
     return this.transactionImmediate(() => {
       const existing = this.stmts.getIdempotencyTurn.get(
@@ -2014,6 +2358,19 @@ export class GatewayDB {
               args.idempotencyKey,
             ]),
       ) as { id: number };
+
+      if (this.normalizedSchema && args.targetConversation) {
+        this._db
+          .prepare(
+            "UPDATE turns SET conversation_id=?, session_key=?, source_platform=? WHERE id=?",
+          )
+          .run(
+            args.targetConversation.id,
+            args.targetConversation.sessionKey,
+            args.targetConversation.platform,
+            turnRow.id,
+          );
+      }
 
       this.stmts.insertIdempotency.run(
         ...(this.normalizedSchema

@@ -2,14 +2,17 @@
 
 The Agent API is an opt-in, bearer-authenticated HTTP surface (`/v1/*`) that
 lets external processes — other agents, scripts, cron jobs, CI systems — drive
-the bots a torana gateway owns. It ships with torana v1 and is off by default.
+the agents a torana gateway owns. It is off by default. In config v2, Agent
+API calls and platform conversations share the same durable
+`ConversationSessionManager`; the HTTP contracts described here remain
+backward-compatible.
 
 Two modes:
 
 - **`ask`** — synchronous request/response against a bot's runner in an
   isolated **side-session**. The caller gets `{text, turn_id, usage}` back, no
   Telegram involvement.
-- **`send`** — post a system message into an existing Telegram chat
+- **`send`** — post a system message into an existing observed conversation
   so the runner responds as if the user had typed it. The sent text is
   wrapped with a marker (`[system-message from "<source>"]`) so the runner
   can distinguish machine-initiated turns from real ones.
@@ -46,7 +49,9 @@ All fields have defaults. Minimally you need `enabled: true` and at least one
 `tokens[]` entry. `torana doctor` runs `C009..C014` against this block —
 unknown `bot_ids`, empty token lists, `ask`-scope tokens pointing at a runner
 without side-session support, and TTL/cap invariant violations all surface
-there.
+there. Config v2 accepts this legacy `agent_api.side_sessions` block for
+compatibility and normalizes it into the gateway-wide `sessions.*` limits; do
+not configure both forms for the same setting.
 
 ---
 
@@ -66,9 +71,10 @@ there.
                                └─────────────────────────────────┘
 ```
 
-Side-sessions are per-bot subprocess instances that are _separate from_ the
-main Telegram-serving runner. A long-running `ask` from CI cannot block a
-Telegram reply, and vice versa.
+Sessions are independent runner contexts. Resident runners such as Claude use
+one live subprocess per active session; per-turn runners such as Codex retain
+only the provider `thread_id` between turns. Platform traffic and `ask` use
+the same manager, capacity limits, persisted resume state, and lazy restore.
 
 The pool:
 
@@ -176,7 +182,8 @@ persists the eventual terminal event to the DB; the caller polls
 
 ### `POST /v1/bots/:bot_id/send`
 
-Push a message into an existing Telegram chat as if the user had typed it.
+Push a message into an existing observed conversation as if the user had typed
+it.
 
 ```
 Idempotency-Key: <A-Za-z0-9_->{16,128}      # required
@@ -208,6 +215,26 @@ than that get swept hourly.
 - `user_id` OR `chat_id` required. `user_id` is preferred; the gateway maps
   it to the last known `chat_id` from the `user_chats` table. `chat_id` must
   already be associated with this bot (default-deny).
+
+Config v2 also accepts a normalized target instead of `user_id`/`chat_id`:
+
+```json
+{
+  "source": "ci-pr-reviewer",
+  "text": "heads up: CI failed on main",
+  "conversation": {
+    "endpoint_id": "reviewer-telegram",
+    "external_conversation_id": "-1001234567890",
+    "thread_root_id": "42"
+  }
+}
+```
+
+The conversation must already have been observed or explicitly provisioned,
+the endpoint must belong to `:bot_id`, and the token must authorize that
+agent. `workflow_run_id` is accepted for workflow conversations and cannot be
+combined with `thread_root_id`. Legacy and normalized target fields cannot be
+mixed in one request.
 
 **ACL re-check.** Even with a valid token, the resolved `user_id` must be
 in `access_control.allowed_user_ids` for the target bot — agent-API tokens
@@ -403,9 +430,9 @@ Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 
 
 ### Session-id sharing across tokens
 
-In v1 the side-session key is `(bot_id, session_id)`. If two tokens scoped
-to the same bot happen to use the same `session_id`, they share a
-conversation context. This is a known v1 design trade-off; pick
+The durable key is `agent-api:<agent_id>:session:<session_id>`; token name is
+deliberately not part of it. If two tokens scoped to the same agent use the
+same `session_id`, they share a conversation context. Pick
 `session_id` values with enough entropy that collisions are unlikely
 (e.g. prefix with the caller's identity) or issue one token per caller.
 
@@ -421,6 +448,7 @@ torana bots list --server https://gw --token $TOK
 torana ask reviewer "review this diff"           --server https://gw --token $TOK
 torana send drafter --user-id 111 "hey"          --server https://gw --token $TOK --source ci
 torana turns get 42                              --server https://gw --token $TOK
+torana sessions reset alias:reviewer:shared --confirm-shared --config torana.yaml
 ```
 
 `TORANA_SERVER` and `TORANA_TOKEN` stand in for the flags. Exit codes follow
@@ -478,15 +506,16 @@ curl -X DELETE $TORANA_URL/v1/bots/reviewer/sessions/$SID \
 
 ---
 
-## What's not in v1
+## Current limits
 
-- **CommandRunner side-sessions** (Phase 2c). `ask` against a `command`-type
-  runner returns `501 runner_does_not_support_side_sessions`. `send`
-  works against `command` runners today.
+- **Stateless CommandRunner asks.** `ask` against a `command` runner using
+  `jsonl-text` returns `501 runner_does_not_support_side_sessions`; managed v2
+  platform turns can still use stateless command sessions. Command runners
+  using `claude-ndjson` or `codex-jsonl` support keyed Agent API sessions.
 - **Profile store at `~/.config/torana/config.toml`** (Phase 6b). Use
   `--server`/`--token` flags or `TORANA_SERVER`/`TORANA_TOKEN` env vars
   for now.
 - **`torana skills install --host=claude|codex`** (Phase 6b).
 - **Per-session concurrency > 1.** Fixed at 1 for v1.
-- **Session-id partitioning by token.** v1 keys by
-  `(bot_id, session_id)`; a future version may include `token_name`.
+- **Session-id partitioning by token.** Session keys intentionally remain
+  agent-scoped rather than token-scoped for backward compatibility.

@@ -40,6 +40,7 @@ import {
   type RunnerEventKind,
   type RunnerStatus,
   type SendTurnResult,
+  type SideSessionStartOptions,
   type TurnId,
   type Unsubscribe,
 } from "./types.js";
@@ -99,6 +100,7 @@ interface CodexSideSession {
   /** Set by dispatchSide on the first done/error so watchSideExit can decide whether to synthesize. */
   doneEmittedForCurrentTurn: boolean;
   stderrBuffer: string[];
+  onResumeStateChanged: ((state: Record<string, unknown>) => void) | null;
 }
 
 export class CodexRunner implements AgentRunner {
@@ -169,7 +171,10 @@ export class CodexRunner implements AgentRunner {
    * session continuity across turns. `ready` is emitted on the next
    * microtask so callers can subscribe BEFORE the event fires.
    */
-  async startSideSession(sessionId: string): Promise<void> {
+  async startSideSession(
+    sessionId: string,
+    options: SideSessionStartOptions = {},
+  ): Promise<void> {
     if (!SIDE_SESSION_ID_REGEX.test(sessionId)) {
       throw new InvalidSideSessionId(sessionId);
     }
@@ -195,7 +200,11 @@ export class CodexRunner implements AgentRunner {
     const entry: CodexSideSession = {
       id: sessionId,
       emitter: new RunnerEventEmitter(),
-      threadId: null,
+      threadId:
+        this.config.pass_resume_flag &&
+        typeof options.resumeState?.thread_id === "string"
+          ? options.resumeState.thread_id
+          : null,
       status: "ready",
       activeTurn: null,
       currentProc: null,
@@ -204,6 +213,7 @@ export class CodexRunner implements AgentRunner {
       stopPromise: null,
       doneEmittedForCurrentTurn: false,
       stderrBuffer: [],
+      onResumeStateChanged: options.onResumeStateChanged ?? null,
     };
     this.sideSessions.set(sessionId, entry);
     queueMicrotask(() => {
@@ -423,6 +433,7 @@ export class CodexRunner implements AgentRunner {
       onThreadStarted: (id) => {
         if (this.config.pass_resume_flag) {
           entry.threadId = id;
+          entry.onResumeStateChanged?.({ version: 1, thread_id: id });
         }
       },
     });
