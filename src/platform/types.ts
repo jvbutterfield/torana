@@ -107,12 +107,19 @@ export type OutboundOperation =
       externalMessageId: string;
       emoji: string;
     }
-  | { kind: "forum_post"; channelId: string; title: string; text: string }
+  | {
+      kind: "forum_post";
+      channelId: string;
+      title: string;
+      text: string;
+      files?: LocalAttachment[];
+    }
   | {
       kind: "forum_comment";
       rootEventId: string;
       text: string;
       replyTo?: string;
+      files?: LocalAttachment[];
     }
   | {
       kind: "vote";

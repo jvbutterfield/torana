@@ -385,27 +385,31 @@ export async function startGateway(
     60 * 60 * 1000,
   );
 
-  // Agent-API orphan-file sweep: catches the crash window between a
-  // multipart write and the DB commit. Only relevant when agent-api is
-  // enabled; we still schedule the timer so an operator toggling the
-  // flag at runtime isn't surprised by a build-up.
+  // Attachment orphan-file sweep: catches the crash window between a
+  // multipart/media write and the DB commit for Agent API and Buzz.
   const runOrphanSweep = async (): Promise<void> => {
-    if (!config.agent_api?.enabled) return;
+    const buzzEnabled = normalized.endpoints.some(
+      (endpoint) => endpoint.platform === "buzz" && endpoint.enabled,
+    );
+    if (!config.agent_api?.enabled && !buzzEnabled) return;
     try {
       const result = await sweepUnreferencedAgentApiFiles(
         db,
         config.gateway.data_dir,
         24 * 60 * 60 * 1000,
+        Date.now,
+        ["agentapi-", "buzz-"],
       );
       if (result.deleted > 0) {
-        log.info("agent-api orphan sweep", result);
+        log.info("attachment orphan sweep", result);
       }
     } catch (err) {
-      log.warn("agent-api orphan sweep failed", {
+      log.warn("attachment orphan sweep failed", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
   };
+  void runOrphanSweep();
   const orphanSweeperTimer = setInterval(
     () => void runOrphanSweep(),
     60 * 60 * 1000,

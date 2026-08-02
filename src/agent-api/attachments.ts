@@ -369,6 +369,7 @@ export async function sweepUnreferencedAgentApiFiles(
   dataDir: string,
   maxAgeMs: number,
   clock: () => number = Date.now,
+  prefixes: readonly string[] = ["agentapi-"],
 ): Promise<{ scanned: number; deleted: number }> {
   const attachRoot = resolve(dataDir, "attachments");
   let botDirs: string[];
@@ -396,7 +397,7 @@ export async function sweepUnreferencedAgentApiFiles(
       continue;
     }
     for (const entry of entries) {
-      if (!entry.startsWith("agentapi-")) continue;
+      if (!prefixes.some((prefix) => entry.startsWith(prefix))) continue;
       scanned += 1;
       const full = join(fullBotDir, entry);
       if (referenced.has(full)) continue;

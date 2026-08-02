@@ -54,6 +54,11 @@ export interface PlatformAdapter<RawInbound = unknown> {
     conversation: ConversationRef,
     operation: OutboundOperation,
   ): PreparedOutboundOperation;
+  prepareOutboundAsync?(
+    conversation: ConversationRef,
+    operation: OutboundOperation,
+    config: Config,
+  ): Promise<PreparedOutboundOperation>;
   signal(
     conversation: ConversationRef,
     signal: EphemeralSignal,

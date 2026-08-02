@@ -1452,6 +1452,30 @@ Gate:
 - Codex's image-only limitation is surfaced without losing accompanying text;
 - outbound retries reuse uploaded media and signed message events.
 
+Implementation evidence: `imeta` references are accepted only when the URL is
+an exact-origin `/media/<sha256>[.<ext>]` resource on the configured relay.
+Downloads use fresh signed Blossom `t=get` authorization plus NIP-OA
+delegation where configured, reject redirects and content encodings, stream
+under hard byte/time limits, and verify declared size, SHA-256, allowlisted
+MIME, and magic bytes before an exclusive gateway-named write. Image and PDF
+paths are durably attached to turns and use the existing retention and orphan
+sweeps; Codex continues to receive images while its documented PDF limitation
+does not discard the accompanying prompt text.
+
+Outbound image/PDF files are validated locally, uploaded with signed Blossom
+`t=upload` authorization (`/upload`, with the Block-compatible legacy fallback),
+and converted to native `imeta` tags before the message or forum-comment event
+is signed. The descriptors and final event are persisted together before relay
+publication, so an acknowledgement-loss retry neither uploads again nor changes
+the event ID. A partial multi-file upload is safe but may leave a
+content-addressed blob that is not referenced by an event; Torana does not issue
+an unsafe delete because the current relay API exposes no ownership-safe orphan
+delete contract, leaving blob lifecycle to relay retention/deduplication policy.
+Focused Phase 8 tests cover signed image/PDF materialization, durable paths,
+same-origin SSRF defense, traversal-safe names, redirect/compression/oversize/
+MIME-spoof rejection, retry reuse, and media-thread root routing. The remaining
+live gate requires an authenticated hosted-relay image/PDF round trip.
+
 ### Phase 9 — complete Buzz CLI/skill integration
 
 **Purpose:** make the full stable Buzz workspace surface available to agents.

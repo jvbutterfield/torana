@@ -1772,6 +1772,7 @@ export class GatewayDB {
     agentId: BotId,
     promptText: string,
     rerunOnEdit = false,
+    attachmentPaths: readonly string[] = [],
   ): number | null {
     if (!this.normalizedSchema) return null;
     return this.transactionImmediate(() => {
@@ -1797,14 +1798,16 @@ export class GatewayDB {
       const result = this._db
         .prepare(
           `INSERT INTO turns
-            (bot_id, agent_id, chat_id, source_update_id, conversation_id,
+            (bot_id, agent_id, chat_id, source_update_id,
+             attachment_paths_json, conversation_id,
              session_key, source_platform, source_event_id, prompt_text,
              prompt_markdown, prompt_revision_seq)
-           VALUES (?, ?, 0, NULL, ?, ?, 'buzz', ?, ?, 1, ?)`,
+           VALUES (?, ?, 0, NULL, ?, ?, ?, 'buzz', ?, ?, 1, ?)`,
         )
         .run(
           agentId,
           agentId,
+          attachmentPaths.length > 0 ? JSON.stringify(attachmentPaths) : null,
           row.conversation_id,
           row.session_key,
           inboundEventId,
@@ -2217,6 +2220,32 @@ export class GatewayDB {
       args.signedEventId ?? null,
     );
     return Number(result.lastInsertRowid);
+  }
+
+  persistPreparedOutbound(
+    id: number,
+    prepared: {
+      payloadJson?: string;
+      signedPayloadJson?: string | null;
+      signedEventId?: string | null;
+    },
+  ): boolean {
+    if (!this.normalizedSchema) return false;
+    const result = this._db
+      .prepare(
+        `UPDATE outbox
+         SET payload_json=COALESCE(?, payload_json),
+             signed_payload_json=?, signed_event_id=?
+         WHERE id=? AND status IN ('pending','retrying')
+           AND signed_event_id IS NULL`,
+      )
+      .run(
+        prepared.payloadJson ?? null,
+        prepared.signedPayloadJson ?? null,
+        prepared.signedEventId ?? null,
+        id,
+      );
+    return result.changes === 1;
   }
 
   /**

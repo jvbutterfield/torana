@@ -14,6 +14,7 @@ import type {
   ConversationRef,
   InboundEvent,
   OutboundOperation,
+  LocalAttachment,
   RemoteAttachment,
 } from "../types.js";
 import {
@@ -28,6 +29,12 @@ import {
   parseOwnerAuthTag,
   signTemplate,
 } from "./protocol.js";
+import {
+  buildImetaTag,
+  downloadBuzzAttachments,
+  type BuzzFetch,
+  uploadBuzzFiles,
+} from "./media.js";
 
 const BUZZ_PHASE6_CAPABILITIES = new Set([
   "send",
@@ -40,6 +47,7 @@ const BUZZ_PHASE6_CAPABILITIES = new Set([
   "vote",
   "typing",
   "presence",
+  "attachment_download",
 ] as const);
 const CHANNEL_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -73,6 +81,7 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     "edit" | "reaction" | "typing" | "presence",
     number
   >();
+  private mediaFetch: BuzzFetch = fetch;
 
   constructor(endpoint: NormalizedEndpointConfig) {
     if (endpoint.platform !== "buzz" || !endpoint.buzz) {
@@ -104,6 +113,10 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
 
   setRateLimits(limits: Partial<typeof this.rateLimits>): void {
     this.rateLimits = { ...this.rateLimits, ...limits };
+  }
+
+  setMediaFetch(fetchImpl: BuzzFetch): void {
+    this.mediaFetch = fetchImpl;
   }
 
   resetEphemeralRateLimits(): void {
@@ -295,6 +308,42 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     conversation: ConversationRef,
     operation: OutboundOperation,
   ): PreparedOutboundOperation {
+    const files = outboundFiles(operation);
+    if (files.length > 0) {
+      return { payloadJson: JSON.stringify(operation) };
+    }
+    return this.prepareSignedOutbound(conversation, operation, []);
+  }
+
+  async prepareOutboundAsync(
+    conversation: ConversationRef,
+    operation: OutboundOperation,
+    config: Config,
+  ): Promise<PreparedOutboundOperation> {
+    const files = outboundFiles(operation);
+    if (files.length === 0) {
+      return this.prepareSignedOutbound(conversation, operation, []);
+    }
+    const descriptors = await uploadBuzzFiles({
+      files,
+      maxBytes: config.attachments.max_bytes,
+      relayUrl: this.config.relayUrl,
+      privateKey: this.config.privateKey,
+      authTag: this.config.authTag,
+      fetchImpl: this.mediaFetch,
+    });
+    return this.prepareSignedOutbound(
+      conversation,
+      operation,
+      descriptors.map(buildImetaTag),
+    );
+  }
+
+  private prepareSignedOutbound(
+    conversation: ConversationRef,
+    operation: OutboundOperation,
+    mediaTags: string[][],
+  ): PreparedOutboundOperation {
     const tags: string[][] = [
       [
         "h",
@@ -367,6 +416,7 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     if (operation.kind === "send" && operation.hop !== undefined) {
       tags.push(["torana-hop", String(operation.hop)]);
     }
+    tags.push(...mediaTags);
     const signed = signTemplate(
       {
         kind,
@@ -503,8 +553,15 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     }
   }
 
-  async materializeAttachments(_event: InboundEvent, _config: Config) {
-    return { attachments: [], errors: [] };
+  async materializeAttachments(event: InboundEvent, config: Config) {
+    return await downloadBuzzAttachments({
+      event,
+      config,
+      relayUrl: this.config.relayUrl,
+      privateKey: this.config.privateKey,
+      authTag: this.config.authTag,
+      fetchImpl: this.mediaFetch,
+    });
   }
 
   private authorAllowed(pubkey: string): boolean {
@@ -665,6 +722,17 @@ function normalizeReaction(
     );
   }
   return { content: `:${name}:`, custom: { name, url } };
+}
+
+function outboundFiles(operation: OutboundOperation): LocalAttachment[] {
+  if (
+    operation.kind === "send" ||
+    operation.kind === "forum_post" ||
+    operation.kind === "forum_comment"
+  ) {
+    return operation.files ?? [];
+  }
+  return [];
 }
 
 function isWorkflowKind(kind: number): boolean {

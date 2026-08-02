@@ -24,6 +24,7 @@ import type { PlatformAdapter } from "../platform/capabilities.js";
 import type { ConversationRef, InboundEvent } from "../platform/types.js";
 import { BuzzAdapter } from "../platform/buzz/adapter.js";
 import type { ConversationScheduler } from "../conversation/scheduler.js";
+import { sweepAttachmentsForTurns } from "./attachments.js";
 
 const log = logger("registry");
 
@@ -212,20 +213,51 @@ export class BotRegistry {
       );
       return;
     }
-    if (args.event.attachments.length > 0) {
-      this.metrics.inc(
-        bot.id,
-        "attachments_skipped_total",
-        args.event.attachments.length,
+    const materialized =
+      args.event.attachments.length > 0
+        ? await adapter.materializeAttachments(args.event, this.config)
+        : { attachments: [], errors: [] };
+    if (
+      !args.event.text.trim() &&
+      args.event.attachments.length > 0 &&
+      materialized.attachments.length === 0
+    ) {
+      this.db.transitionInboundEvent(
+        args.inboundEventId,
+        "dispatched",
+        "rejected",
+        materialized.errors.join("; ") || "attachments_rejected",
       );
+      return;
     }
+    for (const error of materialized.errors) {
+      log.warn("Buzz attachment download issue", {
+        endpoint_id: args.endpointId,
+        error,
+      });
+    }
+    const attachmentPaths = materialized.attachments.map(
+      (attachment) => attachment.path,
+    );
     const turnId = this.db.enqueueRecordedBuzzTurn(
       args.inboundEventId,
       bot.id,
-      buildBuzzPrompt(args.event, adapter),
+      buildBuzzPrompt(
+        args.event,
+        adapter,
+        materialized.attachments.length,
+        materialized.errors,
+      ),
       adapter.config.rerunOnEdit,
+      attachmentPaths,
     );
-    if (turnId === null) return;
+    if (turnId === null) {
+      await sweepAttachmentsForTurns(
+        this.config.gateway.data_dir,
+        attachmentPaths,
+      );
+      return;
+    }
     if (adapter.config.receivedEmoji) {
       try {
         this.outbox.queueOperation(null, bot.id, args.event.conversation, {
@@ -423,7 +455,12 @@ function buzzTrace(event: InboundEvent): { id: string | null; hop: number } {
   return { id, hop };
 }
 
-function buildBuzzPrompt(event: InboundEvent, adapter: BuzzAdapter): string {
+function buildBuzzPrompt(
+  event: InboundEvent,
+  adapter: BuzzAdapter,
+  materializedAttachments = 0,
+  attachmentErrors: readonly string[] = [],
+): string {
   const conversation = event.conversation!;
   const channel = adapter.channelMetadata(conversation.channelId);
   const thread = event.rootEventId ?? "none";
@@ -455,8 +492,11 @@ function buildBuzzPrompt(event: InboundEvent, adapter: BuzzAdapter): string {
       )
       .join(", ");
     lines.push(
-      `[${event.attachments.length} attachments not retrieved] ${details}`,
+      `Attachments: ${materializedAttachments}/${event.attachments.length} securely materialized. ${details}`,
     );
+  }
+  if (attachmentErrors.length > 0) {
+    lines.push(`Attachment warnings: ${attachmentErrors.join("; ")}`);
   }
   if (event.kind === "workflow_event") {
     lines.push(

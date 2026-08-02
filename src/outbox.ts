@@ -371,6 +371,34 @@ export class OutboxProcessor {
       return;
     }
 
+    let signedPayloadJson = row.signed_payload_json;
+    let signedEventId = row.signed_event_id;
+    if (!signedEventId && adapter.prepareOutboundAsync) {
+      try {
+        const prepared = await adapter.prepareOutboundAsync(
+          conversation,
+          operation,
+          this.config,
+        );
+        if (!prepared.signedPayloadJson || !prepared.signedEventId) {
+          throw new Error(
+            "asynchronous outbound preparation did not sign an event",
+          );
+        }
+        if (!this.db.persistPreparedOutbound(row.id, prepared)) {
+          return;
+        }
+        signedPayloadJson = prepared.signedPayloadJson;
+        signedEventId = prepared.signedEventId;
+      } catch (error) {
+        this.handleFailure(
+          row,
+          error instanceof Error ? error.message : String(error),
+        );
+        return;
+      }
+    }
+
     // Mark as in_flight before the Telegram POST. If we crash between the
     // POST returning success and `markOutboxSent`, the row stays in
     // `in_flight` until the grace window expires — at which point it
@@ -381,8 +409,8 @@ export class OutboxProcessor {
     try {
       const result = await adapter.deliver(conversation, operation, {
         payloadJson: row.payload_json,
-        signedPayloadJson: row.signed_payload_json,
-        signedEventId: row.signed_event_id,
+        signedPayloadJson,
+        signedEventId,
       });
       if (result.ok || (!result.ok && result.notModified)) {
         this.db.markOutboxSent(
@@ -539,6 +567,9 @@ function materializeOperation(
   const candidate = { ...payload, kind } as Record<string, unknown>;
   if (kind === "send") {
     if (typeof candidate.text !== "string") return null;
+    candidate.files = Array.isArray(candidate.files) ? candidate.files : [];
+  }
+  if (kind === "forum_post" || kind === "forum_comment") {
     candidate.files = Array.isArray(candidate.files) ? candidate.files : [];
   }
   if (

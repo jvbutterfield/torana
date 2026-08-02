@@ -29,6 +29,15 @@ prompts are disabled unless enabled under the endpoint's `triggers` settings.
 Heartbeat prompts run only when the agent has no queued or running human work;
 workflow prompts cannot grant or deny approvals implicitly.
 
+Buzz attachments use the relay's Blossom endpoints. Torana will fetch only
+same-origin `/media/` URLs from the configured relay, with signed read
+authorization, no redirects, hard size limits, and hash/MIME verification.
+Inbound JPEG, PNG, WebP, GIF, and PDF files use gateway-generated local names.
+Outbound files are uploaded before the Buzz event is signed; the uploaded
+descriptor and signed event are persisted so retries reuse the same media and
+event ID. Codex accepts the image types through its image flags and skips PDFs
+with its existing warning while preserving the message text.
+
 ## Telegram: when to use webhook or polling
 
 ## When to use what
