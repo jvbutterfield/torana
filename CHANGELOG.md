@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.0-rc.10] - 2026-08-01
+
 ### Added
 
 - Config v2 with normalized agents, endpoints, sessions, alert targets, and a
@@ -20,6 +22,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   lossless rollback target for the 2.0 rollout.
 - Conversation and outbox delivery now preserve platform string identifiers;
   v1 behavior and Telegram request compatibility remain unchanged.
+
+### Fixed
+
+- Clean CI and release installs now include the pinned Phase 0 Buzz transport
+  dependencies. The installed-Buzz CLI golden test remains mandatory when the
+  binary is present and skips on generic runners; protocol, cryptographic, and
+  relay tests remain mandatory everywhere.
 
 ## [1.0.0-rc.9] - 2026-05-07
 
