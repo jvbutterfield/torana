@@ -76,7 +76,7 @@ return that answer normally and let Torana's durable transport publish it.
 
 ## Stable command surface
 
-The broker recognizes the pinned Buzz 0.5.3 manifest:
+The broker recognizes the pinned Buzz 0.5.4 manifest:
 
 - `messages`: send, send-diff, edit, delete, get, thread, search, vote
 - `channels`: list, get, search, create, update, topic, purpose, join, leave,
@@ -95,6 +95,7 @@ The broker recognizes the pinned Buzz 0.5.3 manifest:
 - `patches`: send, get, list, status
 - `issues`: create, get, list, status
 - `pr`: open, update, get, list, status
+- `projects`: add-repo, create, delete, get, list, remove-repo, update
 - `media`: get
 - `upload`: file
 - `mem`: ls, get, hash, set, patch, rm
@@ -104,8 +105,8 @@ The broker recognizes the pinned Buzz 0.5.3 manifest:
 - `pack`: validate, inspect
 
 The operator's policy normally exposes only a subset. Dangerous administration,
-moderation, workflow approval, agent management, channel deletion, and repo
-protection require an explicit custom allowlist and dangerous-operation
+moderation, workflow approval, agent management, channel/project deletion, and
+repo protection require an explicit custom allowlist and dangerous-operation
 acknowledgement.
 
 ## Output and errors

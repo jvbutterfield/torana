@@ -18,6 +18,12 @@ describe("Buzz broker policy profiles", () => {
     expect(collaborate.has("messages.send")).toBe(true);
     expect(collaborate.has("channels.create")).toBe(false);
     expect(maintainer.has("channels.create")).toBe(true);
+    expect(readOnly.has("projects.get")).toBe(true);
+    expect(readOnly.has("projects.list")).toBe(true);
+    expect(collaborate.has("projects.create")).toBe(false);
+    expect(maintainer.has("projects.create")).toBe(true);
+    expect(maintainer.has("projects.add-repo")).toBe(true);
+    expect(maintainer.has("projects.delete")).toBe(false);
     for (const command of DANGEROUS_BUZZ_COMMANDS) {
       expect(readOnly.has(command)).toBe(false);
       expect(collaborate.has(command)).toBe(false);
@@ -60,5 +66,8 @@ describe("Buzz broker policy profiles", () => {
     expect(commands).toContain("repos.protect.list");
     expect(commands).toContain("repos.protect.set");
     expect(commands).toContain("repos.protect.remove");
+    expect(commands).toContain("projects.get");
+    expect(commands).toContain("projects.create");
+    expect(commands).toContain("projects.delete");
   });
 });

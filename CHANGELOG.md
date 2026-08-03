@@ -6,6 +6,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.5] - 2026-08-03
+
+### Changed
+
+- Upgrade the pinned Buzz CLI and broker command manifest from Desktop 0.5.3
+  to 0.5.4, including read-only project discovery and maintainer project
+  mutations.
+- Add a repeatable, provenance-first Buzz CLI upgrade and deployment runbook.
+
+### Security
+
+- Treat project deletion as a dangerous custom-only broker operation requiring
+  explicit acknowledgement. Unknown upstream commands continue to fail closed.
+- Consume Buzz 0.5.4's patched Nostr dependency graph when downstream images
+  rebuild the pinned CLI from the released tag and locked Cargo graph.
+
 ## [2.0.0-rc.4] - 2026-08-03
 
 ### Fixed
