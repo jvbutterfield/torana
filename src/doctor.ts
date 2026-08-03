@@ -522,7 +522,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     opts.normalized?.endpoints.filter(
       (endpoint) => endpoint.platform === "buzz" && endpoint.buzz,
     ) ?? [];
+  const explicitPublisherProbeRequested = Boolean(opts.publisherProbeId);
   const buzzOperational =
+    !explicitPublisherProbeRequested &&
     opts.normalized?.buzzPlatform?.enabled &&
     buzzEndpoints.some((endpoint) => endpoint.enabled);
   const requestedPublisher = opts.publisherProbeId
@@ -536,7 +538,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     checks.push({
       id: "C016",
       status: "skip",
-      detail: "no enabled Buzz endpoint requires the gateway lock",
+      detail: explicitPublisherProbeRequested
+        ? "publisher probe is transient and does not require the gateway lock"
+        : "no enabled Buzz endpoint requires the gateway lock",
     });
   } else {
     const lock = dataDirLockAvailable(config.gateway.data_dir);
@@ -552,6 +556,9 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     const buzz = endpoint.buzz!;
     const explicitPublisherProbe =
       requestedPublisher?.endpointId === endpoint.id;
+    const probeRelay = explicitPublisherProbeRequested
+      ? explicitPublisherProbe
+      : endpoint.enabled && Boolean(opts.normalized?.buzzPlatform?.enabled);
     sharedIdentities.set(
       buzz.pubkey,
       (sharedIdentities.get(buzz.pubkey) ?? 0) + 1,
@@ -583,19 +590,19 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       detail: `Buzz endpoint '${endpoint.id}': ${ownerDetail}`,
     });
 
-    if (
-      !explicitPublisherProbe &&
-      (!endpoint.enabled || !opts.normalized?.buzzPlatform?.enabled)
-    ) {
+    if (!probeRelay) {
+      const skipReason = explicitPublisherProbeRequested
+        ? "is not the requested publisher endpoint"
+        : "is disabled";
       checks.push({
         id: "C018",
         status: "skip",
-        detail: `Buzz endpoint '${endpoint.id}' is disabled; relay auth not probed`,
+        detail: `Buzz endpoint '${endpoint.id}' ${skipReason}; relay auth not probed`,
       });
       checks.push({
         id: "C020",
         status: "skip",
-        detail: `Buzz endpoint '${endpoint.id}' is disabled; membership not discovered`,
+        detail: `Buzz endpoint '${endpoint.id}' ${skipReason}; membership not discovered`,
       });
     } else {
       try {

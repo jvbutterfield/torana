@@ -6,6 +6,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.4] - 2026-08-03
+
+### Fixed
+
+- Explicit publisher doctor probes now run safely beside a live gateway: they
+  skip the unrelated single-writer intake lock and avoid authenticating any
+  unselected Buzz endpoint.
+
 ## [2.0.0-rc.3] - 2026-08-03
 
 ### Added
