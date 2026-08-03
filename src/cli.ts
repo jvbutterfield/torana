@@ -132,7 +132,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (a === "--profile") {
       args.profile = argv[++i] ?? null;
     } else if (a === "--publisher-probe") {
-      args.publisherProbe = argv[++i] ?? null;
+      const next = argv[++i];
+      if (!next) throw new Error("--publisher-probe requires a publisher id");
+      args.publisherProbe = next;
     } else if (a.startsWith("--config=")) {
       args.configPath = a.slice("--config=".length);
     } else if (a.startsWith("--format=")) {
@@ -148,7 +150,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     } else if (a.startsWith("--profile=")) {
       args.profile = a.slice("--profile=".length);
     } else if (a.startsWith("--publisher-probe=")) {
-      args.publisherProbe = a.slice("--publisher-probe=".length);
+      const value = a.slice("--publisher-probe=".length);
+      if (!value) throw new Error("--publisher-probe requires a publisher id");
+      args.publisherProbe = value;
     } else if (a.startsWith("--to=")) {
       args.migrationTo = Number(a.slice("--to=".length));
     } else if (a.startsWith("--limit=")) {

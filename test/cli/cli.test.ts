@@ -156,6 +156,15 @@ describe("CLI parseArgs", () => {
       parseArgs(["doctor", "--publisher-probe=release-bot"]).publisherProbe,
     ).toBe("release-bot");
   });
+
+  test("rejects an empty explicit publisher probe", () => {
+    expect(() => parseArgs(["doctor", "--publisher-probe"])).toThrow(
+      "requires a publisher id",
+    );
+    expect(() => parseArgs(["doctor", "--publisher-probe="])).toThrow(
+      "requires a publisher id",
+    );
+  });
 });
 
 // --- CLI invocation (subprocess) ---
