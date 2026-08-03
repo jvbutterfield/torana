@@ -307,6 +307,8 @@ Production 2.0 release still requires the canary and 24-hour gates in
 
 Recent:
 
+- **2.0.0-rc.2** — outbound-only publishers, scoped API/CLI, atomic idempotent
+  Buzz outbox enqueue, bounded retention and schema v6.
 - **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
 - **rc.4** — Codex runner (`runner.type: codex`), `codex-jsonl` protocol for `command` runners, README rewrite
 - **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
