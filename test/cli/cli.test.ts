@@ -147,6 +147,15 @@ describe("CLI parseArgs", () => {
     const a = parseArgs(["doctor", "--profile", "prod"]);
     expect(a.profile).toBe("prod");
   });
+
+  test("parses explicit publisher probe in space and equals forms", () => {
+    expect(
+      parseArgs(["doctor", "--publisher-probe", "dev-team"]).publisherProbe,
+    ).toBe("dev-team");
+    expect(
+      parseArgs(["doctor", "--publisher-probe=release-bot"]).publisherProbe,
+    ).toBe("release-bot");
+  });
 });
 
 // --- CLI invocation (subprocess) ---
@@ -498,5 +507,19 @@ describe("CLI doctor (subprocess)", () => {
     ]);
     expect(exitCode).toBe(2);
     expect(stderr).toContain("token");
+  }, 15_000);
+
+  test("--publisher-probe rejects remote doctor mode", async () => {
+    const { exitCode, stderr } = await runCli([
+      "doctor",
+      "--server",
+      "http://127.0.0.1:0",
+      "--token",
+      "test-token",
+      "--publisher-probe",
+      "dev-team",
+    ]);
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain("available only with a local config");
   }, 15_000);
 });
