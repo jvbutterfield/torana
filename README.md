@@ -256,16 +256,17 @@ The dispatcher routes each update to its bot's runner independently. No special 
 
 ## Commands
 
-| Command                                                                | What it does                                                                                                                                         |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `torana start`                                                         | Run the gateway                                                                                                                                      |
-| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003)              |
-| `torana validate`                                                      | Offline schema check — no Telegram, no DB                                                                                                            |
-| `torana migrate`                                                       | Apply pending DB migrations (`--dry-run` to preview; `--to 5` for explicit bridge activation)                                                        |
-| `torana version`                                                       | Print package version + Bun runtime                                                                                                                  |
-| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md) |
-| `torana config`                                                        | Manage CLI profiles or render a v1 gateway config as v2 with `config upgrade --from v1 --to v2 --input PATH`                                         |
-| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation                                                        |
+| Command                                                                | What it does                                                                                                                                                                            |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `torana start`                                                         | Run the gateway                                                                                                                                                                         |
+| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003)                                                 |
+| `torana validate`                                                      | Offline schema check — no Telegram, no DB                                                                                                                                               |
+| `torana migrate`                                                       | Apply pending DB migrations (`--dry-run` to preview; `--to 6` for explicit bridge activation)                                                                                           |
+| `torana version`                                                       | Print package version + Bun runtime                                                                                                                                                     |
+| `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md)                                    |
+| `torana publish` / `torana publish status`                             | Outbound-only publisher commands; content comes from stdin/file and bearer credentials come from the environment or a secret file. See [`docs/publisher-api.md`](docs/publisher-api.md) |
+| `torana config`                                                        | Manage CLI profiles or render a v1 gateway config as v2 with `config upgrade --from v1 --to v2 --input PATH`                                                                            |
+| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation                                                                                           |
 
 ---
 
@@ -299,7 +300,7 @@ If you need any of those, torana is the wrong tool and that's fine.
 ## Status
 
 **v1.0.0-rc.10 is the compatibility bridge.** Config v1 remains accepted.
-The 2.0 implementation adds config v2, schema v5, Buzz, durable conversation
+The 2.0 implementation adds config v2, schema v6, Buzz, durable conversation
 sessions, platform-neutral operations, and the endpoint credential broker.
 Production 2.0 release still requires the canary and 24-hour gates in
 [`docs/release-readiness.md`](docs/release-readiness.md).
@@ -345,6 +346,7 @@ The E2E and soak tests require authenticated `claude` / `codex` binaries and bur
 - [`docs/security.md`](docs/security.md) — threat model, ACL, secrets
 - [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
 - [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, send, side-sessions, tokens)
+- [`docs/publisher-api.md`](docs/publisher-api.md) — outbound-only publisher configuration, API, and CLI
 - [`docs/cli.md`](docs/cli.md) — CLI reference, flag-by-flag
 - [`docs/release-readiness.md`](docs/release-readiness.md) — security review, fault matrix, soak, and rollout gates
 

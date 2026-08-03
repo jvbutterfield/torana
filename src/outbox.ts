@@ -2,7 +2,7 @@ import { logger } from "./log.js";
 import { nextBackoffMs } from "./backoff.js";
 import type { BotId, Config } from "./config/schema.js";
 import type { NormalizedConfigModel } from "./config/v2.js";
-import type { GatewayDB } from "./db/gateway-db.js";
+import type { GatewayDB, PublisherEnqueueResult } from "./db/gateway-db.js";
 import type { Metrics } from "./metrics.js";
 import type { AlertManager } from "./alerts.js";
 import type {
@@ -226,6 +226,49 @@ export class OutboxProcessor {
     return id;
   }
 
+  queuePublisherOperation(args: {
+    publisherId: string;
+    conversation: ConversationRef;
+    idempotencyKey: string;
+    payloadSha256: string;
+    content: string;
+    healthy: boolean;
+    maxPending: number;
+    maxRetained: number;
+    maxRetainedBytes: number;
+    ratePerMinute: number;
+    burst: number;
+    databaseSizeCapBytes: number;
+    admissionBytes: number;
+  }): PublisherEnqueueResult {
+    const adapter = this.adapters.get(args.conversation.endpointId);
+    if (!adapter?.prepareOutbound) {
+      return { kind: "rejected", reason: "publisher_unhealthy" };
+    }
+    const operation: OutboundOperation = {
+      kind: "send",
+      text: args.content,
+      files: [],
+    };
+    return this.db.enqueuePublisherPublication({
+      publisherId: args.publisherId,
+      endpointId: args.conversation.endpointId,
+      conversation: args.conversation,
+      idempotencyKey: args.idempotencyKey,
+      payloadSha256: args.payloadSha256,
+      operation,
+      healthy: args.healthy,
+      maxPending: args.maxPending,
+      maxRetained: args.maxRetained,
+      maxRetainedBytes: args.maxRetainedBytes,
+      ratePerMinute: args.ratePerMinute,
+      burst: args.burst,
+      databaseSizeCapBytes: args.databaseSizeCapBytes,
+      admissionBytes: args.admissionBytes,
+      prepare: () => adapter.prepareOutbound!(args.conversation, operation),
+    });
+  }
+
   queueOperationWithCallback(
     turnId: number | null,
     agentId: BotId,
@@ -417,6 +460,9 @@ export class OutboxProcessor {
           row.id,
           result.ok ? result.externalMessageId : undefined,
         );
+        const publisherId = this.db.getPublisherIdForOutbox(row.id);
+        if (publisherId)
+          this.metrics.recordPublisherDelivery(publisherId, "sent");
         if (
           ["send", "forum_post", "forum_comment"].includes(operation.kind) &&
           result.ok
@@ -429,6 +475,9 @@ export class OutboxProcessor {
         }
       } else if (!result.retriable) {
         this.db.markOutboxFailed(row.id, result.description);
+        const publisherId = this.db.getPublisherIdForOutbox(row.id);
+        if (publisherId)
+          this.metrics.recordPublisherDelivery(publisherId, "failed");
       } else {
         this.handleFailure(row, result.description, result.retryAfterMs);
       }
@@ -482,6 +531,7 @@ export class OutboxProcessor {
     error: string,
     retryAfterMs?: number,
   ): void {
+    const publisherId = this.db.getPublisherIdForOutbox(row.id);
     const metricAgentId = row.agent_id ?? row.bot_id;
     const operationKind = row.operation_kind ?? row.kind;
     if (metricAgentId) {
@@ -515,6 +565,8 @@ export class OutboxProcessor {
         error,
       });
       this.db.markOutboxRateLimited(row.id, error, nextAttempt);
+      if (publisherId)
+        this.metrics.recordPublisherDelivery(publisherId, "retry");
       return;
     }
 
@@ -550,6 +602,14 @@ export class OutboxProcessor {
       nextAttempt,
       this.config.outbox.max_attempts,
     );
+    if (publisherId) {
+      this.metrics.recordPublisherDelivery(
+        publisherId,
+        row.attempt_count + 1 >= this.config.outbox.max_attempts
+          ? "dead"
+          : "retry",
+      );
+    }
 
     if (willDeadLetter && metricAgentId && this.alerts) {
       void this.alerts.outboxFailures(metricAgentId, nextAttemptCount);

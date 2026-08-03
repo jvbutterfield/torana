@@ -351,6 +351,10 @@ function createFakeRelay(options: { requireOwnerAuth?: boolean } = {}) {
     addMembership,
     removeMembership,
     messages,
+    activeSubscriptions: () =>
+      [...sockets].flatMap((socket) => [
+        ...socket.data.subscriptions.entries(),
+      ]),
   };
 }
 
@@ -992,6 +996,97 @@ describe("Phase 4 Buzz relay integration", () => {
     operator.setEndpointLifecycle("alpha-buzz", "active", null);
     expect(db.getPendingOutbox().map((row) => row.id)).toContain(id);
     operator.close();
+    db.close();
+  });
+
+  test("publisher endpoint keeps membership health only and has no inbound dispatch", async () => {
+    const relay = createFakeRelay();
+    const dir = mkdtempSync(join(tmpdir(), "torana-buzz-publisher-"));
+    tempDirs.push(dir);
+    const upgraded = upgradeV1Object(
+      makeTestConfig([makeTestBotConfig("alpha")]),
+    ) as any;
+    upgraded.gateway.data_dir = dir;
+    upgraded.gateway.db_path = join(dir, "gateway.db");
+    upgraded.platforms.buzz.enabled = true;
+    upgraded.publishers = [
+      {
+        id: "dev-team",
+        enabled: true,
+        endpoint: {
+          id: "dev-team-buzz",
+          platform: "buzz",
+          community_id: "primary",
+          relay_url: relay.url,
+          private_key: ENDPOINT_KEY,
+          auth_tag: JSON.stringify(AUTH_TAG),
+          owner_pubkey: OWNER_PUBKEY,
+          expected_pubkey: ENDPOINT_PUBKEY,
+        },
+        destination: { external_conversation_id: CHANNEL_A },
+      },
+    ];
+    upgraded.publisher_api = {
+      enabled: true,
+      tokens: [
+        {
+          name: "notifier",
+          secret_ref: "publisher-token-00000000000000000000",
+          publisher_ids: ["dev-team"],
+          scopes: ["publish", "status"],
+        },
+      ],
+    };
+    const loaded = loadConfigFromString(yaml.dump(upgraded), {
+      skipInterpolation: true,
+    });
+    const db = openDb(loaded);
+    const endpoint = loaded.normalized.endpoints.find(
+      (candidate) => candidate.id === "dev-team-buzz",
+    )!;
+    const adapter = new BuzzAdapter(endpoint);
+    let accepted = 0;
+    let controlled = 0;
+    const transport = trackTransport(
+      new BuzzTransport({
+        db,
+        normalized: loaded.normalized,
+        endpoints: [endpoint],
+        adapters: new Map([[endpoint.id, adapter]]),
+        onAccepted: () => {
+          accepted += 1;
+        },
+        onControl: () => {
+          controlled += 1;
+        },
+      }),
+    );
+    await transport.start(() => Promise.resolve());
+    await waitFor(
+      () => transport.snapshots()[0]?.state === "healthy",
+      "publisher healthy",
+    );
+    await waitFor(
+      () => relay.activeSubscriptions().length === 1,
+      "membership-only subscription",
+    );
+    const [[subscriptionId, filters]] = relay.activeSubscriptions();
+    expect(subscriptionId).toContain("membership");
+    expect(filters.some((filter) => filter["#h"] !== undefined)).toBe(false);
+    relay.emit(mention(CHANNEL_A, Math.floor(Date.now() / 1000)));
+    await Bun.sleep(50);
+    expect(accepted).toBe(0);
+    expect(controlled).toBe(0);
+    expect(
+      (
+        db
+          ._unsafeQuery("SELECT COUNT(*) AS count FROM inbound_events")
+          .get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(0);
+    await transport.stop();
     db.close();
   });
 });

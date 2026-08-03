@@ -319,6 +319,55 @@ const AgentSchema = z
   })
   .strict();
 
+const PublisherEndpointSchema = z
+  .object({
+    id: EndpointId,
+    platform: z.literal("buzz"),
+    community_id: z.string().regex(/^[a-z][a-z0-9_-]{0,47}$/),
+    relay_url: RelayUrl,
+    private_key: z.string().min(1),
+    auth_tag: z.string().min(1),
+    owner_pubkey: z.string().min(1),
+    expected_pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+  })
+  .strict();
+
+const PublisherSchema = z
+  .object({
+    id: BotIdSchema,
+    enabled: Bool.default(false),
+    endpoint: PublisherEndpointSchema,
+    destination: z
+      .object({ external_conversation_id: z.string().uuid() })
+      .strict(),
+  })
+  .strict();
+
+const PublisherApiTokenSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+    secret_ref: z.string().min(32),
+    publisher_ids: z.array(BotIdSchema).min(1),
+    scopes: z.array(z.enum(["publish", "status"])).min(1),
+  })
+  .strict();
+
+const PublisherApiSchema = z
+  .object({
+    enabled: Bool.default(false),
+    max_body_bytes: Int.min(4096).max(1_048_576).default(73_728),
+    max_content_bytes: Int.min(1).max(1_048_576).default(65_536),
+    idempotency_retention_ms: Int.min(60_000).default(1_209_600_000),
+    max_pending_per_publisher: Int.min(1).default(500),
+    max_retained_per_publisher: Int.min(1).default(2000),
+    max_retained_bytes_per_publisher: Int.min(4096).default(268_435_456),
+    rate_per_minute_per_publisher: Int.min(1).max(100_000).default(60),
+    burst_per_publisher: Int.min(1).max(10_000).default(10),
+    tokens: z.array(PublisherApiTokenSchema).default([]),
+  })
+  .strict()
+  .default({});
+
 const AlertsV2Schema = z
   .object({
     cooldown_ms: Int.default(600_000),
@@ -360,6 +409,8 @@ export const ConfigV2Schema = z
     metrics: MetricsSchema,
     attachments: AttachmentsSchema,
     agent_api: AgentApiSchema,
+    publisher_api: PublisherApiSchema,
+    publishers: z.array(PublisherSchema).default([]),
     agents: z.array(AgentSchema).min(1),
   })
   .strict()
@@ -800,6 +851,125 @@ export const ConfigV2Schema = z
         });
       }
     }
+    const publisherIds = new Set<string>();
+    const publisherPubkeys = new Set<string>();
+    for (const [publisherIndex, publisher] of config.publishers.entries()) {
+      const basePath = ["publishers", publisherIndex];
+      if (
+        agentIds.has(publisher.id) ||
+        publisherIds.has(publisher.id) ||
+        endpointIds.has(publisher.id)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...basePath, "id"],
+          message: `publisher id '${publisher.id}' must be globally unique`,
+        });
+      }
+      publisherIds.add(publisher.id);
+      if (
+        endpointIds.has(publisher.endpoint.id) ||
+        agentIds.has(publisher.endpoint.id) ||
+        publisherIds.has(publisher.endpoint.id) ||
+        publisher.endpoint.id === publisher.id
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...basePath, "endpoint", "id"],
+          message: `endpoint id '${publisher.endpoint.id}' must be globally unique and must not equal a principal id`,
+        });
+      }
+      endpointIds.add(publisher.endpoint.id);
+      let derived: string | null = null;
+      try {
+        derived = publicKey(decodeSecret(publisher.endpoint.private_key));
+        if (derived !== publisher.endpoint.expected_pubkey) {
+          throw new Error("derived public key does not match expected_pubkey");
+        }
+        if (buzzIdentities.has(derived) || publisherPubkeys.has(derived)) {
+          throw new Error("publisher Buzz identity must not be shared");
+        }
+        publisherPubkeys.add(derived);
+      } catch (error) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...basePath, "endpoint", "private_key"],
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      let owner: string | null = null;
+      try {
+        owner = normalizePubkey(publisher.endpoint.owner_pubkey);
+      } catch (error) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...basePath, "endpoint", "owner_pubkey"],
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      if (derived) {
+        try {
+          const tag = parseOwnerAuthTag(publisher.endpoint.auth_tag)!;
+          if (!verifyOwnerAuthTag(tag, derived)) {
+            throw new Error(
+              "auth tag signature does not authorize this endpoint key",
+            );
+          }
+          if (owner && tag[1] !== owner) {
+            throw new Error("auth tag owner does not match owner_pubkey");
+          }
+          if (
+            !ownerAuthTagAllowsEvent(tag, {
+              kind: BUZZ_KINDS.streamMessageV1,
+              created_at: Math.floor(Date.now() / 1000),
+            })
+          ) {
+            throw new Error("auth tag does not authorize core message kind 9");
+          }
+        } catch (error) {
+          ctx.addIssue({
+            code: "custom",
+            path: [...basePath, "endpoint", "auth_tag"],
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+    const publisherTokenNames = new Set<string>();
+    for (const [tokenIndex, token] of config.publisher_api.tokens.entries()) {
+      if (publisherTokenNames.has(token.name)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["publisher_api", "tokens", tokenIndex, "name"],
+          message: `duplicate publisher_api token name '${token.name}'`,
+        });
+      }
+      publisherTokenNames.add(token.name);
+      for (const [idIndex, publisherId] of token.publisher_ids.entries()) {
+        if (publisherIds.has(publisherId)) continue;
+        ctx.addIssue({
+          code: "custom",
+          path: [
+            "publisher_api",
+            "tokens",
+            tokenIndex,
+            "publisher_ids",
+            idIndex,
+          ],
+          message: `references unknown publisher '${publisherId}'`,
+        });
+      }
+    }
+    if (
+      config.publisher_api.burst_per_publisher >
+      config.publisher_api.rate_per_minute_per_publisher
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["publisher_api", "burst_per_publisher"],
+        message: "must be <= rate_per_minute_per_publisher",
+      });
+    }
     for (const [pubkey, identities] of buzzIdentities) {
       if (identities.length < 2 || identities.every((item) => item.shared))
         continue;
@@ -887,6 +1057,8 @@ export type BuzzEndpointConfig = Extract<
   ConfigV2["agents"][number]["endpoints"][number],
   { platform: "buzz" }
 >;
+export type PublisherConfig = ConfigV2["publishers"][number];
+export type PublisherApiConfig = ConfigV2["publisher_api"];
 
 export interface NormalizedBuzzRuntimeConfig {
   relayUrl: string;
@@ -916,12 +1088,20 @@ export interface NormalizedBuzzRuntimeConfig {
 export interface NormalizedEndpointConfig {
   id: string;
   agentId: string;
+  principalKind?: "agent" | "publisher";
   platform: "telegram" | "buzz" | "agent_api";
   enabled: boolean;
   communityId: string | null;
   externalIdentity: string | null;
   sessionScopes?: Record<string, string>;
   buzz?: NormalizedBuzzRuntimeConfig;
+}
+
+export interface NormalizedPublisherConfig {
+  id: string;
+  enabled: boolean;
+  endpointId: string;
+  destinationConversationId: string;
 }
 
 export interface NormalizedConfigModel {
@@ -931,6 +1111,8 @@ export interface NormalizedConfigModel {
   buzzPlatform?: ConfigV2["platforms"]["buzz"];
   limits?: ConfigV2["limits"];
   retention?: ConfigV2["retention"];
+  publishers?: NormalizedPublisherConfig[];
+  publisherApi?: PublisherApiConfig;
   buzzTools?: Array<{
     agentId: string;
     policy: "read_only" | "collaborate" | "maintainer" | "custom";
@@ -1018,92 +1200,131 @@ export function normalizeV2(config: ConfigV2): {
     config: runtime,
     model: {
       sourceVersion: 2,
-      endpoints: config.agents.flatMap((agent) => [
-        ...agent.endpoints.map((endpoint) => ({
-          id: endpoint.id,
-          agentId: agent.id,
-          platform: endpoint.platform,
-          enabled:
-            endpoint.enabled &&
-            (endpoint.platform === "telegram"
-              ? config.platforms.telegram.enabled
-              : config.platforms.buzz.enabled),
-          communityId:
-            endpoint.platform === "buzz" ? endpoint.community_id : null,
-          externalIdentity:
-            endpoint.platform === "buzz"
-              ? publicKey(decodeSecret(endpoint.private_key))
-              : null,
-          sessionScopes:
-            endpoint.platform === "telegram"
-              ? Object.fromEntries(
-                  Object.entries(endpoint.chat_overrides).flatMap(
-                    ([id, override]) =>
-                      override.session_scope
-                        ? [[id, override.session_scope]]
-                        : [],
-                  ),
-                )
-              : Object.fromEntries(
-                  Object.entries(endpoint.channel_overrides).flatMap(
-                    ([id, override]) =>
-                      override.session_scope
-                        ? [[id, override.session_scope]]
-                        : [],
-                  ),
-                ),
-          ...(endpoint.platform === "buzz"
-            ? {
-                buzz: {
-                  relayUrl: endpoint.relay_url,
-                  privateKey: endpoint.private_key,
-                  authTag: endpoint.auth_tag ?? null,
-                  pubkey: publicKey(decodeSecret(endpoint.private_key)),
-                  respondTo: endpoint.respond_to,
-                  ownerPubkey: endpoint.owner_pubkey
-                    ? normalizePubkey(endpoint.owner_pubkey)
-                    : null,
-                  allowedPubkeys: endpoint.allowed_pubkeys.map(normalizePubkey),
-                  allowSharedIdentity: endpoint.allow_shared_identity,
-                  receivedEmoji: endpoint.reactions.received_emoji,
-                  rerunOnEdit: endpoint.rerun_on_edit,
-                  includeReactionsInContext:
-                    endpoint.include_reactions_in_context,
-                  customEmojiPalette: { ...endpoint.custom_emoji_palette },
-                  subscribe: endpoint.subscribe,
-                  triggers: endpoint.triggers,
-                  channelOverrides: Object.fromEntries(
-                    Object.entries(endpoint.channel_overrides).map(
-                      ([channelId, override]) => [
-                        channelId,
-                        {
-                          ...(override.require_mention === undefined
-                            ? {}
-                            : { requireMention: override.require_mention }),
-                          ...(override.session_scope
-                            ? { sessionScope: override.session_scope }
-                            : {}),
-                          ...(override.kinds
-                            ? { kinds: [...override.kinds] }
-                            : {}),
-                        },
-                      ],
+      endpoints: [
+        ...config.agents.flatMap((agent) => [
+          ...agent.endpoints.map((endpoint) => ({
+            id: endpoint.id,
+            agentId: agent.id,
+            principalKind: "agent" as const,
+            platform: endpoint.platform,
+            enabled:
+              endpoint.enabled &&
+              (endpoint.platform === "telegram"
+                ? config.platforms.telegram.enabled
+                : config.platforms.buzz.enabled),
+            communityId:
+              endpoint.platform === "buzz" ? endpoint.community_id : null,
+            externalIdentity:
+              endpoint.platform === "buzz"
+                ? publicKey(decodeSecret(endpoint.private_key))
+                : null,
+            sessionScopes:
+              endpoint.platform === "telegram"
+                ? Object.fromEntries(
+                    Object.entries(endpoint.chat_overrides).flatMap(
+                      ([id, override]) =>
+                        override.session_scope
+                          ? [[id, override.session_scope]]
+                          : [],
+                    ),
+                  )
+                : Object.fromEntries(
+                    Object.entries(endpoint.channel_overrides).flatMap(
+                      ([id, override]) =>
+                        override.session_scope
+                          ? [[id, override.session_scope]]
+                          : [],
                     ),
                   ),
-                },
-              }
-            : {}),
-        })),
-        {
-          id: `${agent.id}-agent-api`,
-          agentId: agent.id,
-          platform: "agent_api" as const,
-          enabled: config.agent_api.enabled,
-          communityId: null,
-          externalIdentity: null,
+            ...(endpoint.platform === "buzz"
+              ? {
+                  buzz: {
+                    relayUrl: endpoint.relay_url,
+                    privateKey: endpoint.private_key,
+                    authTag: endpoint.auth_tag ?? null,
+                    pubkey: publicKey(decodeSecret(endpoint.private_key)),
+                    respondTo: endpoint.respond_to,
+                    ownerPubkey: endpoint.owner_pubkey
+                      ? normalizePubkey(endpoint.owner_pubkey)
+                      : null,
+                    allowedPubkeys:
+                      endpoint.allowed_pubkeys.map(normalizePubkey),
+                    allowSharedIdentity: endpoint.allow_shared_identity,
+                    receivedEmoji: endpoint.reactions.received_emoji,
+                    rerunOnEdit: endpoint.rerun_on_edit,
+                    includeReactionsInContext:
+                      endpoint.include_reactions_in_context,
+                    customEmojiPalette: { ...endpoint.custom_emoji_palette },
+                    subscribe: endpoint.subscribe,
+                    triggers: endpoint.triggers,
+                    channelOverrides: Object.fromEntries(
+                      Object.entries(endpoint.channel_overrides).map(
+                        ([channelId, override]) => [
+                          channelId,
+                          {
+                            ...(override.require_mention === undefined
+                              ? {}
+                              : { requireMention: override.require_mention }),
+                            ...(override.session_scope
+                              ? { sessionScope: override.session_scope }
+                              : {}),
+                            ...(override.kinds
+                              ? { kinds: [...override.kinds] }
+                              : {}),
+                          },
+                        ],
+                      ),
+                    ),
+                  },
+                }
+              : {}),
+          })),
+          {
+            id: `${agent.id}-agent-api`,
+            agentId: agent.id,
+            principalKind: "agent" as const,
+            platform: "agent_api" as const,
+            enabled: config.agent_api.enabled,
+            communityId: null,
+            externalIdentity: null,
+            sessionScopes: {},
+          },
+        ]),
+        ...config.publishers.map((publisher) => ({
+          id: publisher.endpoint.id,
+          agentId: publisher.id,
+          principalKind: "publisher" as const,
+          platform: "buzz" as const,
+          enabled:
+            publisher.enabled &&
+            config.publisher_api.enabled &&
+            config.platforms.buzz.enabled,
+          communityId: publisher.endpoint.community_id,
+          externalIdentity: publisher.endpoint.expected_pubkey,
           sessionScopes: {},
-        },
-      ]),
+          buzz: {
+            relayUrl: publisher.endpoint.relay_url,
+            privateKey: publisher.endpoint.private_key,
+            authTag: publisher.endpoint.auth_tag,
+            pubkey: publisher.endpoint.expected_pubkey,
+            respondTo: "nobody" as const,
+            ownerPubkey: normalizePubkey(publisher.endpoint.owner_pubkey),
+            allowedPubkeys: [],
+            allowSharedIdentity: false,
+            receivedEmoji: null,
+            rerunOnEdit: false,
+            includeReactionsInContext: false,
+            customEmojiPalette: {},
+            subscribe: "mentions_and_dms" as const,
+            triggers: {
+              feed: { enabled: false, modes: [] },
+              workflows: { enabled: false, event_kinds: [] },
+              heartbeat: { enabled: false },
+            },
+            channelOverrides: {},
+          },
+        })),
+      ] as NormalizedEndpointConfig[],
       sessions: {
         ...config.sessions,
         max_queue_depth_per_conversation:
@@ -1113,6 +1334,14 @@ export function normalizeV2(config: ConfigV2): {
       buzzPlatform: config.platforms.buzz,
       limits: config.limits,
       retention: config.retention,
+      publishers: config.publishers.map((publisher) => ({
+        id: publisher.id,
+        enabled: publisher.enabled,
+        endpointId: publisher.endpoint.id,
+        destinationConversationId:
+          publisher.destination.external_conversation_id,
+      })),
+      publisherApi: config.publisher_api,
       buzzTools: config.agents.flatMap((agent) => {
         const tools = agent.tools?.buzz;
         return tools
@@ -1176,6 +1405,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       {
         id: `${bot.id}-telegram`,
         agentId: bot.id,
+        principalKind: "agent" as const,
         platform: "telegram" as const,
         enabled: true,
         communityId: null,
@@ -1185,6 +1415,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       {
         id: `${bot.id}-agent-api`,
         agentId: bot.id,
+        principalKind: "agent" as const,
         platform: "agent_api" as const,
         enabled: config.agent_api.enabled,
         communityId: null,
@@ -1192,6 +1423,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
         sessionScopes: {},
       },
     ]),
+    publishers: [],
     sessions: {
       scope: "legacy_agent",
       idle_process_ttl_ms: config.agent_api.side_sessions.idle_ttl_ms,

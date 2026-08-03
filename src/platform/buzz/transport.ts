@@ -132,11 +132,18 @@ class BuzzEndpointSupervisor {
   private membershipRefresh: Promise<void> = Promise.resolve();
   private sleepResolvers = new Set<() => void>();
   private heartbeatSequence = 0;
+  private readonly outboundOnly: boolean;
+  private readonly destinationChannelId: string | null;
 
   constructor(opts: SupervisorOptions) {
     this.endpoint = opts.endpoint;
     this.endpointId = opts.endpoint.id;
     this.agentId = opts.endpoint.agentId;
+    this.outboundOnly = opts.endpoint.principalKind === "publisher";
+    this.destinationChannelId =
+      opts.normalized.publishers?.find(
+        (publisher) => publisher.endpointId === opts.endpoint.id,
+      )?.destinationConversationId ?? null;
     const configuredAdapter = opts.adapters?.get(opts.endpoint.id);
     this.adapter =
       configuredAdapter instanceof BuzzAdapter
@@ -171,9 +178,14 @@ class BuzzEndpointSupervisor {
 
   async stop(): Promise<void> {
     this.running = false;
-    await this.adapter
-      .signal(this.signalConversation(), { kind: "presence", state: "offline" })
-      .catch(() => false);
+    if (!this.outboundOnly) {
+      await this.adapter
+        .signal(this.signalConversation(), {
+          kind: "presence",
+          state: "offline",
+        })
+        .catch(() => false);
+    }
     for (const resolve of [...this.sleepResolvers]) resolve();
     this.client?.close();
     if (this.loopPromise) await this.loopPromise.catch(() => {});
@@ -229,11 +241,22 @@ class BuzzEndpointSupervisor {
           this.db.getEndpointState(this.endpointId)?.cursor.channels ?? [],
         );
         await this.refreshMemberships(client, true);
-        await this.adapter.signal(this.signalConversation(), {
-          kind: "presence",
-          state: "online",
-        });
-        await this.recoverAcceptedEvents();
+        if (this.outboundOnly && !this.destinationChannelId) {
+          throw new Error("publisher destination is not configured");
+        }
+        if (
+          this.outboundOnly &&
+          !this.accessibleChannels.has(this.destinationChannelId!)
+        ) {
+          throw new Error("publisher destination membership is not active");
+        }
+        if (!this.outboundOnly) {
+          await this.adapter.signal(this.signalConversation(), {
+            kind: "presence",
+            state: "online",
+          });
+          await this.recoverAcceptedEvents();
+        }
         this.subscribeMembership(client);
         this.failureCount = 0;
         this.disconnectedSince = null;
@@ -363,7 +386,7 @@ class BuzzEndpointSupervisor {
       .filter((event) => event.kind === BUZZ_KINDS.groupMembers);
     const discovered = new Set(discoverChannelIds(memberships));
     const metadataRaw =
-      discovered.size === 0
+      discovered.size === 0 || this.outboundOnly
         ? []
         : await client.query(
             [channelMetadataFilter([...discovered])],
@@ -387,8 +410,10 @@ class BuzzEndpointSupervisor {
     }
     this.accessibleChannels = discovered;
     this.db.setBuzzChannels(this.endpointId, [...discovered]);
-    for (const channel of initial ? [...discovered] : added) {
-      await this.drainAndSubscribeChannel(client, channel);
+    if (!this.outboundOnly) {
+      for (const channel of initial ? [...discovered] : added) {
+        await this.drainAndSubscribeChannel(client, channel);
+      }
     }
   }
 
@@ -406,6 +431,20 @@ class BuzzEndpointSupervisor {
       this.subscriptionId("membership"),
       [membershipFilter(this.adapter.config.pubkey, since)],
       (raw) => {
+        if (this.outboundOnly) {
+          if (!isValidInboundEvent(raw) || raw.kind !== BUZZ_KINDS.groupMembers)
+            return;
+          this.membershipRefresh = this.membershipRefresh
+            .then(() => this.refreshMemberships(client, false))
+            .catch((error) => {
+              log.warn("Buzz publisher membership refresh failed", {
+                endpoint_id: this.endpointId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              client.close();
+            });
+          return;
+        }
         void this.handleRelayEvent(raw)
           .then((membershipChanged) => {
             if (!membershipChanged) return;

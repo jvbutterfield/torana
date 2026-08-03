@@ -194,6 +194,14 @@ export interface ResolvedAgentApiToken {
   maxConcurrentSideSessions?: number;
 }
 
+export interface ResolvedPublisherApiToken {
+  name: string;
+  secret: string;
+  hash: Uint8Array;
+  publisher_ids: readonly string[];
+  scopes: readonly ("publish" | "status")[];
+}
+
 export interface LoadedConfig {
   config: Config;
   /** Public v1/v2 configuration normalized into platform-neutral metadata. */
@@ -204,6 +212,8 @@ export interface LoadedConfig {
   secrets: string[];
   /** Resolved agent-api tokens (hashed). Empty when agent_api is disabled or has no tokens. */
   agentApiTokens: ResolvedAgentApiToken[];
+  /** Publisher bearers are deliberately separate from runner-backed Agent API tokens. */
+  publisherApiTokens: ResolvedPublisherApiToken[];
   /** Warnings emitted during load that are non-fatal. */
   warnings: string[];
 }
@@ -311,6 +321,7 @@ export function loadConfigFromString(
     );
   }
   const agentApiTokens = resolveAgentApiTokens(config, raw, warnings);
+  const publisherApiTokens = resolvePublisherApiTokens(parsedV2, raw, warnings);
 
   // Dashboard: full-request passthrough + non-loopback target sends client
   // bearers and cookies across a network boundary to a host the gateway
@@ -331,10 +342,53 @@ export function loadConfigFromString(
     config,
     normalized,
     sourcePath: opts.filePath ?? "",
-    secrets: collectSecrets(config, agentApiTokens, parsedV2),
+    secrets: collectSecrets(
+      config,
+      agentApiTokens,
+      publisherApiTokens,
+      parsedV2,
+    ),
     agentApiTokens,
+    publisherApiTokens,
     warnings,
   };
+}
+
+function resolvePublisherApiTokens(
+  config: ConfigV2 | null,
+  rawSource: string,
+  warnings: string[],
+): ResolvedPublisherApiToken[] {
+  if (!config) return [];
+  if (!config.publisher_api.enabled && config.publisher_api.tokens.length > 0) {
+    warnings.push(
+      "publisher_api.tokens defined but publisher_api.enabled=false — tokens are inert until enabled",
+    );
+  }
+  if (
+    config.publisher_api.enabled &&
+    config.publisher_api.tokens.length === 0
+  ) {
+    warnings.push(
+      "publisher_api.enabled=true but no tokens defined — no callers will be able to authenticate",
+    );
+  }
+  return config.publisher_api.tokens.map((token) => {
+    if (isLiteralTokenInRaw(rawSource, token.name)) {
+      warnings.push(
+        `publisher_api.tokens[name='${token.name}'] secret_ref looks like a literal; prefer \${VAR} interpolation`,
+      );
+    }
+    return {
+      name: token.name,
+      secret: token.secret_ref,
+      hash: new Uint8Array(
+        createHash("sha256").update(token.secret_ref, "utf8").digest(),
+      ),
+      publisher_ids: [...token.publisher_ids],
+      scopes: [...token.scopes],
+    };
+  });
 }
 
 function resolveAgentApiTokens(
@@ -418,6 +472,7 @@ function pathToString(segments: (string | number)[]): string {
 function collectSecrets(
   config: Config,
   agentApiTokens: ResolvedAgentApiToken[] = [],
+  publisherApiTokens: ResolvedPublisherApiToken[] = [],
   publicV2: ConfigV2 | null = null,
 ): string[] {
   const secrets = new Set<string>();
@@ -435,12 +490,19 @@ function collectSecrets(
   for (const tok of agentApiTokens) {
     if (tok.secret) secrets.add(tok.secret);
   }
+  for (const tok of publisherApiTokens) {
+    if (tok.secret) secrets.add(tok.secret);
+  }
   for (const agent of publicV2?.agents ?? []) {
     for (const endpoint of agent.endpoints) {
       if (endpoint.platform !== "buzz") continue;
       secrets.add(endpoint.private_key);
       if (endpoint.auth_tag) secrets.add(endpoint.auth_tag);
     }
+  }
+  for (const publisher of publicV2?.publishers ?? []) {
+    secrets.add(publisher.endpoint.private_key);
+    secrets.add(publisher.endpoint.auth_tag);
   }
   // Redact every configured secret. Schema validation already enforces a
   // 32-char minimum on webhook + agent-api secrets; bot tokens come from

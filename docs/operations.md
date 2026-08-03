@@ -95,11 +95,11 @@ Every startup runs crash recovery:
 ```sh
 torana migrate --config ./torana.yaml            # apply pending
 torana migrate --config ./torana.yaml --dry-run  # preview steps + sanitized backfill counts
-torana migrate --config ./torana.yaml --to 5     # explicit bridge activation
+torana migrate --config ./torana.yaml --to 6     # explicit bridge activation
 ```
 
 The compatibility bridge can run v1 configuration on schema v3 or v5. It does
-not migrate merely because it starts. A v2 configuration requires schema v5.
+not migrate merely because it starts. A v2 configuration requires schema v6.
 Use `--auto-migrate` only when an explicit automatic schema jump is intended.
 
 ### v3 → v5 compatibility bridge
@@ -109,7 +109,7 @@ Use this sequence for the Phase 2 rollout:
 1. Deploy and soak the bridge binary on schema v3 with the existing v1 config.
 2. Stop intake for the maintenance window.
 3. Run `torana migrate --dry-run` and review the sanitized backfill counts.
-4. Run `torana migrate --to 5`. Torana writes
+4. Run `torana migrate --to 6`. Torana writes
    `gateway.db.pre-v5`, applies the normalized schema, and enables incremental
    auto-vacuum before intake resumes.
 5. Run `torana doctor`, restart the bridge on schema v5, and soak it before
