@@ -70,6 +70,7 @@ interface ParsedArgs {
   server: string | null;
   token: string | null;
   profile: string | null;
+  publisherProbe: string | null;
   migrationTo: number | null;
   confirmShared: boolean;
   deadLetterPending: boolean;
@@ -89,6 +90,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     server: null,
     token: null,
     profile: null,
+    publisherProbe: null,
     migrationTo: null,
     confirmShared: false,
     deadLetterPending: false,
@@ -129,6 +131,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.token = argv[++i] ?? null;
     } else if (a === "--profile") {
       args.profile = argv[++i] ?? null;
+    } else if (a === "--publisher-probe") {
+      const next = argv[++i];
+      if (!next) throw new Error("--publisher-probe requires a publisher id");
+      args.publisherProbe = next;
     } else if (a.startsWith("--config=")) {
       args.configPath = a.slice("--config=".length);
     } else if (a.startsWith("--format=")) {
@@ -143,6 +149,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.token = a.slice("--token=".length);
     } else if (a.startsWith("--profile=")) {
       args.profile = a.slice("--profile=".length);
+    } else if (a.startsWith("--publisher-probe=")) {
+      const value = a.slice("--publisher-probe=".length);
+      if (!value) throw new Error("--publisher-probe requires a publisher id");
+      args.publisherProbe = value;
     } else if (a.startsWith("--to=")) {
       args.migrationTo = Number(a.slice("--to=".length));
     } else if (a.startsWith("--limit=")) {
@@ -254,6 +264,12 @@ async function main(argv: string[]): Promise<void> {
 
       let result: { checks: DoctorCheck[] };
       if (remote) {
+        if (args.publisherProbe) {
+          console.error(
+            "doctor: --publisher-probe is available only with a local config",
+          );
+          process.exit(2);
+        }
         if (!remoteToken) {
           console.error(
             "doctor: --server supplied without --token (or TORANA_TOKEN)",
@@ -270,6 +286,7 @@ async function main(argv: string[]): Promise<void> {
           configPath: path,
           sourceConfigVersion: normalized.sourceVersion,
           normalized,
+          publisherProbeId: args.publisherProbe ?? undefined,
         });
       }
       if (args.format === "json") {
@@ -640,6 +657,7 @@ Gateway options:
   --server <url>        (doctor) Run remote R001..R003 probes against <url>
   --token <tok>         (doctor) Bearer token for remote probe
   --profile <name>      (doctor) Resolve --server + --token from the profile store
+  --publisher-probe <id> (doctor) Authenticate and verify one disabled publisher destination without publishing
 
 Run \`torana <client-cmd> --help\` for per-subcommand options + exit codes.
 

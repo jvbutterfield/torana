@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.3] - 2026-08-03
+
+### Added
+
+- An explicit disabled publisher doctor probe that authenticates transiently,
+  confirms exact configured destination membership, and never publishes.
+
+### Security
+
+- Publisher activation now fails closed when the requested publisher is
+  unknown, relay authentication fails, or the pinned destination is absent.
+
 ## [2.0.0-rc.2] - 2026-08-03
 
 ### Added

@@ -42,6 +42,18 @@ Configuration validation derives the Buzz public key and compares it to
 and rejects unknown publisher fields. Live destination membership is checked
 by the outbound-only relay supervisor before a new publication is accepted.
 
+Before enabling a publisher, probe its disabled endpoint without opening
+publish intake:
+
+```sh
+torana doctor --config /path/to/torana.yaml --publisher-probe dev-team
+```
+
+The probe transiently authenticates with the configured publisher identity,
+requires the exact configured destination in live channel membership, and
+then disconnects. Config loading verifies the full derived public-key pin and
+owner authorization first. The probe never publishes a message.
+
 ## HTTP contract
 
 `POST /v1/publishers/:publisher_id/messages` requires a publisher bearer and
