@@ -74,6 +74,18 @@ describe("publisher configuration and durable enqueue", () => {
     const { dir, value } = fixture();
     try {
       value.publishers[0].enabled = false;
+      value.agents[0].endpoints.push({
+        id: "alpha-buzz",
+        platform: "buzz",
+        enabled: true,
+        community_id: "primary",
+        relay_url: "wss://relay.example.com",
+        private_key: "73".padStart(64, "0"),
+        respond_to: "allowlist",
+        allowed_pubkeys: [OWNER_PUBKEY],
+        subscribe: "mentions_and_dms",
+        channel_overrides: {},
+      });
       const loaded = loadConfigFromString(yaml.dump(value), {
         skipInterpolation: true,
       });
@@ -106,12 +118,33 @@ describe("publisher configuration and durable enqueue", () => {
         },
       });
       expect(probeCalls).toBe(1);
-      expect(result.checks.find((check) => check.id === "C018")?.status).toBe(
-        "ok",
-      );
-      expect(result.checks.find((check) => check.id === "C020")?.status).toBe(
-        "ok",
-      );
+      expect(result.checks.find((check) => check.id === "C016")).toEqual({
+        id: "C016",
+        status: "skip",
+        detail:
+          "publisher probe is transient and does not require the gateway lock",
+      });
+      expect(
+        result.checks.find(
+          (check) => check.id === "C018" && check.detail.includes("alpha-buzz"),
+        ),
+      ).toEqual({
+        id: "C018",
+        status: "skip",
+        detail:
+          "Buzz endpoint 'alpha-buzz' is not the requested publisher endpoint; relay auth not probed",
+      });
+      expect(
+        result.checks.find(
+          (check) =>
+            check.id === "C018" && check.detail.includes("dev-team-buzz"),
+        )?.status,
+      ).toBe("ok");
+      expect(
+        result.checks.find(
+          (check) => check.id === "C020" && check.detail.includes("dev-team"),
+        )?.status,
+      ).toBe("ok");
       const publisherProbe = result.checks.find((check) => check.id === "C028");
       expect(publisherProbe?.status).toBe("ok");
       expect(publisherProbe?.detail).toContain("no message published");
