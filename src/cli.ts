@@ -38,6 +38,7 @@ import { runBots } from "./cli/bots.js";
 import { runConfig } from "./cli/config.js";
 import { runSkills } from "./cli/skills.js";
 import { runBuzz } from "./cli/buzz.js";
+import { runPublish } from "./cli/publish.js";
 import {
   defaultProfilesPath,
   loadProfiles,
@@ -56,6 +57,7 @@ const AGENT_API_SUBCOMMANDS = new Set([
   "config",
   "skills",
   "buzz",
+  "publish",
 ]);
 
 interface ParsedArgs {
@@ -541,8 +543,8 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "migrate": {
-      if (args.migrationTo !== null && args.migrationTo !== 5) {
-        throw new Error("migrate currently supports only --to 5");
+      if (args.migrationTo !== null && args.migrationTo !== 6) {
+        throw new Error("migrate currently supports only --to 6");
       }
       const path = resolveConfigPath(args.configPath);
       const { config, secrets } = loadConfigFromFile(path);
@@ -558,8 +560,14 @@ async function main(argv: string[]): Promise<void> {
     }
     case "start": {
       const path = resolveConfigPath(args.configPath);
-      const { config, normalized, secrets, agentApiTokens, warnings } =
-        loadConfigFromFile(path);
+      const {
+        config,
+        normalized,
+        secrets,
+        agentApiTokens,
+        publisherApiTokens,
+        warnings,
+      } = loadConfigFromFile(path);
       setSecrets(secrets);
       setLogLevel(config.gateway.log_level);
       setLogFormat(
@@ -573,6 +581,7 @@ async function main(argv: string[]): Promise<void> {
         secrets,
         autoMigrate: args.autoMigrate,
         agentApiTokens,
+        publisherApiTokens,
       });
 
       const onSignal = async (signal: string): Promise<void> => {
@@ -619,12 +628,14 @@ Agent-API client commands (require --server + --token, env equivalents, or a pro
   config <sub>               Manage the CLI profile store (~/.config/torana/config.toml)
   skills install --host=H    Install skill packages into Claude Code / Codex
   buzz call                   Execute one typed, endpoint-scoped Buzz broker request
+  publish <publisher>         Durably publish stdin/file content through a fixed publisher
+  publish status <publisher>  Reconcile one publisher idempotency key
 
 Gateway options:
   --config, -c <path>   Path to torana.yaml (defaults to $TORANA_CONFIG or ./torana.yaml)
   --auto-migrate        (start) Apply DB migrations automatically if stale
   --dry-run             (migrate) Print planned steps without applying
-  --to 5                (migrate) Explicit schema-v5 bridge activation
+  --to 6                (migrate) Explicit schema-v6 bridge activation
   --format <text|json>  (doctor) Output format (default: text)
   --server <url>        (doctor) Run remote R001..R003 probes against <url>
   --token <tok>         (doctor) Bearer token for remote probe
@@ -663,6 +674,11 @@ async function dispatchAgentApi(argv: string[]): Promise<number> {
       case "buzz": {
         const inner = chain.slice(1).concat(rest);
         const r = await runBuzz(inner);
+        return emit(r);
+      }
+
+      case "publish": {
+        const r = await runPublish(chain, rest);
         return emit(r);
       }
 

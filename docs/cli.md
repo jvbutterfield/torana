@@ -134,11 +134,11 @@ Prints the redacted resolved config as JSON on success.
 Apply or preview pending DB migrations.
 
 ```
-torana migrate [--config PATH] [--dry-run] [--to 5]
+torana migrate [--config PATH] [--dry-run] [--to 6]
 ```
 
 `--dry-run` prints planned steps and sanitized backfill row counts as JSON
-without touching the DB. `--to 5` makes the compatibility-bridge activation
+without touching the DB. `--to 6` makes the compatibility-bridge activation
 explicit during the maintenance window.
 
 ### Local operator commands

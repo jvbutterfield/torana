@@ -176,6 +176,13 @@ function observe(h: HistogramState, v: number): void {
 export type AcquireOutcome = "reuse" | "spawn" | "capacity" | "busy";
 export type AskRoute = "ask" | "send";
 export type EvictionReason = "idle" | "hard" | "lru";
+export type PublisherOutcome =
+  | "accepted"
+  | "replayed"
+  | "conflict"
+  | "rate_limited"
+  | "rejected"
+  | "failed";
 
 export interface OperationalMetricRow {
   endpointId: string;
@@ -211,6 +218,15 @@ export class Metrics {
   private agentApiRequestHistograms = new Map<string, HistogramState>();
   // Per-bot per-outcome pool acquire duration histograms.
   private agentApiAcquireHistograms = new Map<string, HistogramState>();
+  private publisherRequests = new Map<
+    string,
+    Record<PublisherOutcome, number>
+  >();
+  private publisherLatency = new Map<string, HistogramState>();
+  private publisherDeliveries = new Map<
+    string,
+    Record<"sent" | "retry" | "failed" | "dead", number>
+  >();
   private startTime = Date.now();
 
   constructor(config: Config) {
@@ -232,6 +248,44 @@ export class Metrics {
 
   recordTelegramCall(bucket: keyof TelegramApiCounters): void {
     this.telegramCounters[bucket] += 1;
+  }
+
+  recordPublisherRequest(
+    publisherId: string,
+    outcome: PublisherOutcome,
+    durationMs: number,
+  ): void {
+    let counters = this.publisherRequests.get(publisherId);
+    if (!counters) {
+      counters = {
+        accepted: 0,
+        replayed: 0,
+        conflict: 0,
+        rate_limited: 0,
+        rejected: 0,
+        failed: 0,
+      };
+      this.publisherRequests.set(publisherId, counters);
+    }
+    counters[outcome] += 1;
+    let histogram = this.publisherLatency.get(publisherId);
+    if (!histogram) {
+      histogram = zeroHistogram();
+      this.publisherLatency.set(publisherId, histogram);
+    }
+    observe(histogram, durationMs);
+  }
+
+  recordPublisherDelivery(
+    publisherId: string,
+    outcome: "sent" | "retry" | "failed" | "dead",
+  ): void {
+    let counters = this.publisherDeliveries.get(publisherId);
+    if (!counters) {
+      counters = { sent: 0, retry: 0, failed: 0, dead: 0 };
+      this.publisherDeliveries.set(publisherId, counters);
+    }
+    counters[outcome] += 1;
   }
 
   recordOutboundFailure(botId: BotId, operation: "send" | "edit"): void {
@@ -453,6 +507,53 @@ export class Metrics {
     lines.push("# HELP outbox_depth Pending outbox rows per bot.");
     lines.push("# TYPE outbox_depth gauge");
     // outbox depth is computed at scrape time by caller; metrics.ts doesn't own the DB.
+
+    if (this.publisherRequests.size > 0) {
+      lines.push(
+        "# HELP torana_publisher_requests_total Publisher API requests by configured publisher and bounded outcome.",
+      );
+      lines.push("# TYPE torana_publisher_requests_total counter");
+      for (const [publisherId, counters] of this.publisherRequests) {
+        for (const [outcome, value] of Object.entries(counters)) {
+          lines.push(
+            `torana_publisher_requests_total{publisher_id="${publisherId}",outcome="${outcome}"} ${value}`,
+          );
+        }
+      }
+      lines.push(
+        "# HELP torana_publisher_request_duration_ms Publisher API durable-accept latency.",
+      );
+      lines.push("# TYPE torana_publisher_request_duration_ms histogram");
+      for (const [publisherId, histogram] of this.publisherLatency) {
+        for (let i = 0; i < histogram.buckets.length; i++) {
+          lines.push(
+            `torana_publisher_request_duration_ms_bucket{publisher_id="${publisherId}",le="${histogram.buckets[i]}"} ${histogram.counts[i]}`,
+          );
+        }
+        lines.push(
+          `torana_publisher_request_duration_ms_bucket{publisher_id="${publisherId}",le="+Inf"} ${histogram.count}`,
+        );
+        lines.push(
+          `torana_publisher_request_duration_ms_sum{publisher_id="${publisherId}"} ${histogram.sum}`,
+        );
+        lines.push(
+          `torana_publisher_request_duration_ms_count{publisher_id="${publisherId}"} ${histogram.count}`,
+        );
+      }
+    }
+    if (this.publisherDeliveries.size > 0) {
+      lines.push(
+        "# HELP torana_publisher_deliveries_total Publisher outbox delivery transitions.",
+      );
+      lines.push("# TYPE torana_publisher_deliveries_total counter");
+      for (const [publisherId, counters] of this.publisherDeliveries) {
+        for (const [outcome, value] of Object.entries(counters)) {
+          lines.push(
+            `torana_publisher_deliveries_total{publisher_id="${publisherId}",outcome="${outcome}"} ${value}`,
+          );
+        }
+      }
+    }
 
     lines.push(
       "# HELP outbox_attempts_total Outbox delivery attempts by result.",

@@ -6,6 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.2] - 2026-08-03
+
+### Added
+
+- Outbound-only service publishers with no runner or inbound subscription,
+  scoped publisher authentication, strict publish/status HTTP routes, and a
+  content-safe CLI.
+- Atomic idempotent Buzz enqueue, immutable signed-event retries, bounded
+  publisher backlog/retention/metrics, and SQLite schema v6.
+
+### Security
+
+- Publisher identities and destinations are server-pinned; key derivation,
+  owner authorization, membership health, scope separation, redaction, request
+  deadlines, and logical database caps fail closed.
+
+### Migration
+
+- Run `torana migrate --to 6` under the documented snapshot and rollback gate
+  before configuring publishers. Do not run a v5-only binary after accepting a
+  publisher request.
+
 ## [2.0.0-rc.1] - 2026-08-02
 
 ### Added

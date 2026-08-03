@@ -41,6 +41,32 @@ export interface BuzzCursorState {
 
 export type EndpointLifecycleState = "active" | "draining" | "disabled";
 
+export type PublisherEnqueueResult =
+  | { kind: "accepted"; publicationId: number; outboxId: number }
+  | { kind: "replay"; publicationId: number; outboxId: number }
+  | { kind: "conflict" }
+  | {
+      kind: "rejected";
+      reason:
+        | "publisher_disabled"
+        | "publisher_draining"
+        | "publisher_unhealthy"
+        | "publisher_rate_limited"
+        | "publisher_backlog_full"
+        | "publisher_retained_storage_full"
+        | "database_storage_full";
+    };
+
+export interface PublisherPublicationStatus {
+  publicationId: number;
+  outboxId: number;
+  status: "pending" | "in_flight" | "retrying" | "sent" | "failed" | "dead";
+  errorClass: string | null;
+  createdAt: string;
+  lastAttemptAt: string | null;
+  sentAt: string | null;
+}
+
 /**
  * Lock down the DB file + its WAL / SHM siblings to 0600 (owner rw, nobody
  * else). The DB contains every bot token (stored verbatim so we can call
@@ -70,7 +96,7 @@ function chmodDbFiles(dbPath: string): void {
   }
 }
 
-/** Schema-v5 wrapper. Legacy bot/Telegram columns are dual-written for rollback. */
+/** Schema-v6 wrapper. Legacy bot/Telegram columns are dual-written for rollback. */
 export class GatewayDB {
   private _db: Database;
   private normalizedSchema: boolean;
@@ -147,7 +173,10 @@ export class GatewayDB {
     log.info("opening database", { path: dbPath });
     this._db = new Database(dbPath, { create: true });
     this._db.exec("PRAGMA journal_mode=WAL");
-    this._db.exec("PRAGMA busy_timeout=5000");
+    // Publisher requests have a four-second server deadline. Keep SQLite's
+    // lock wait below that boundary so an ambiguous client timeout cannot
+    // leave a transaction still waiting to begin.
+    this._db.exec("PRAGMA busy_timeout=3000");
     this._db.exec("PRAGMA synchronous=NORMAL");
     this._db.exec("PRAGMA foreign_keys=ON");
     this.normalizedSchema = !!this._db
@@ -162,7 +191,7 @@ export class GatewayDB {
       if (mode.auto_vacuum !== 2) {
         this._db.close();
         throw new Error(
-          "schema v5 requires incremental auto-vacuum; rerun the schema-v5 migration maintenance step",
+          "normalized schema requires incremental auto-vacuum; rerun migration maintenance",
         );
       }
     }
@@ -1379,7 +1408,7 @@ export class GatewayDB {
     | { kind: "inserted"; id: number; receivedSeq: number }
     | { kind: "duplicate"; id: number; status: string } {
     if (!this.normalizedSchema)
-      throw new Error("Buzz intake requires normalized schema v5");
+      throw new Error("Buzz intake requires the normalized schema");
     return this.transactionImmediate(() => {
       const existing = this.getInboundEventStatus(
         args.event.endpointId,
@@ -2469,6 +2498,236 @@ export class GatewayDB {
       args.signedEventId ?? null,
     );
     return Number(result.lastInsertRowid);
+  }
+
+  /**
+   * Atomically deduplicate, admit, sign, and enqueue one publisher message.
+   * The callback must be synchronous and side-effect-free except for CPU-only
+   * event signing; it runs while SQLite holds an IMMEDIATE write lock.
+   */
+  enqueuePublisherPublication(args: {
+    publisherId: string;
+    endpointId: string;
+    conversation: ConversationRef;
+    idempotencyKey: string;
+    payloadSha256: string;
+    operation: OutboundOperation;
+    healthy: boolean;
+    maxPending: number;
+    maxRetained: number;
+    maxRetainedBytes: number;
+    ratePerMinute: number;
+    burst: number;
+    databaseSizeCapBytes: number;
+    admissionBytes: number;
+    prepare: () => {
+      payloadJson?: string;
+      signedPayloadJson?: string | null;
+      signedEventId?: string | null;
+    };
+  }): PublisherEnqueueResult {
+    if (!this.normalizedSchema) {
+      return { kind: "rejected", reason: "publisher_disabled" };
+    }
+    return this.transactionImmediate(() => {
+      const existing = this._db
+        .query(
+          `SELECT id, outbox_id, payload_sha256
+           FROM publisher_publications
+           WHERE publisher_id=? AND idempotency_key=?`,
+        )
+        .get(args.publisherId, args.idempotencyKey) as {
+        id: number;
+        outbox_id: number;
+        payload_sha256: string;
+      } | null;
+      if (existing) {
+        return existing.payload_sha256 === args.payloadSha256
+          ? {
+              kind: "replay" as const,
+              publicationId: existing.id,
+              outboxId: existing.outbox_id,
+            }
+          : { kind: "conflict" as const };
+      }
+
+      const endpoint = this.getEndpointState(args.endpointId);
+      if (!endpoint || endpoint.lifecycleState === "disabled") {
+        return {
+          kind: "rejected" as const,
+          reason: "publisher_disabled" as const,
+        };
+      }
+      if (endpoint.lifecycleState === "draining") {
+        return {
+          kind: "rejected" as const,
+          reason: "publisher_draining" as const,
+        };
+      }
+      if (!args.healthy) {
+        return {
+          kind: "rejected" as const,
+          reason: "publisher_unhealthy" as const,
+        };
+      }
+
+      const counts = this._db
+        .query(
+          `SELECT
+             SUM(CASE WHEN o.status IN ('pending','retrying','in_flight') THEN 1 ELSE 0 END) AS pending,
+             COUNT(*) AS retained,
+             COALESCE(SUM(length(o.payload_json) + COALESCE(length(o.signed_payload_json), 0)), 0) AS bytes,
+             SUM(CASE WHEN p.created_at >= datetime('now','-1 minute') THEN 1 ELSE 0 END) AS minute_count,
+             SUM(CASE WHEN p.created_at >= datetime('now','-1 second') THEN 1 ELSE 0 END) AS burst_count
+           FROM publisher_publications p
+           JOIN outbox o ON o.id=p.outbox_id
+           WHERE p.publisher_id=?`,
+        )
+        .get(args.publisherId) as {
+        pending: number | null;
+        retained: number;
+        bytes: number;
+        minute_count: number | null;
+        burst_count: number | null;
+      };
+      if (
+        Number(counts.minute_count ?? 0) >= args.ratePerMinute ||
+        Number(counts.burst_count ?? 0) >= args.burst
+      ) {
+        return {
+          kind: "rejected" as const,
+          reason: "publisher_rate_limited" as const,
+        };
+      }
+      if (Number(counts.pending ?? 0) >= args.maxPending) {
+        return {
+          kind: "rejected" as const,
+          reason: "publisher_backlog_full" as const,
+        };
+      }
+      if (
+        Number(counts.retained) >= args.maxRetained ||
+        Number(counts.bytes) + args.admissionBytes > args.maxRetainedBytes
+      ) {
+        return {
+          kind: "rejected" as const,
+          reason: "publisher_retained_storage_full" as const,
+        };
+      }
+      const pageCount = Number(
+        (this._db.query("PRAGMA page_count").get() as { page_count: number })
+          .page_count,
+      );
+      const pageSize = Number(
+        (this._db.query("PRAGMA page_size").get() as { page_size: number })
+          .page_size,
+      );
+      if (
+        pageCount * pageSize + args.admissionBytes >
+        args.databaseSizeCapBytes
+      ) {
+        return {
+          kind: "rejected" as const,
+          reason: "database_storage_full" as const,
+        };
+      }
+
+      const prepared = args.prepare();
+      const outboxId = this.insertOutboundOperation({
+        turnId: null,
+        agentId: args.publisherId,
+        conversation: args.conversation,
+        operation: args.operation,
+        payloadJson: prepared.payloadJson ?? JSON.stringify(args.operation),
+        signedPayloadJson: prepared.signedPayloadJson,
+        signedEventId: prepared.signedEventId,
+      });
+      const publication = this._db
+        .prepare(
+          `INSERT INTO publisher_publications
+             (publisher_id, idempotency_key, payload_sha256, outbox_id)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run(
+          args.publisherId,
+          args.idempotencyKey,
+          args.payloadSha256,
+          outboxId,
+        );
+      return {
+        kind: "accepted" as const,
+        publicationId: Number(publication.lastInsertRowid),
+        outboxId,
+      };
+    });
+  }
+
+  getPublisherPublication(
+    publisherId: string,
+    idempotencyKey: string,
+  ): PublisherPublicationStatus | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        `SELECT p.id, p.outbox_id, p.created_at, o.status, o.last_error,
+                o.next_attempt_at
+         FROM publisher_publications p
+         JOIN outbox o ON o.id=p.outbox_id
+         WHERE p.publisher_id=? AND p.idempotency_key=?`,
+      )
+      .get(publisherId, idempotencyKey) as {
+      id: number;
+      outbox_id: number;
+      created_at: string;
+      status: PublisherPublicationStatus["status"];
+      last_error: string | null;
+      next_attempt_at: string | null;
+    } | null;
+    if (!row) return null;
+    return {
+      publicationId: row.id,
+      outboxId: row.outbox_id,
+      status: row.status,
+      errorClass: safePublisherErrorClass(row.last_error),
+      createdAt: row.created_at,
+      lastAttemptAt: row.next_attempt_at,
+      sentAt: row.status === "sent" ? row.created_at : null,
+    };
+  }
+
+  getPublisherIdForOutbox(outboxId: number): string | null {
+    if (!this.normalizedSchema) return null;
+    const row = this._db
+      .query(
+        "SELECT publisher_id FROM publisher_publications WHERE outbox_id=?",
+      )
+      .get(outboxId) as { publisher_id: string } | null;
+    return row?.publisher_id ?? null;
+  }
+
+  sweepPublisherRetention(cutoffMs: number): number {
+    if (!this.normalizedSchema) return 0;
+    return this.transactionImmediate(() => {
+      const rows = this._db
+        .query(
+          `SELECT p.id, p.outbox_id
+           FROM publisher_publications p JOIN outbox o ON o.id=p.outbox_id
+           WHERE CAST(strftime('%s', p.created_at) AS INTEGER) * 1000 < ?
+             AND o.status IN ('sent','failed','dead')`,
+        )
+        .all(cutoffMs) as Array<{ id: number; outbox_id: number }>;
+      const deletePublication = this._db.prepare(
+        "DELETE FROM publisher_publications WHERE id=?",
+      );
+      const deleteOutbox = this._db.prepare(
+        "DELETE FROM outbox WHERE id=? AND status IN ('sent','failed','dead')",
+      );
+      for (const row of rows) {
+        deletePublication.run(row.id);
+        deleteOutbox.run(row.outbox_id);
+      }
+      return rows.length;
+    });
   }
 
   persistPreparedOutbound(
@@ -3683,4 +3942,18 @@ function legacyDecimalOrNull(value: string): number | null {
   if (!/^-?[1-9]\d*$/.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function safePublisherErrorClass(value: string | null): string | null {
+  if (!value) return null;
+  const lower = value.toLowerCase();
+  if (lower.includes("rate") || lower.includes("429")) return "rate_limited";
+  if (lower.includes("auth") || lower.includes("permission"))
+    return "authorization";
+  if (lower.includes("timeout")) return "timeout";
+  if (lower.includes("disconnect") || lower.includes("network"))
+    return "network";
+  if (lower.includes("membership") || lower.includes("channel"))
+    return "membership";
+  return "delivery_failed";
 }

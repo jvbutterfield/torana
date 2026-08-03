@@ -1,5 +1,5 @@
 -- Legacy-compatible schema base. Fresh installs immediately apply the
--- expand-only 0004/0005 schema-v5 migrations; existing v0-v4 databases use
+-- expand-only 0004/0005/0006 normalized migrations; existing databases use
 -- the same ordered migration chain.
 --
 -- Keep columns ordered logically. Indexes at the bottom.

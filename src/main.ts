@@ -5,7 +5,10 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { Config } from "./config/schema.js";
-import type { ResolvedAgentApiToken } from "./config/load.js";
+import type {
+  ResolvedAgentApiToken,
+  ResolvedPublisherApiToken,
+} from "./config/load.js";
 import { normalizedV1Model, type NormalizedConfigModel } from "./config/v2.js";
 import {
   logger,
@@ -46,6 +49,8 @@ import {
 } from "./platform/buzz/transport.js";
 import { BuzzCredentialBroker } from "./broker/buzz-broker.js";
 import { DataDirLock } from "./data-dir-lock.js";
+import { PublisherService } from "./publisher/service.js";
+import { registerPublisherRoutes } from "./publisher/router.js";
 
 const log = logger("main");
 
@@ -55,6 +60,7 @@ export interface StartOptions {
   autoMigrate?: boolean;
   /** Resolved agent-api tokens from load.ts — empty when the feature is disabled. */
   agentApiTokens?: ResolvedAgentApiToken[];
+  publisherApiTokens?: ResolvedPublisherApiToken[];
   /** Platform-neutral endpoint/session metadata from either config version. */
   normalized?: NormalizedConfigModel;
 }
@@ -103,7 +109,7 @@ export async function startGateway(
     }
     if (bridgeOnV3) {
       log.warn(
-        "running the compatibility bridge on schema v3; use 'torana migrate --to 5' during the maintenance window",
+        "running the compatibility bridge on schema v3; use 'torana migrate --to 6' during the maintenance window",
       );
     }
   }
@@ -272,6 +278,44 @@ export async function startGateway(
     );
     (agentApiIdempotencySweep as unknown as { unref?: () => void }).unref?.();
     log.info("agent_api routes registered", { tokens: tokens.length });
+  }
+
+  const publisherUnregs: Unregister[] = [];
+  let publisherRetentionSweep: ReturnType<typeof setInterval> | null = null;
+  if (normalized.publisherApi?.enabled) {
+    const publisherService = new PublisherService({
+      normalized,
+      db,
+      outbox,
+      health: () => buzzTransport?.snapshots() ?? [],
+    });
+    publisherUnregs.push(
+      ...registerPublisherRoutes(server.router, {
+        tokens: opts.publisherApiTokens ?? [],
+        config: normalized.publisherApi,
+        db,
+        service: publisherService,
+        metrics,
+      }),
+    );
+    const retention = normalized.publisherApi.idempotency_retention_ms;
+    publisherRetentionSweep = setInterval(
+      () => {
+        try {
+          db.sweepPublisherRetention(Date.now() - retention);
+        } catch (error) {
+          log.warn("publisher retention sweep failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+      60 * 60 * 1000,
+    );
+    (publisherRetentionSweep as unknown as { unref?: () => void }).unref?.();
+    log.info("publisher_api routes registered", {
+      publishers: normalized.publishers?.length ?? 0,
+      tokens: opts.publisherApiTokens?.length ?? 0,
+    });
   }
 
   // Transports.
@@ -471,9 +515,17 @@ export async function startGateway(
         clearInterval(attachmentSweeperTimer);
         clearInterval(orphanSweeperTimer);
         if (agentApiIdempotencySweep) clearInterval(agentApiIdempotencySweep);
+        if (publisherRetentionSweep) clearInterval(publisherRetentionSweep);
 
         // Unregister agent-api routes so new calls 404 before we tear down.
         for (const u of agentApiUnregs) {
+          try {
+            u();
+          } catch {
+            /* best-effort */
+          }
+        }
+        for (const u of publisherUnregs) {
           try {
             u();
           } catch {
