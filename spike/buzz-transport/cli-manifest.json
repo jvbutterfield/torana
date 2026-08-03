@@ -7,7 +7,7 @@
     "stdout": "",
     "stderr": "{\"error\":\"user_error\",\"message\":\"error: unexpected argument '--version' found\\n\\nUsage: buzz [OPTIONS] <COMMAND>\\n\\nFor more information, try '--help'.\\n\",\"retryable\":false}"
   },
-  "sha256": "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
+  "sha256": "97a80164a98fa8d11ffb307a9f360a6754e9c80b537c145f9e61e07cd198a770",
   "commands": [
     {
       "command": "agents",
@@ -303,6 +303,32 @@
         },
         {
           "command": "status"
+        },
+        {
+          "command": "update"
+        }
+      ]
+    },
+    {
+      "command": "projects",
+      "subcommands": [
+        {
+          "command": "add-repo"
+        },
+        {
+          "command": "create"
+        },
+        {
+          "command": "delete"
+        },
+        {
+          "command": "get"
+        },
+        {
+          "command": "list"
+        },
+        {
+          "command": "remove-repo"
         },
         {
           "command": "update"

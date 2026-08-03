@@ -346,6 +346,8 @@ The E2E and soak tests require authenticated `claude` / `codex` binaries and bur
 - [`docs/transports.md`](docs/transports.md) — webhook vs polling
 - [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own runner
 - [`docs/security.md`](docs/security.md) — threat model, ACL, secrets
+- [`docs/buzz-cli-upgrades.md`](docs/buzz-cli-upgrades.md) — pinned Buzz CLI
+  provenance, policy review, coordinated release, deployment, and rollback
 - [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
 - [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, send, side-sessions, tokens)
 - [`docs/publisher-api.md`](docs/publisher-api.md) — outbound-only publisher configuration, API, and CLI

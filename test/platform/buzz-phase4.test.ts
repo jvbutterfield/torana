@@ -1066,16 +1066,13 @@ describe("Phase 4 Buzz relay integration", () => {
       () => transport.snapshots()[0]?.state === "healthy",
       "publisher healthy",
     );
-    await waitFor(
-      () => {
-        const subscriptions = relay.activeSubscriptions();
-        return (
-          subscriptions.length === 1 &&
-          subscriptions[0]![0].includes("membership")
-        );
-      },
-      "membership-only subscription",
-    );
+    await waitFor(() => {
+      const subscriptions = relay.activeSubscriptions();
+      return (
+        subscriptions.length === 1 &&
+        subscriptions[0]![0].includes("membership")
+      );
+    }, "membership-only subscription");
     const [[subscriptionId, filters]] = relay.activeSubscriptions();
     expect(subscriptionId).toContain("membership");
     expect(filters.some((filter) => filter["#h"] !== undefined)).toBe(false);

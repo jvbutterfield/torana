@@ -93,6 +93,10 @@ const MAINTAINER_ADDITIONS = new Set([
   "emoji.rm",
   "emoji.set",
   "mem.rm",
+  "projects.add-repo",
+  "projects.create",
+  "projects.remove-repo",
+  "projects.update",
   "repos.bind",
   "repos.create",
   "workflows.create",
@@ -112,6 +116,7 @@ export const DANGEROUS_BUZZ_COMMANDS = new Set([
   "moderation.timeout",
   "moderation.unban",
   "moderation.untimeout",
+  "projects.delete",
   "repos.protect.remove",
   "repos.protect.set",
   "workflows.approve",
@@ -170,9 +175,9 @@ export function buzzCommandPath(input: {
 }
 
 export const BUZZ_CLI_PIN = Object.freeze({
-  applicationVersion: "0.5.3",
-  tag: "desktop-v0.5.3",
-  commit: "3a96acea09b4a9e3f02c3a26cfb0607d2ccacf42",
+  applicationVersion: "0.5.4",
+  tag: "desktop-v0.5.4",
+  commit: "651f6372754e60e3f936b3397040eb0f1e44c9f3",
   sha256: manifest.sha256,
   manifestSchemaVersion: manifest.schemaVersion,
 });

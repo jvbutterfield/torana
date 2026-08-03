@@ -103,7 +103,7 @@ const PlatformsSchema = z
           .string()
           .regex(/^[0-9a-f]{64}$/)
           .default(
-            "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
+            "97a80164a98fa8d11ffb307a9f360a6754e9c80b537c145f9e61e07cd198a770",
           ),
         reconnect: z
           .object({
@@ -1444,7 +1444,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       enabled: false,
       cli_path: "buzz",
       cli_sha256:
-        "1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee",
+        "97a80164a98fa8d11ffb307a9f360a6754e9c80b537c145f9e61e07cd198a770",
       reconnect: { base_ms: 1000, cap_ms: 30_000 },
       subscription: {
         historical_limit: 500,

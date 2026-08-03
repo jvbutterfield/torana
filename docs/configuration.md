@@ -32,8 +32,8 @@ platforms:
   buzz:
     enabled: true
     cli_path: buzz
-    # Exact checksum of the pinned Buzz 0.5.3 binary in this image/host.
-    cli_sha256: 1f650920c370d2ba042a9e17cf381be65f43fc9e909859ac248306445a7e0aee
+    # Exact checksum of the pinned Buzz 0.5.4 binary in this image/host.
+    cli_sha256: 97a80164a98fa8d11ffb307a9f360a6754e9c80b537c145f9e61e07cd198a770
     message_max_bytes: 65536
     max_frame_bytes: 524288
 
@@ -87,13 +87,14 @@ Available policies are:
 - `read_only`: stable read commands only.
 - `collaborate` (default): ordinary messages, reactions, joins/leaves, notes,
   memory updates, uploads, issues, patches, pull requests, and social actions.
-- `maintainer`: adds channel/canvas/emoji/repository/workflow maintenance, but
-  still excludes high-risk administration.
+- `maintainer`: adds channel/canvas/emoji/project/repository/workflow
+  maintenance, but still excludes high-risk administration.
 - `custom`: exactly the entries in `allowed_commands`.
 
-High-risk custom entries such as `channels.delete`, `workflows.approve`,
-moderation mutations, agent management, and `repos.protect.set|remove` also
-require `acknowledge_dangerous: true`. Unknown commands fail closed. A channel
+High-risk custom entries such as `channels.delete`, `projects.delete`,
+`workflows.approve`, moderation mutations, agent management, and
+`repos.protect.set|remove` also require `acknowledge_dangerous: true`. Unknown
+commands fail closed. A channel
 operation is denied when the bound endpoint is not a member, and message edits
 or deletes are limited to events authored by that endpoint.
 
@@ -104,10 +105,10 @@ separately isolated Torana installation.
 
 ### Pinned Buzz CLI installation
 
-The supported command manifest comes from Block Buzz tag `desktop-v0.5.3`,
-commit `3a96acea09b4a9e3f02c3a26cfb0607d2ccacf42`. On Apple Silicon, the verified
-release archive is `Buzz_0.5.3_aarch64.app.tar.gz` with SHA-256
-`aa4673e16fbdf0f37b770d7fb28e33abb70169e3d6c0702d074decaf76d6711f`;
+The supported command manifest comes from Block Buzz tag `desktop-v0.5.4`,
+commit `651f6372754e60e3f936b3397040eb0f1e44c9f3`. On Apple Silicon, the verified
+release archive is `Buzz_0.5.4_aarch64.app.tar.gz` with SHA-256
+`b2bb31fe414a06c0ecb58e17372fa2289c28c64b30264530bad50156d839b5c0`;
 the bundled `buzz` executable has the default checksum shown above.
 
 For Linux images, build `buzz-cli` from that exact tag with the committed
@@ -116,6 +117,11 @@ set `platforms.buzz.cli_sha256` to the checksum calculated during the image
 build. Do not use a floating `main` build. At startup the broker refuses a byte
 mismatch, and `torana doctor` C024 reports CLI checksum plus broker/skill
 manifest compatibility.
+
+Follow [Buzz CLI upgrades](buzz-cli-upgrades.md) for the required provenance,
+policy-review, release, downstream-image, canary, and rollback sequence. The
+Desktop app, local CLI symlink, Torana broker manifest, and deployed Linux CLI
+are separate version surfaces and must not be assumed to advance together.
 
 Install the shared skills for both supported runners with:
 

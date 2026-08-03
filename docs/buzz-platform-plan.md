@@ -1134,14 +1134,14 @@ The real containment boundary is the Torana installation's container/VM, exactly
 
 Phase 9 names four profiles and the §6 example uses `collaborate` before it is defined. The generated manifest from the pinned CLI is the machine-readable authority; these lists define the intended policy inputs without Markdown separator ambiguity.
 
-- **`read_only`:** allows exact manifest entries for non-mutating operations, including applicable `get`, `list`, `ls`, `search`, `thread`, `event`, `contacts`, `presence`, `reports`, `restricted`, `audit`, `archived`, `export`, and `repos.protect.list` commands. Denies every mutation.
+- **`read_only`:** allows exact manifest entries for non-mutating operations, including applicable `get`, `list`, `ls`, `search`, `thread`, `event`, `contacts`, `presence`, `reports`, `restricted`, `audit`, `archived`, `export`, `projects.get|list`, and `repos.protect.list` commands. Denies every mutation.
 - **`collaborate` (default):** adds `messages.send`, `messages.send-diff`, `messages.edit`, `messages.delete` for events owned by the selected endpoint, `reactions.add`, `reactions.remove`, `dms.open`, `channels.join`, `channels.leave`, `notes.set`, `mem.set`, `mem.patch`, `upload.file`, `issues.create`, `issues.status`, `patches.send`, `pr.open`, `pr.update`, `social.publish`, `social.set-contacts`, `social.set-list`, and `emoji.list`. It denies channel creation/deletion/archive, member administration, workflow mutations/approval, repo protection, moderation mutations, agent draft/archive requests, `canvas.set`, `emoji.set`, `emoji.rm`, and `mem.rm`.
-- **`maintainer`:** adds `channels.create`, `channels.update`, `channels.topic`, `channels.purpose`, `channels.archive`, `channels.unarchive`, `channels.add-member`, `channels.remove-member`, `channels.set-add-policy`, `canvas.set`, `emoji.set`, `emoji.rm`, `emoji.import`, `repos.create`, `repos.bind`, `mem.rm`, `workflows.create`, `workflows.update`, `workflows.delete`, and `workflows.trigger`. It still denies `channels.delete`, `workflows.approve`, moderation mutations, `agents.draft-create`, `agents.draft-update`, `agents.archive`, `agents.unarchive`, `repos.protect.set`, and `repos.protect.remove`.
+- **`maintainer`:** adds `channels.create`, `channels.update`, `channels.topic`, `channels.purpose`, `channels.archive`, `channels.unarchive`, `channels.add-member`, `channels.remove-member`, `channels.set-add-policy`, `canvas.set`, `emoji.set`, `emoji.rm`, `emoji.import`, `projects.create`, `projects.update`, `projects.add-repo`, `projects.remove-repo`, `repos.create`, `repos.bind`, `mem.rm`, `workflows.create`, `workflows.update`, `workflows.delete`, and `workflows.trigger`. It still denies `channels.delete`, `projects.delete`, `workflows.approve`, moderation mutations, `agents.draft-create`, `agents.draft-update`, `agents.archive`, `agents.unarchive`, `repos.protect.set`, and `repos.protect.remove`.
 - **Custom allowlist:** allows exactly the generated `group.subcommand` entries listed by the operator and denies everything else.
 
 Rules:
 
-1. The high-risk command families never granted by a named profile — `channels delete`, `workflows approve`, moderation mutations, `agents draft-create|draft-update|archive|unarchive`, and `repos protect set|remove` — require an explicit custom allowlist entry plus `acknowledge_dangerous: true` on the tools block. This matches how `codex.approval_mode: yolo` and the claude-code runner already gate irreversible capability.
+1. The high-risk command families never granted by a named profile — `channels delete`, `projects delete`, `workflows approve`, moderation mutations, `agents draft-create|draft-update|archive|unarchive`, and `repos protect set|remove` — require an explicit custom allowlist entry plus `acknowledge_dangerous: true` on the tools block. This matches how `codex.approval_mode: yolo` and the claude-code runner already gate irreversible capability.
 2. Deny wins. A subcommand absent from the resolved allowlist is denied, including subcommands added by a future `buzz` CLI version — this is why the broker validates against an explicit list rather than a denylist.
 3. Resource scoping is evaluated after command scoping: a permitted command against a channel the endpoint is not a member of is still denied.
 4. Profiles are versioned with the plan. Adding a subcommand to a named profile is a documented, changelog-visible change, not a silent broadening.
@@ -1532,7 +1532,7 @@ Torana's transport-owned outbox. Named `read_only`, `collaborate`, and
 destructive/admin commands require explicit acknowledgement. Doctor C023
 reports broker enforcement or the acknowledged raw-key bypass, and C024 checks
 the configured binary checksum plus CLI/broker/skill compatibility. Tests cover
-a representative operation from all 21 pinned CLI groups, endpoint binding,
+a representative operation from all 22 pinned CLI groups, endpoint binding,
 credential isolation, command/option/resource policy, file and argument escape
 attempts, raw `mem get` bytes, CLI exit codes, runner session wiring, skill
 installation/parity, and the official current-format Codex plugin manifest.

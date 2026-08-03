@@ -503,6 +503,7 @@ describe("Buzz credential broker", () => {
         "pack",
         "patches",
         "pr",
+        "projects",
         "reactions",
         "repos",
         "social",
