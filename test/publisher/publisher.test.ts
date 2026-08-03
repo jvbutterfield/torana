@@ -8,6 +8,7 @@ import { loadConfigFromString } from "../../src/config/load.js";
 import { upgradeV1Object } from "../../src/config/v2.js";
 import { applyMigrations } from "../../src/db/migrate.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
+import { runDoctor } from "../../src/doctor.js";
 import { Metrics } from "../../src/metrics.js";
 import { OutboxProcessor } from "../../src/outbox.js";
 import { BuzzAdapter } from "../../src/platform/buzz/adapter.js";
@@ -69,6 +70,99 @@ function fixture() {
 }
 
 describe("publisher configuration and durable enqueue", () => {
+  test("doctor explicitly probes a disabled publisher without publishing", async () => {
+    const { dir, value } = fixture();
+    try {
+      value.publishers[0].enabled = false;
+      const loaded = loadConfigFromString(yaml.dump(value), {
+        skipInterpolation: true,
+      });
+      applyMigrations(loaded.config.gateway.db_path!);
+      let probeCalls = 0;
+      const result = await runDoctor({
+        config: loaded.config,
+        configPath: join(dir, "torana.yaml"),
+        normalized: loaded.normalized,
+        sourceConfigVersion: 2,
+        publisherProbeId: "dev-team",
+        fetchImpl: (async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                id: 1,
+                is_bot: true,
+                first_name: "Alpha",
+                username: "alpha_bot",
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+        buzzProbe: async ({ endpoint }) => {
+          probeCalls += 1;
+          expect(endpoint.id).toBe("dev-team-buzz");
+          expect(endpoint.enabled).toBe(false);
+          return { authenticated: true as const, channels: [CHANNEL] };
+        },
+      });
+      expect(probeCalls).toBe(1);
+      expect(result.checks.find((check) => check.id === "C018")?.status).toBe(
+        "ok",
+      );
+      expect(result.checks.find((check) => check.id === "C020")?.status).toBe(
+        "ok",
+      );
+      const publisherProbe = result.checks.find((check) => check.id === "C028");
+      expect(publisherProbe?.status).toBe("ok");
+      expect(publisherProbe?.detail).toContain("no message published");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("disabled publisher probe fails when the pinned destination is absent", async () => {
+    const { dir, value } = fixture();
+    try {
+      value.publishers[0].enabled = false;
+      const loaded = loadConfigFromString(yaml.dump(value), {
+        skipInterpolation: true,
+      });
+      applyMigrations(loaded.config.gateway.db_path!);
+      const result = await runDoctor({
+        config: loaded.config,
+        configPath: join(dir, "torana.yaml"),
+        normalized: loaded.normalized,
+        sourceConfigVersion: 2,
+        publisherProbeId: "dev-team",
+        fetchImpl: (async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                id: 1,
+                is_bot: true,
+                first_name: "Alpha",
+                username: "alpha_bot",
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+        buzzProbe: async () => ({
+          authenticated: true as const,
+          channels: ["aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"],
+        }),
+      });
+      expect(result.checks.find((check) => check.id === "C020")?.status).toBe(
+        "fail",
+      );
+      expect(result.checks.find((check) => check.id === "C028")?.status).toBe(
+        "fail",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("publisher credentials and bearer scopes stay independent and redacted", () => {
     const { dir, value } = fixture();
     try {

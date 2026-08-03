@@ -48,6 +48,8 @@ export interface DoctorOptions {
   normalized?: NormalizedConfigModel;
   /** Test override for live Buzz relay checks. */
   buzzProbe?: typeof probeBuzzEndpoint;
+  /** Explicitly probe one publisher even while its endpoint is disabled. */
+  publisherProbeId?: string;
   /** Test override for the pinned local Buzz CLI checksum probe. */
   buzzCliProbe?: (cliPath: string) => { path: string; sha256: string } | null;
 }
@@ -523,6 +525,11 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
   const buzzOperational =
     opts.normalized?.buzzPlatform?.enabled &&
     buzzEndpoints.some((endpoint) => endpoint.enabled);
+  const requestedPublisher = opts.publisherProbeId
+    ? opts.normalized?.publishers?.find(
+        (publisher) => publisher.id === opts.publisherProbeId,
+      )
+    : undefined;
 
   // C016 — single-writer data-directory lock. Required before relay intake.
   if (!buzzOperational) {
@@ -543,6 +550,8 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
   const sharedIdentities = new Map<string, number>();
   for (const endpoint of buzzEndpoints) {
     const buzz = endpoint.buzz!;
+    const explicitPublisherProbe =
+      requestedPublisher?.endpointId === endpoint.id;
     sharedIdentities.set(
       buzz.pubkey,
       (sharedIdentities.get(buzz.pubkey) ?? 0) + 1,
@@ -574,7 +583,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       detail: `Buzz endpoint '${endpoint.id}': ${ownerDetail}`,
     });
 
-    if (!endpoint.enabled || !opts.normalized?.buzzPlatform?.enabled) {
+    if (
+      !explicitPublisherProbe &&
+      (!endpoint.enabled || !opts.normalized?.buzzPlatform?.enabled)
+    ) {
       checks.push({
         id: "C018",
         status: "skip",
@@ -589,18 +601,36 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       try {
         const probe = await (opts.buzzProbe ?? probeBuzzEndpoint)({
           endpoint,
-          normalized: opts.normalized,
+          normalized: opts.normalized!,
         });
+        const destinationPresent = explicitPublisherProbe
+          ? probe.channels.includes(
+              requestedPublisher!.destinationConversationId,
+            )
+          : probe.channels.length > 0;
         checks.push({
           id: "C018",
           status: "ok",
-          detail: `Buzz endpoint '${endpoint.id}': relay authentication succeeded`,
+          detail: `Buzz endpoint '${endpoint.id}': relay authentication succeeded${explicitPublisherProbe ? " for disabled publisher probe" : ""}`,
         });
         checks.push({
           id: "C020",
-          status: probe.channels.length > 0 ? "ok" : "warn",
-          detail: `Buzz endpoint '${endpoint.id}': discovered ${probe.channels.length} accessible channel(s)`,
+          status: destinationPresent
+            ? "ok"
+            : explicitPublisherProbe
+              ? "fail"
+              : "warn",
+          detail: explicitPublisherProbe
+            ? `Buzz publisher '${requestedPublisher!.id}': configured destination ${requestedPublisher!.destinationConversationId} ${destinationPresent ? "is" : "is not"} in authenticated membership`
+            : `Buzz endpoint '${endpoint.id}': discovered ${probe.channels.length} accessible channel(s)`,
         });
+        if (explicitPublisherProbe) {
+          checks.push({
+            id: "C028",
+            status: destinationPresent ? "ok" : "fail",
+            detail: `publisher probe '${requestedPublisher!.id}': pinned identity verified by config load, relay authenticated, configured destination membership ${destinationPresent ? "confirmed" : "missing"}; no message published`,
+          });
+        }
       } catch (error) {
         const detail = redactString(
           error instanceof Error ? error.message : String(error),
@@ -615,6 +645,13 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
           status: "fail",
           detail: `Buzz endpoint '${endpoint.id}': membership discovery unavailable because authentication failed`,
         });
+        if (explicitPublisherProbe) {
+          checks.push({
+            id: "C028",
+            status: "fail",
+            detail: `publisher probe '${requestedPublisher!.id}' failed before membership confirmation; no message published`,
+          });
+        }
       }
     }
 
@@ -633,6 +670,14 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
           ? "local signing policy authorizes core message kind 9 (doctor does not publish a message)"
           : "owner auth policy rejects core message kind 9"
       }`,
+    });
+  }
+
+  if (opts.publisherProbeId && !requestedPublisher) {
+    checks.push({
+      id: "C028",
+      status: "fail",
+      detail: `publisher probe '${opts.publisherProbeId}' does not match a configured publisher`,
     });
   }
 
