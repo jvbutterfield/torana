@@ -1067,7 +1067,13 @@ describe("Phase 4 Buzz relay integration", () => {
       "publisher healthy",
     );
     await waitFor(
-      () => relay.activeSubscriptions().length === 1,
+      () => {
+        const subscriptions = relay.activeSubscriptions();
+        return (
+          subscriptions.length === 1 &&
+          subscriptions[0]![0].includes("membership")
+        );
+      },
       "membership-only subscription",
     );
     const [[subscriptionId, filters]] = relay.activeSubscriptions();
