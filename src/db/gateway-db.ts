@@ -2757,6 +2757,40 @@ export class GatewayDB {
   }
 
   /**
+   * Replace a signed payload only after a platform has explicitly rejected
+   * the prior event before acceptance. The compare-and-swap on event id and
+   * in-flight status prevents concurrent processors from changing identity.
+   */
+  replaceRejectedPreparedOutbound(
+    id: number,
+    expectedSignedEventId: string,
+    prepared: {
+      payloadJson?: string;
+      signedPayloadJson?: string | null;
+      signedEventId?: string | null;
+    },
+    reason: string,
+  ): boolean {
+    if (!this.normalizedSchema) return false;
+    const result = this._db
+      .prepare(
+        `UPDATE outbox
+         SET payload_json=COALESCE(?, payload_json),
+             signed_payload_json=?, signed_event_id=?, last_error=?
+         WHERE id=? AND status='in_flight' AND signed_event_id=?`,
+      )
+      .run(
+        prepared.payloadJson ?? null,
+        prepared.signedPayloadJson ?? null,
+        prepared.signedEventId ?? null,
+        reason,
+        id,
+        expectedSignedEventId,
+      );
+    return result.changes === 1;
+  }
+
+  /**
    * Mark a pending/retrying outbox row as currently being delivered.
    * `graceSecs` defines how long until the row auto-recovers if a crash
    * leaves it stuck in `in_flight` — see getPendingOutbox.

@@ -248,6 +248,10 @@ Operational timeouts and crash-loop backoff. Defaults from §3.4 of the plan.
 
 ### `shutdown`
 
+Shutdown first stops transport ingress, then gives accepted runner work and
+the durable outbox their configured drain windows. Outbound connections remain
+available through that drain and close before runners, HTTP, and SQLite.
+
 | Key                 | Type | Default |
 | ------------------- | ---- | ------- |
 | `outbox_drain_secs` | int  | `10`    |

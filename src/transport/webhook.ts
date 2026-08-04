@@ -158,11 +158,15 @@ export class WebhookTransport implements Transport {
     );
   }
 
-  async stop(): Promise<void> {
+  async stopIngress(): Promise<void> {
     if (this.unregister) {
       this.unregister();
       this.unregister = null;
     }
+  }
+
+  async stop(): Promise<void> {
+    await this.stopIngress();
   }
 
   private async handle(

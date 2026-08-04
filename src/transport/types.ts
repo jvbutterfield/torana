@@ -11,6 +11,9 @@ export interface Transport {
   readonly kind: TransportKind;
   readonly botIds: readonly BotId[];
   start(onUpdate: OnUpdateHandler): Promise<void>;
+  /** Stop new inbound work while preserving any outbound connection. */
+  stopIngress(): Promise<void>;
+  /** Fully close the transport after accepted work and outbox delivery drain. */
   stop(): Promise<void>;
 }
 

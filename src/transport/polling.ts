@@ -211,9 +211,13 @@ export class PollingTransport implements Transport {
     }
   }
 
-  async stop(): Promise<void> {
+  async stopIngress(): Promise<void> {
     await Promise.all(
       [...this.pollers.values()].map((poller) => poller.stop()),
     );
+  }
+
+  async stop(): Promise<void> {
+    await this.stopIngress();
   }
 }

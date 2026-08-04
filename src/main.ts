@@ -533,8 +533,10 @@ export async function startGateway(
           }
         }
 
-        // 1. Stop accepting new updates.
-        await Promise.all(transports.map((t) => t.stop()));
+        // 1. Stop accepting new updates, but keep outbound connections alive
+        //    until all already-accepted work has produced and delivered its
+        //    durable outbox operations.
+        await Promise.all(transports.map((t) => t.stopIngress()));
 
         // 2. Finish work accepted before intake stopped. A timeout cancels
         //    active runner turns; queued turns remain durable for restart.
@@ -565,7 +567,11 @@ export async function startGateway(
         await outbox.drain(drainBudgetMs);
         outbox.stop();
 
-        // 5. Tear down agent-api side sessions before the main runners
+        // 5. The delivery drain is complete; outbound transport connections
+        //    can now close without stranding replies created during shutdown.
+        await Promise.all(transports.map((t) => t.stop()));
+
+        // 6. Tear down agent-api side sessions before the main runners
         //     so ask handlers observe fatal events rather than hangs.
         const remainingRunnerGraceMs = Math.max(0, runnerDeadline - Date.now());
         if (agentApiOrphans) agentApiOrphans.shutdown();
@@ -574,7 +580,7 @@ export async function startGateway(
         await registry.stopAll(remainingRunnerGraceMs);
         await buzzBroker.stop();
 
-        // 6. Close HTTP and persistence sockets last.
+        // 7. Close HTTP and persistence sockets last.
         await server.stop();
         db.close();
       } finally {

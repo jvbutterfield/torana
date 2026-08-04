@@ -183,7 +183,12 @@ without sharing context unless an explicit same-agent alias says they should.
 **Delivery.**
 
 - Inbound Telegram `update_id` and signed Buzz event IDs are deduplicated in SQLite.
-- Durable sends and mutations use a **dead-letter outbox**. Buzz retries reuse the exact stored signed event ID.
+- Durable sends and mutations use a **dead-letter outbox**. Ambiguous Buzz
+  retries reuse the exact stored signed event ID. A conversational reply is
+  re-signed only when the relay explicitly rejects the old timestamp, proving
+  that event was never accepted; publisher event identities remain immutable.
+- Shutdown is two-phase: inbound intake closes first, then accepted turns and
+  the outbox drain while outbound transports remain connected.
 
 **Crash recovery.**
 
@@ -307,9 +312,11 @@ Production 2.0 release still requires the canary and 24-hour gates in
 
 Recent:
 
+- **2.0.0-rc.6** — two-phase transport shutdown and certainty-aware recovery
+  for conversational Buzz events rejected with stale timestamps.
+- **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
 - **2.0.0-rc.2** — outbound-only publishers, scoped API/CLI, atomic idempotent
   Buzz outbox enqueue, bounded retention and schema v6.
-- **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
 - **rc.4** — Codex runner (`runner.type: codex`), `codex-jsonl` protocol for `command` runners, README rewrite
 - **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
 - **rc.2** — fixed published tarball missing migration SQL

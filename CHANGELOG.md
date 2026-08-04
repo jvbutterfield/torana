@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.6] - 2026-08-03
+
+### Fixed
+
+- Keep Buzz outbound delivery connected while shutdown drains accepted turns
+  and their durable outbox operations.
+- Recover conversational Buzz replies rejected for stale timestamps by
+  atomically re-signing only after an explicit non-acceptance response;
+  ambiguous retries and publisher event identities remain unchanged.
+
 ## [2.0.0-rc.5] - 2026-08-03
 
 ### Changed

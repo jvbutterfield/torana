@@ -29,6 +29,12 @@ export type DeliveryResult =
       description: string;
       retryAfterMs?: number;
       notModified?: boolean;
+      /**
+       * The platform explicitly proved this prepared payload was rejected
+       * before acceptance and requires a fresh signature/timestamp. Never set
+       * this for timeouts, disconnects, or other ambiguous delivery outcomes.
+       */
+      refreshPrepared?: boolean;
     };
 
 export interface MaterializedAttachments {

@@ -381,6 +381,74 @@ describe("Phase 5 Buzz conversations", () => {
     db.close();
   });
 
+  test("refreshes identity only after an explicit stale-event rejection", async () => {
+    const { adapter, db, config, normalized } = setup();
+    adapter.setChannels(
+      new Map([[CHANNEL, { id: CHANNEL, name: "Jason", type: "dm" as const }]]),
+    );
+    const raw = message();
+    const decision = adapter.evaluateInbound(raw, new Set([CHANNEL]));
+    if (decision.kind !== "accepted") throw new Error("not accepted");
+    const recorded = db.recordBuzzInbound({
+      event: decision.event,
+      status: "received",
+      cursorScope: decision.cursorScope,
+    });
+    if (recorded.kind !== "inserted") throw new Error("duplicate fixture");
+    db.transitionInboundEvent(recorded.id, "received", "dispatched");
+    const turnId = db.enqueueRecordedBuzzTurn(recorded.id, "alpha", "prompt")!;
+    const outbox = new OutboxProcessor(
+      config,
+      db,
+      new Map([["alpha-buzz", adapter]]),
+      new Metrics(config),
+      null,
+      { normalized },
+    );
+    const published: Event[] = [];
+    adapter.setPublisher(async (event) => {
+      published.push(event);
+      return published.length === 1
+        ? {
+            ok: false,
+            retriable: false,
+            refreshPrepared: true,
+            description:
+              "relay rejected event: invalid: event timestamp too far from server time",
+          }
+        : { ok: true, externalMessageId: event.id };
+    });
+    const outboxId = outbox.queueFinalResponse(turnId, "resilient reply")!;
+    const originalId = (
+      db
+        ._unsafeQuery("SELECT signed_event_id FROM outbox WHERE id=?")
+        .get(outboxId) as { signed_event_id: string }
+    ).signed_event_id;
+
+    // Nostr timestamps are second-granularity; make a new identity available.
+    await Bun.sleep(1_050);
+    await outbox.drain(500);
+
+    expect(published).toHaveLength(2);
+    expect(published[0]!.id).toBe(originalId);
+    expect(published[1]!.id).not.toBe(originalId);
+    expect(published[1]!.content).toBe(published[0]!.content);
+    expect(published[1]!.tags).toEqual(published[0]!.tags);
+    const refreshed = db
+      ._unsafeQuery(
+        "SELECT status, signed_event_id, last_error FROM outbox WHERE id=?",
+      )
+      .get(outboxId) as {
+      status: string;
+      signed_event_id: string;
+      last_error: string;
+    };
+    expect(refreshed.status).toBe("sent");
+    expect(refreshed.signed_event_id).toBe(published[1]!.id);
+    expect(refreshed.last_error).toContain("timestamp too far");
+    db.close();
+  });
+
   test("suppresses a seventh reply in one minute without trusting trace tags", () => {
     const { adapter, db, config, normalized } = setup();
     adapter.setChannels(

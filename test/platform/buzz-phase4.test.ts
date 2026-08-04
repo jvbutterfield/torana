@@ -673,6 +673,74 @@ describe("Phase 4 Buzz relay integration", () => {
     db.close();
   });
 
+  test("stops inbound subscriptions while preserving outbound delivery", async () => {
+    const relay = createFakeRelay();
+    const loaded = makeLoaded(relay.url);
+    const db = openDb(loaded);
+    const endpoint = loaded.normalized.endpoints.find(
+      (item) => item.id === "alpha-buzz",
+    )!;
+    const adapter = new BuzzAdapter(endpoint);
+    let dispatches = 0;
+    const transport = trackTransport(
+      new BuzzTransport({
+        db,
+        normalized: loaded.normalized,
+        endpoints: loaded.normalized.endpoints,
+        adapters: new Map([[endpoint.id, adapter]]),
+        lifecyclePollMs: 10,
+        onAccepted: () => {
+          dispatches += 1;
+        },
+      }),
+    );
+    await transport.start(async () => {});
+    await waitFor(
+      () =>
+        transport.snapshots()[0]?.state === "healthy" &&
+        relay.activeSubscriptions().length >= 2,
+      "Buzz subscriptions active",
+    );
+
+    await transport.stopIngress();
+    await waitFor(
+      () => relay.activeSubscriptions().length === 0,
+      "Buzz inbound subscriptions closed",
+    );
+    relay.emit(mention(CHANNEL_A, Math.floor(Date.now() / 1000)));
+    await Bun.sleep(30);
+    expect(dispatches).toBe(0);
+
+    const conversation = {
+      platform: "buzz" as const,
+      communityId: "primary",
+      endpointId: endpoint.id,
+      channelId: CHANNEL_A,
+      threadRootId: null,
+      workflowRunId: null,
+      type: "direct" as const,
+    };
+    const operation = {
+      kind: "send" as const,
+      text: "reply completed during drain",
+      files: [],
+    };
+    const prepared = adapter.prepareOutbound(conversation, operation);
+    const preparedId = prepared.signedEventId!;
+    expect(await adapter.deliver(conversation, operation, prepared)).toEqual({
+      ok: true,
+      externalMessageId: preparedId,
+    });
+    expect(
+      relay.messages.some(
+        (event) => event.content === "reply completed during drain",
+      ),
+    ).toBe(true);
+
+    await transport.stop();
+    db.close();
+  });
+
   test("cursor-checkpoints audit-suppressed self events without enqueueing them", async () => {
     const relay = createFakeRelay();
     const selfEvent = mention(CHANNEL_A, 1_700_000_150, ENDPOINT_SECRET);

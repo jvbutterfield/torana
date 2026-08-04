@@ -87,6 +87,10 @@ export class BuzzTransport implements Transport {
     for (const supervisor of this.supervisors) supervisor.start();
   }
 
+  async stopIngress(): Promise<void> {
+    await Promise.all(this.supervisors.map((item) => item.stopIngress()));
+  }
+
   async stop(): Promise<void> {
     await Promise.all(this.supervisors.map((item) => item.stop()));
   }
@@ -121,6 +125,7 @@ class BuzzEndpointSupervisor {
   private lifecyclePollMs: number;
   private client: BuzzRelayClient | null = null;
   private running = false;
+  private ingressEnabled = true;
   private loopPromise: Promise<void> | null = null;
   private accessibleChannels = new Set<string>();
   private activeChannelSubscriptions = new Set<string>();
@@ -172,11 +177,25 @@ class BuzzEndpointSupervisor {
 
   start(): void {
     if (this.running) return;
+    this.ingressEnabled = true;
     this.running = true;
     this.loopPromise = this.loop();
   }
 
+  async stopIngress(): Promise<void> {
+    if (!this.ingressEnabled) return;
+    this.ingressEnabled = false;
+    const client = this.client;
+    if (!client) return;
+    client.closeSubscription(this.subscriptionId("membership"));
+    for (const channelId of this.activeChannelSubscriptions) {
+      client.closeSubscription(this.channelSubscriptionId(channelId));
+    }
+    this.activeChannelSubscriptions.clear();
+  }
+
   async stop(): Promise<void> {
+    await this.stopIngress();
     this.running = false;
     if (!this.outboundOnly) {
       await this.adapter
@@ -250,14 +269,14 @@ class BuzzEndpointSupervisor {
         ) {
           throw new Error("publisher destination membership is not active");
         }
-        if (!this.outboundOnly) {
+        if (!this.outboundOnly && this.ingressEnabled) {
           await this.adapter.signal(this.signalConversation(), {
             kind: "presence",
             state: "online",
           });
           await this.recoverAcceptedEvents();
         }
-        this.subscribeMembership(client);
+        if (this.ingressEnabled) this.subscribeMembership(client);
         this.failureCount = 0;
         this.disconnectedSince = null;
         this.alertedDisconnected = false;
@@ -410,7 +429,7 @@ class BuzzEndpointSupervisor {
     }
     this.accessibleChannels = discovered;
     this.db.setBuzzChannels(this.endpointId, [...discovered]);
-    if (!this.outboundOnly) {
+    if (!this.outboundOnly && this.ingressEnabled) {
       for (const channel of initial ? [...discovered] : added) {
         await this.drainAndSubscribeChannel(client, channel);
       }
@@ -418,6 +437,7 @@ class BuzzEndpointSupervisor {
   }
 
   private subscribeMembership(client: BuzzRelayClient): void {
+    if (!this.ingressEnabled) return;
     const cursor = this.db.getEndpointState(this.endpointId)?.cursor;
     const point = cursor?.subscriptions.membership;
     const since = point
@@ -431,6 +451,7 @@ class BuzzEndpointSupervisor {
       this.subscriptionId("membership"),
       [membershipFilter(this.adapter.config.pubkey, since)],
       (raw) => {
+        if (!this.ingressEnabled) return;
         if (this.outboundOnly) {
           if (!isValidInboundEvent(raw) || raw.kind !== BUZZ_KINDS.groupMembers)
             return;
@@ -467,7 +488,8 @@ class BuzzEndpointSupervisor {
     client: BuzzRelayClient,
     channelId: string,
   ): Promise<void> {
-    if (this.activeChannelSubscriptions.has(channelId)) return;
+    if (!this.ingressEnabled || this.activeChannelSubscriptions.has(channelId))
+      return;
     const cursor = this.db.getEndpointState(this.endpointId)?.cursor;
     const scope = `channel:${channelId}:messages`;
     const point = cursor?.subscriptions[scope];
@@ -520,6 +542,7 @@ class BuzzEndpointSupervisor {
             this.normalized.buzzPlatform.subscription.replay_overlap_secs,
         )
       : since;
+    if (!this.ingressEnabled) return;
     client.subscribe(
       this.channelSubscriptionId(channelId),
       [
@@ -550,6 +573,7 @@ class BuzzEndpointSupervisor {
   }
 
   private async handleRelayEvent(raw: unknown): Promise<boolean> {
+    if (!this.ingressEnabled) return false;
     const decision = this.adapter.evaluateInbound(raw, this.accessibleChannels);
     if (decision.kind === "malformed") {
       log.warn("Buzz event failed validation", {
@@ -646,10 +670,15 @@ class BuzzEndpointSupervisor {
       if (result.accepted || /duplicate|already exists/i.test(result.message)) {
         return { ok: true, externalMessageId: event.id };
       }
+      const stalePreparedEvent =
+        /timestamp.*(?:too far|old|past)|created_at.*(?:too far|old|past)/i.test(
+          result.message,
+        );
       return {
         ok: false,
         retriable: false,
         description: `relay rejected event: ${result.message}`,
+        ...(stalePreparedEvent ? { refreshPrepared: true } : {}),
       };
     } catch (error) {
       try {
@@ -703,6 +732,10 @@ class BuzzEndpointSupervisor {
       if (lifecycle !== "active") {
         client.close();
         return;
+      }
+      if (!this.ingressEnabled) {
+        await this.sleep(this.lifecyclePollMs);
+        continue;
       }
       const now = Date.now();
       if (now >= nextHeartbeatAt) {

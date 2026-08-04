@@ -450,11 +450,66 @@ export class OutboxProcessor {
     this.db.markOutboxInFlight(row.id, this.inFlightGraceSecs);
 
     try {
-      const result = await adapter.deliver(conversation, operation, {
+      let result = await adapter.deliver(conversation, operation, {
         payloadJson: row.payload_json,
         signedPayloadJson,
         signedEventId,
       });
+      if (!result.ok && result.refreshPrepared) {
+        const publisherId = this.db.getPublisherIdForOutbox(row.id);
+        if (publisherId) {
+          result = {
+            ok: false,
+            retriable: false,
+            description: `${result.description}; publisher event identity cannot be changed`,
+          };
+        } else if (!signedEventId || !adapter.prepareOutbound) {
+          result = {
+            ok: false,
+            retriable: false,
+            description: `${result.description}; endpoint cannot refresh the prepared event`,
+          };
+        } else {
+          const rejectedEventId = signedEventId;
+          const refreshed = adapter.prepareOutbound(conversation, operation);
+          if (
+            !refreshed.signedPayloadJson ||
+            !refreshed.signedEventId ||
+            refreshed.signedEventId === rejectedEventId
+          ) {
+            result = {
+              ok: false,
+              retriable: true,
+              description: `${result.description}; fresh event timestamp is not yet available`,
+            };
+          } else if (
+            !this.db.replaceRejectedPreparedOutbound(
+              row.id,
+              rejectedEventId,
+              refreshed,
+              result.description,
+            )
+          ) {
+            return;
+          } else {
+            signedPayloadJson = refreshed.signedPayloadJson;
+            signedEventId = refreshed.signedEventId;
+            log.warn("refreshing explicitly rejected prepared event", {
+              id: row.id,
+              turn_id: row.turn_id,
+              endpoint_id: row.endpoint_id,
+              rejected_event_id: rejectedEventId,
+              refreshed_event_id: signedEventId,
+              certainty: "relay explicitly rejected prior event",
+            });
+            result = await adapter.deliver(conversation, operation, {
+              payloadJson: refreshed.payloadJson ?? row.payload_json,
+              signedPayloadJson,
+              signedEventId,
+            });
+          }
+        }
+      }
       if (result.ok || (!result.ok && result.notModified)) {
         this.db.markOutboxSent(
           row.id,

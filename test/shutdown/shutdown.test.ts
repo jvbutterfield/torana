@@ -1,6 +1,6 @@
 // Shutdown path tests. Covers:
-//   - startGateway → shutdown: transports stop, outbox drains, runners stop,
-//     server & DB closed, in order.
+//   - startGateway → shutdown: transport ingress stops, accepted work and
+//     outbox drain, then outbound transports, runners, server, and DB stop.
 //   - pending outbox rows get delivered during drain when within budget.
 //   - pending outbox rows are left for next start when drain budget expires.
 //   - shutdown is idempotent (second call returns immediately, no double stop).

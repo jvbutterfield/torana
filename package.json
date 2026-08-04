@@ -1,6 +1,6 @@
 {
   "name": "torana",
-  "version": "2.0.0-rc.5",
+  "version": "2.0.0-rc.6",
   "description": "Open-source multi-platform gateway for agent runtimes, with Telegram and authenticated Buzz endpoints.",
   "license": "MIT",
   "author": "Jason Butterfield <jbutterfield@gmail.com>",
