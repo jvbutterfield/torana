@@ -257,3 +257,95 @@ describe("OrphanListenerManager — metric emission per resolution", () => {
     expect(pool.releases.length).toBe(1);
   });
 });
+
+// The `onRelease` hook carries teardown that must happen on exactly the
+// listener's release schedule — revoking the turn's Buzz capability. The
+// handler can't do it: after a 202 the turn is still running, so tearing
+// down in the handler's `finally` would strip the capability mid-turn.
+describe("OrphanListenerManager — onRelease hook", () => {
+  function attachWithHook(
+    listener: OrphanListenerManager,
+    turnId: number,
+    onRelease: () => void,
+    backstopMs?: number,
+  ): void {
+    listener.attach({
+      runner: runner as unknown as AgentRunner,
+      botId: "bot1",
+      sessionId: "s1",
+      turnId,
+      backstopMs,
+      onRelease,
+    });
+  }
+
+  test("runs before pool.release, so a re-acquire can't outrace the teardown", () => {
+    // Ordering is load-bearing: release makes the session available to the
+    // next acquire, which mints a fresh capability at the same path. A
+    // revoke landing after that would delete the new turn's file.
+    const order: string[] = [];
+    const orderedPool = {
+      releases: [] as unknown[],
+      release() {
+        order.push("release");
+      },
+    };
+    const listener = new OrphanListenerManager(
+      db,
+      orderedPool as never,
+      metrics,
+    );
+    const turnId = seedTurn();
+    attachWithHook(listener, turnId, () => order.push("onRelease"));
+
+    runner.emit("s1", {
+      kind: "done",
+      turnId: String(turnId),
+      finalText: "ok",
+    });
+    expect(order).toEqual(["onRelease", "release"]);
+  });
+
+  test("runs on the backstop path", async () => {
+    const listener = new OrphanListenerManager(db, pool as never, metrics);
+    const turnId = seedTurn();
+    let released = 0;
+    attachWithHook(listener, turnId, () => (released += 1), 20);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(released).toBe(1);
+  });
+
+  test("runs on shutdown", () => {
+    const listener = new OrphanListenerManager(db, pool as never, metrics);
+    const turnId = seedTurn();
+    let released = 0;
+    attachWithHook(listener, turnId, () => (released += 1));
+    listener.shutdown();
+    expect(released).toBe(1);
+  });
+
+  test("runs exactly once across duplicate terminals", () => {
+    const listener = new OrphanListenerManager(db, pool as never, metrics);
+    const turnId = seedTurn();
+    let released = 0;
+    attachWithHook(listener, turnId, () => (released += 1));
+    runner.emit("s1", { kind: "done", turnId: String(turnId), finalText: "a" });
+    runner.emit("s1", { kind: "done", turnId: String(turnId), finalText: "b" });
+    listener.shutdown();
+    expect(released).toBe(1);
+  });
+
+  test("a throwing hook still releases the pool", () => {
+    const listener = new OrphanListenerManager(db, pool as never, metrics);
+    const turnId = seedTurn();
+    attachWithHook(listener, turnId, () => {
+      throw new Error("revoke exploded");
+    });
+    runner.emit("s1", {
+      kind: "done",
+      turnId: String(turnId),
+      finalText: "ok",
+    });
+    expect(pool.releases).toEqual([{ botId: "bot1", sessionId: "s1" }]);
+  });
+});

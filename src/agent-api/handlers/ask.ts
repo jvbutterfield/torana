@@ -155,10 +155,45 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
     }
     const sessionId = acquire.sessionId;
 
+    // Buzz capability for this turn. Keyed on `runnerSessionId` — by
+    // definition the id the subprocess receives as TORANA_SESSION_ID, and so
+    // the filename the CLI shim looks for under TORANA_BUZZ_CAPABILITY_DIR.
+    // It happens to equal `sessionId` on every path today, but the two are
+    // derived separately (see pool.spawnAndRegister), and only this one is
+    // guaranteed to track what the runner actually sees.
+    //
+    // TTL comes from this turn's clamped timeout, not the managed-turn
+    // budget the broker would otherwise assume.
+    if (token.buzzTools) {
+      try {
+        deps.buzzBroker?.issueCapability({
+          agentId: botId,
+          sessionId: acquire.runnerSessionId,
+          conversation: null,
+          ttlMs: timeoutMs + 60_000,
+        });
+      } catch (err) {
+        // A capability we failed to mint is a degraded turn, not a failed
+        // one: the agent may not need Buzz at all, and the shim reports the
+        // absence clearly if it does. Never fail the ask on this.
+        deps.log.warn("buzz capability issue failed", {
+          bot_id: botId,
+          session_id: sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    const revokeBuzz = () => {
+      if (!token.buzzTools) return;
+      deps.buzzBroker?.revokeCapability(acquire.runnerSessionId);
+    };
+
     let releasedBySync = false;
     const releaseSync = () => {
       if (releasedBySync) return;
       releasedBySync = true;
+      // Revoke before release — see OrphanListenerManager.runOnRelease.
+      revokeBuzz();
       deps.pool.release(botId, sessionId);
     };
 
@@ -209,6 +244,10 @@ function handleAskInner(deps: AskDeps): AuthedHandler {
           botId,
           sessionId,
           turnId,
+          // The turn is still running behind this 202 — the capability has
+          // to outlive the response and die with the release the listener
+          // now owns.
+          onRelease: revokeBuzz,
         });
         return jsonResponse(202, {
           turn_id: turnId,

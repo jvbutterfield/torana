@@ -6,6 +6,7 @@ import type { BotRegistry } from "../core/registry.js";
 import type { Logger } from "../log.js";
 import type { ResolvedAgentApiToken } from "../config/load.js";
 import type { Metrics } from "../metrics.js";
+import type { BuzzCredentialBroker } from "../broker/buzz-broker.js";
 
 export type Scope = "ask" | "send";
 
@@ -33,6 +34,13 @@ export interface AgentApiDeps {
   clock?: () => number;
   /** Optional — counter/histogram recorder. Handlers no-op if absent. */
   metrics?: Metrics;
+  /**
+   * Optional — the Buzz credential broker. Present whenever the gateway is
+   * running for real; absent in handler unit tests and for v1 configs with
+   * no Buzz tools. When absent, `ask` turns simply get no capability, which
+   * is the pre-`buzz_tools` behavior.
+   */
+  buzzBroker?: BuzzCredentialBroker;
 }
 
 export interface AuthedParams {

@@ -152,6 +152,85 @@ describe("SideSessionPool: acquire", () => {
   });
 });
 
+// `runnerSessionId` is what the subprocess receives as TORANA_SESSION_ID, and
+// therefore what anything the subprocess resolves by session id must be keyed
+// on — the Buzz capability file above all. It equals `sessionId` on every
+// path today, so these tests exist to keep it that way *by construction*: if
+// the opaque-id derivation in spawnAndRegister ever diverges, the id handed
+// to the runner and the id reported to callers must diverge together.
+describe("SideSessionPool: runnerSessionId tracks the runner", () => {
+  test("ephemeral acquire reports the id the session was created with", async () => {
+    const runner = new FakeRunner("bot1");
+    const pool = new SideSessionPool({
+      config: configForCaps(4, 8),
+      db,
+      registry: fakeRegistry(new Map([["bot1", runner]])) as never,
+    });
+    const r = await pool.acquire("bot1", null);
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") return;
+    expect(runner.sessions.has(r.runnerSessionId)).toBe(true);
+  });
+
+  test("keyed acquire reports the id the session was created with", async () => {
+    const runner = new FakeRunner("bot1");
+    const pool = new SideSessionPool({
+      config: configForCaps(4, 8),
+      db,
+      registry: fakeRegistry(new Map([["bot1", runner]])) as never,
+    });
+    const r = await pool.acquire("bot1", "sess-1");
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") return;
+    expect(runner.sessions.has(r.runnerSessionId)).toBe(true);
+  });
+
+  test("a reused entry reports the same id as the spawn that created it", async () => {
+    const runner = new FakeRunner("bot1");
+    const pool = new SideSessionPool({
+      config: configForCaps(4, 8),
+      db,
+      registry: fakeRegistry(new Map([["bot1", runner]])) as never,
+    });
+    const first = await pool.acquire("bot1", "sess-1");
+    pool.release("bot1", "sess-1");
+    const second = await pool.acquire("bot1", "sess-1");
+    expect(first.kind).toBe("ok");
+    expect(second.kind).toBe("ok");
+    if (first.kind !== "ok" || second.kind !== "ok") return;
+    // The reuse branch and the spawn branch construct the result separately.
+    expect(second.runnerSessionId).toBe(first.runnerSessionId);
+    expect(runner.sessions.has(second.runnerSessionId)).toBe(true);
+  });
+
+  test("conversation acquire reports the id the session was created with", async () => {
+    const runner = new FakeRunner("bot1");
+    const pool = new SideSessionPool({
+      config: configForCaps(4, 8),
+      db,
+      registry: {
+        bot(id: string) {
+          return id === "bot1"
+            ? {
+                runner,
+                botConfig: { id: "bot1", runner: { type: "claude-code" } },
+              }
+            : undefined;
+        },
+        get botIds() {
+          return ["bot1"];
+        },
+      } as never,
+    });
+    const r = await pool.acquireConversation("bot1", "buzz:primary:c1");
+    expect(r.kind).toBe("ok");
+    if (r.kind !== "ok") return;
+    expect(runner.sessions.has(r.runnerSessionId)).toBe(true);
+    // The durable key is a routing key and must never reach the runner.
+    expect(r.runnerSessionId).not.toContain("buzz:primary");
+  });
+});
+
 describe("SideSessionPool: global LRU eviction across bots", () => {
   test("global cap full → evicts an idle entry from any bot", async () => {
     // PRD US-008: "If `max_per_bot` or `max_global` reached: LRU-evict the
