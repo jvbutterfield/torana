@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.7] - 2026-08-04
+
 ### Added
 
 - `agent_api.tokens[].buzz_tools` (default `false`) grants a token's `ask`
