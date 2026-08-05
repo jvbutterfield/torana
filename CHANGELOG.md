@@ -10,6 +10,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- Opening the gateway database could fail outright with `database is locked`
+  instead of waiting. `applyMigrations` leaves a fresh database in `delete`
+  journal mode, so the first `GatewayDB` open changes the mode to WAL — a
+  change that needs exclusive access — and `busy_timeout` was set *after* that
+  pragma, leaving it to run with SQLite's default timeout of zero. Any
+  concurrent reader, including a second short-lived `torana` CLI invocation,
+  made the open fail immediately. The timeout is now established first, so the
+  open waits its full three seconds as intended.
+
 - An `ask`-free `POST /v1/bots/:bot_id/send` targeting a Buzz `conversation`
   published the agent's answer as a reply to its own synthetic inbound. That
   inbound is recorded against the `<bot>-agent-api` endpoint and its external

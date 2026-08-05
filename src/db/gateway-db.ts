@@ -172,11 +172,18 @@ export class GatewayDB {
   constructor(dbPath: string) {
     log.info("opening database", { path: dbPath });
     this._db = new Database(dbPath, { create: true });
-    this._db.exec("PRAGMA journal_mode=WAL");
     // Publisher requests have a four-second server deadline. Keep SQLite's
     // lock wait below that boundary so an ambiguous client timeout cannot
     // leave a transaction still waiting to begin.
+    //
+    // This must precede journal_mode. applyMigrations leaves a fresh database
+    // in `delete` mode, so the first open here *changes* the mode, and a mode
+    // change needs exclusive access. Setting it second left that one pragma
+    // running with SQLite's default timeout of zero: any concurrent reader
+    // made the open fail outright with `database is locked` instead of
+    // waiting, which is what intermittently broke `torana endpoints` in CI.
     this._db.exec("PRAGMA busy_timeout=3000");
+    this._db.exec("PRAGMA journal_mode=WAL");
     this._db.exec("PRAGMA synchronous=NORMAL");
     this._db.exec("PRAGMA foreign_keys=ON");
     this.normalizedSchema = !!this._db
