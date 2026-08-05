@@ -2312,6 +2312,14 @@ export class GatewayDB {
     conversation: ConversationRef;
     sourceEventId: string;
     senderId: string;
+    /**
+     * Whether `sourceEventId` names a real event on the conversation's own
+     * platform. False when the turn was started by an Agent API `send`, whose
+     * synthetic inbound is recorded against the agent-api endpoint and has no
+     * counterpart on the relay — replying to it would thread the answer to a
+     * parent that does not exist.
+     */
+    hasPlatformParent: boolean;
     traceId: string | null;
     hop: number;
   } | null {
@@ -2321,7 +2329,8 @@ export class GatewayDB {
         `SELECT t.agent_id, c.platform, c.community_id, c.endpoint_id,
                 c.external_conversation_id, c.thread_root_id,
                 c.workflow_run_id, c.conversation_type,
-                ie.external_event_id, ie.sender_id, ie.payload_json
+                ie.external_event_id, ie.sender_id, ie.payload_json,
+                ie.endpoint_id AS source_endpoint_id
          FROM turns t
          JOIN conversations c ON c.id=t.conversation_id
          JOIN inbound_events ie ON ie.id=t.source_event_id
@@ -2339,6 +2348,7 @@ export class GatewayDB {
       external_event_id: string;
       sender_id: string;
       payload_json: string | null;
+      source_endpoint_id: string;
     } | null;
     if (!row) return null;
     let traceId: string | null = null;
@@ -2369,6 +2379,7 @@ export class GatewayDB {
       },
       sourceEventId: row.external_event_id,
       senderId: row.sender_id,
+      hasPlatformParent: row.source_endpoint_id === row.endpoint_id,
       traceId,
       hop,
     };

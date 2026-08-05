@@ -23,6 +23,7 @@ interface ActiveStreamTurn {
   buzzReply: {
     sourceEventId: string;
     senderId: string;
+    hasPlatformParent: boolean;
     traceId: string;
     hop: number;
   } | null;
@@ -107,6 +108,7 @@ export class StreamManager {
         ? {
             sourceEventId: delivery.sourceEventId,
             senderId: delivery.senderId,
+            hasPlatformParent: delivery.hasPlatformParent,
             traceId:
               delivery.traceId ??
               `torana:${delivery.conversation.endpointId}:${delivery.sourceEventId}`,
@@ -566,14 +568,19 @@ export class StreamManager {
           ? {
               kind: "forum_comment" as const,
               rootEventId: state.conversation.threadRootId,
-              replyTo: reply.sourceEventId,
+              // Falls back to the forum root when there is no real parent.
+              replyTo: reply.hasPlatformParent
+                ? reply.sourceEventId
+                : undefined,
               text,
             }
           : {
               kind: "send" as const,
               text,
               files: [],
-              replyTo: reply.sourceEventId,
+              replyTo: reply.hasPlatformParent
+                ? reply.sourceEventId
+                : undefined,
               mentions: [reply.senderId],
               traceId: reply.traceId,
               hop: reply.hop,

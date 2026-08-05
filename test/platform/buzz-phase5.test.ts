@@ -610,3 +610,121 @@ describe("Phase 5 Buzz conversations", () => {
     db.close();
   });
 });
+
+describe("Agent API send into a Buzz channel", () => {
+  // Regression: an Agent API `send` records a synthetic inbound against the
+  // agent-api endpoint, and its external id (`agentapi:<n>`) names no event on
+  // the relay. Threading the answer to it published a reply whose parent did
+  // not exist, so the message never appeared in the channel feed and was
+  // reachable only by search.
+  function sendTurnInto(
+    db: GatewayDB,
+    adapter: BuzzAdapter,
+  ): { turnId: number } {
+    adapter.setChannels(
+      new Map([
+        [CHANNEL, { id: CHANNEL, name: "stocks", type: "stream" as const }],
+      ]),
+    );
+    // Observe the channel first: send only accepts a conversation the endpoint
+    // already knows, which is also how it exists in production.
+    const seed = message({ tags: [["p", ENDPOINT_PUBKEY]] });
+    const decision = adapter.evaluateInbound(seed, new Set([CHANNEL]));
+    if (decision.kind !== "accepted") throw new Error("not accepted");
+    const recorded = db.recordBuzzInbound({
+      event: decision.event,
+      status: "received",
+      cursorScope: decision.cursorScope,
+    });
+    if (recorded.kind !== "inserted") throw new Error("duplicate fixture");
+    const target = db.findObservedConversationTarget("alpha", {
+      endpointId: "alpha-buzz",
+      externalConversationId: CHANNEL,
+    })!;
+    expect(target).toBeTruthy();
+    const { turnId } = db.insertSendTurn({
+      botId: "alpha",
+      tokenName: "cron",
+      chatId: 0,
+      markerWrappedText: "compass handoff",
+      idempotencyKey: "stocks-key-aaaaaaaaaaaa",
+      sourceLabel: "tsla-compass",
+      attachmentPaths: [],
+      targetConversation: target,
+    });
+    return { turnId };
+  }
+
+  test("the answer is published as a channel root, not a reply to the synthetic inbound", () => {
+    const { adapter, db, config, normalized } = setup();
+    const { turnId } = sendTurnInto(db, adapter);
+
+    const context = db.getTurnDeliveryContext(turnId)!;
+    expect(context.sourceEventId.startsWith("agentapi:")).toBe(true);
+    expect(context.hasPlatformParent).toBe(false);
+
+    const outbox = new OutboxProcessor(
+      config,
+      db,
+      new Map([["alpha-buzz", adapter]]),
+      new Metrics(config),
+      null,
+      { normalized },
+    );
+    const outboxId = outbox.queueFinalResponse(turnId, "TSLA report")!;
+    const stored = db
+      ._unsafeQuery("SELECT signed_payload_json FROM outbox WHERE id=?")
+      .get(outboxId) as { signed_payload_json: string };
+    const signed = JSON.parse(stored.signed_payload_json) as Event;
+
+    expect(signed.content).toBe("TSLA report");
+    expect(signed.tags).toContainEqual(["h", CHANNEL]);
+    // The whole point: no reply/root threading tags at all.
+    expect(signed.tags.filter((tag) => tag[0] === "e")).toEqual([]);
+    // The synthetic id may still appear in the torana-trace correlation tag,
+    // which is diagnostic and does not affect threading; what must never carry
+    // it is a threading tag.
+    expect(
+      signed.tags.some((tag) => tag[0] === "e" && tag[1]?.includes("agentapi:")),
+    ).toBe(false);
+    db.close();
+  });
+
+  test("a real inbound still threads its answer as a reply", () => {
+    const { adapter, db, config, normalized } = setup();
+    adapter.setChannels(
+      new Map([
+        [CHANNEL, { id: CHANNEL, name: "stocks", type: "stream" as const }],
+      ]),
+    );
+    const raw = message({ tags: [["p", ENDPOINT_PUBKEY]] });
+    const decision = adapter.evaluateInbound(raw, new Set([CHANNEL]));
+    if (decision.kind !== "accepted") throw new Error("not accepted");
+    const recorded = db.recordBuzzInbound({
+      event: decision.event,
+      status: "received",
+      cursorScope: decision.cursorScope,
+    });
+    if (recorded.kind !== "inserted") throw new Error("duplicate fixture");
+    db.transitionInboundEvent(recorded.id, "received", "dispatched");
+    const turnId = db.enqueueRecordedBuzzTurn(recorded.id, "alpha", "prompt")!;
+
+    expect(db.getTurnDeliveryContext(turnId)!.hasPlatformParent).toBe(true);
+
+    const outbox = new OutboxProcessor(
+      config,
+      db,
+      new Map([["alpha-buzz", adapter]]),
+      new Metrics(config),
+      null,
+      { normalized },
+    );
+    const outboxId = outbox.queueFinalResponse(turnId, "threaded")!;
+    const stored = db
+      ._unsafeQuery("SELECT signed_payload_json FROM outbox WHERE id=?")
+      .get(outboxId) as { signed_payload_json: string };
+    const signed = JSON.parse(stored.signed_payload_json) as Event;
+    expect(signed.tags).toContainEqual(["e", raw.id, "", "reply"]);
+    db.close();
+  });
+});

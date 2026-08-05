@@ -296,7 +296,10 @@ export class OutboxProcessor {
       kind: "send",
       text,
       files: [],
-      replyTo: context.sourceEventId,
+      // A synthetic Agent API inbound has no event on the relay. Threading to
+      // it publishes a reply whose parent does not exist, which hides the
+      // message from the channel feed and leaves it findable only by search.
+      replyTo: context.hasPlatformParent ? context.sourceEventId : undefined,
       mentions: [context.senderId],
       traceId,
       hop: context.hop + 1,
