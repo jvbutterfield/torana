@@ -37,6 +37,16 @@ async function runCli(args: string[]): Promise<{
   return { stdout, stderr, exitCode };
 }
 
+// Comparing a bare exit code reports "Expected: 0, Received: 1"
+// and throws away the CLI's own error message — precisely what you need when
+// one of these fails on a CI runner and not locally. Fold stderr into the
+// compared value so the assertion diff carries the reason with it.
+function exitOk(result: { exitCode: number; stderr: string }): number | string {
+  return result.exitCode === 0
+    ? 0
+    : `exit ${result.exitCode}: ${result.stderr.trim()}`;
+}
+
 function phase4Config(): string {
   const dir = mkdtempSync(join(tmpdir(), "torana-endpoints-cli-"));
   tempDirs.push(dir);
@@ -87,7 +97,7 @@ test("endpoint status, drain, disable, and resume persist lifecycle state", asyn
     "--config",
     config,
   ]);
-  expect(status.exitCode).toBe(0);
+  expect(exitOk(status)).toBe(0);
   expect(parseJsonArray(status.stdout)[0]).toMatchObject({
     endpointId: "alpha-buzz",
     lifecycleState: "active",
@@ -100,7 +110,7 @@ test("endpoint status, drain, disable, and resume persist lifecycle state", asyn
     "--config",
     config,
   ]);
-  expect(drain.exitCode).toBe(0);
+  expect(exitOk(drain)).toBe(0);
   expect(drain.stdout).toContain("is draining");
 
   const disable = await runCli([
@@ -110,7 +120,7 @@ test("endpoint status, drain, disable, and resume persist lifecycle state", asyn
     "--config",
     config,
   ]);
-  expect(disable.exitCode).toBe(0);
+  expect(exitOk(disable)).toBe(0);
   expect(disable.stdout).toContain("disabled");
 
   const resume = await runCli([
@@ -120,7 +130,7 @@ test("endpoint status, drain, disable, and resume persist lifecycle state", asyn
     "--config",
     config,
   ]);
-  expect(resume.exitCode).toBe(0);
+  expect(exitOk(resume)).toBe(0);
   expect(resume.stdout).toContain("resumed");
 
   const finalStatus = await runCli([
@@ -132,7 +142,7 @@ test("endpoint status, drain, disable, and resume persist lifecycle state", asyn
     "--config",
     config,
   ]);
-  expect(finalStatus.exitCode).toBe(0);
+  expect(exitOk(finalStatus)).toBe(0);
   expect(parseJsonArray(finalStatus.stdout)[0]).toMatchObject({
     lifecycleState: "active",
   });
@@ -170,7 +180,7 @@ test("operator lists conversations/sessions and controls exact outbox replay", a
     "--config",
     configPath,
   ]);
-  expect(conversations.exitCode).toBe(0);
+  expect(exitOk(conversations)).toBe(0);
   expect(parseJsonArray(conversations.stdout)[0]).toMatchObject({
     platform: "buzz",
     endpointId: "alpha-buzz",
@@ -183,7 +193,7 @@ test("operator lists conversations/sessions and controls exact outbox replay", a
     "--config",
     configPath,
   ]);
-  expect(sessions.exitCode).toBe(0);
+  expect(exitOk(sessions)).toBe(0);
   expect(parseJsonArray(sessions.stdout)[0]).toMatchObject({
     agentId: "alpha",
     state: "stopped",
@@ -197,7 +207,7 @@ test("operator lists conversations/sessions and controls exact outbox replay", a
     "--config",
     configPath,
   ]);
-  expect(dead.exitCode).toBe(0);
+  expect(exitOk(dead)).toBe(0);
   expect(dead.stdout).toContain("dead-lettered");
 
   const listed = await runCli([
@@ -207,7 +217,7 @@ test("operator lists conversations/sessions and controls exact outbox replay", a
     "--config",
     configPath,
   ]);
-  expect(listed.exitCode).toBe(0);
+  expect(exitOk(listed)).toBe(0);
   expect(parseJsonArray(listed.stdout)[0]).toMatchObject({
     id: outboxId,
     status: "dead",
@@ -222,7 +232,7 @@ test("operator lists conversations/sessions and controls exact outbox replay", a
     "--config",
     configPath,
   ]);
-  expect(replay.exitCode).toBe(0);
+  expect(exitOk(replay)).toBe(0);
   expect(replay.stdout).toContain("exact-payload replay");
 
   const verify = new GatewayDB(loaded.config.gateway.db_path!);

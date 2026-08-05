@@ -8,7 +8,14 @@
 // wiring line buys.
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +35,26 @@ const SECRET = "wiring-buzz-token-0123456789abcdef";
 
 let gateway: RunningGateway | null = null;
 let dir: string | null = null;
+
+// Starting the gateway for real also runs the Buzz broker's production
+// preflight: resolve `platforms.buzz.cli_path` and check it against the
+// pinned `cli_sha256`. The shipped pin is the real `buzz` binary — present
+// on a developer's machine, present on no CI runner — so pin a stub here
+// instead. Nothing in this test spawns it (the probe only reads the
+// capability file); the stub exits non-zero so that if something ever does,
+// it fails loudly instead of quietly passing.
+function pinStubCli(directory: string): { path: string; sha256: string } {
+  const path = join(directory, "buzz-stub");
+  writeFileSync(
+    path,
+    "#!/bin/sh\necho 'buzz stub: this test should not spawn the CLI' >&2\nexit 97\n",
+    { mode: 0o755 },
+  );
+  const sha256 = new Bun.CryptoHasher("sha256")
+    .update(readFileSync(path))
+    .digest("hex");
+  return { path, sha256 };
+}
 
 afterEach(async () => {
   await gateway?.shutdown("test");
@@ -52,12 +79,15 @@ test("a granted ask turn resolves a Buzz capability through the real gateway", a
   upgraded.gateway.port = port;
   upgraded.gateway.data_dir = dir;
   upgraded.gateway.db_path = join(dir, "gateway.db");
-  // No Telegram transport, and the Buzz platform stays off so no relay
-  // connection is attempted — the credential broker is independent of
-  // transport liveness, which is precisely why an ask turn can publish
-  // through it.
+  // No Telegram transport, and the Buzz endpoint below points at an
+  // unroutable relay so the connection never establishes — the credential
+  // broker is independent of transport liveness, which is precisely why an
+  // ask turn can still resolve a capability here.
   upgraded.platforms.telegram.enabled = false;
   upgraded.platforms.buzz.enabled = true;
+  const stub = pinStubCli(dir);
+  upgraded.platforms.buzz.cli_path = stub.path;
+  upgraded.platforms.buzz.cli_sha256 = stub.sha256;
   upgraded.agents[0].endpoints.push({
     id: "alpha-buzz",
     platform: "buzz",
