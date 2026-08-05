@@ -564,4 +564,85 @@ describe("Buzz credential broker", () => {
     expect(Buffer.from(rendered.rawStdout!)).toEqual(bytes);
     expect(rendered.stderr).toEqual(["relay unavailable"]);
   });
+
+  // Agent API `ask` turns have no conversation to resolve an endpoint from,
+  // so they mint with `conversation: null` and fall through to the agent's
+  // configured default endpoint. They also run on a different clock than
+  // managed turns — `agent_api.ask.max_timeout_ms` rather than
+  // `worker_tuning.turn_timeout_secs` — hence the ttl override.
+  test("mints against the default endpoint for a conversationless turn", async () => {
+    const calls: Array<{ env: Record<string, string> }> = [];
+    const { broker } = setup({
+      spawnCli: async (args) => {
+        calls.push({ env: args.env });
+        return { exitCode: 0, stdout: "[]\n", stderr: "" };
+      },
+    });
+    const capability = broker.issueCapability({
+      agentId: "alpha",
+      sessionId: "eph-11111111-2222-4333-8444-555555555555",
+      conversation: null,
+    });
+    if (!capability) throw new Error("capability was not issued");
+    const result = await broker.execute(capability.token, {
+      group: "channels",
+      command: "list",
+    });
+    expect(result.ok).toBe(true);
+    // `alpha-second` is the configured default; `alpha-buzz` is the ingress
+    // endpoint a conversation would have selected.
+    expect(calls[0]?.env.BUZZ_RELAY_URL).toBe("wss://alpha-second.example");
+    expect(JSON.stringify(capability)).not.toContain(KEY_B);
+  });
+
+  test("honors a caller ttl and clamps it to the broker's bounds", () => {
+    const { broker, config } = setup();
+    // The default is derived from the managed-turn budget. Pin it so the
+    // override below is demonstrably not just the default in disguise.
+    const managedTtlMs = config.worker_tuning.turn_timeout_secs * 1000 + 60_000;
+    const before = Date.now();
+    const fallback = broker.issueCapability({
+      agentId: "alpha",
+      sessionId: "session-default-ttl",
+      conversation: null,
+    });
+    expect(fallback!.expiresAt - before).toBeGreaterThan(managedTtlMs - 5_000);
+
+    const override = broker.issueCapability({
+      agentId: "alpha",
+      sessionId: "session-ttl",
+      conversation: null,
+      ttlMs: managedTtlMs + 600_000,
+    });
+    expect(override!.expiresAt - fallback!.expiresAt).toBeGreaterThan(590_000);
+
+    const floored = broker.issueCapability({
+      agentId: "alpha",
+      sessionId: "session-ttl-floor",
+      conversation: null,
+      ttlMs: 1_000,
+    });
+    expect(floored!.expiresAt - Date.now()).toBeGreaterThan(50_000);
+
+    const ceilinged = broker.issueCapability({
+      agentId: "alpha",
+      sessionId: "session-ttl-ceiling",
+      conversation: null,
+      ttlMs: 72 * 60 * 60 * 1000,
+    });
+    expect(ceilinged!.expiresAt - Date.now()).toBeLessThanOrEqual(
+      24 * 60 * 60 * 1000,
+    );
+  });
+
+  test("mints nothing for an agent with no Buzz tools block", () => {
+    const { broker } = setup();
+    expect(
+      broker.issueCapability({
+        agentId: "no-such-agent",
+        sessionId: "session-unknown",
+        conversation: null,
+      }),
+    ).toBeNull();
+  });
 });

@@ -124,6 +124,7 @@ function makeConfig(opts: {
         secret_ref: `\${INLINE:${t.secret}}`,
         bot_ids: [...t.bot_ids],
         scopes: [...t.scopes],
+        buzz_tools: t.buzzTools ?? false,
       })),
       side_sessions: {
         idle_ttl_ms: 3_600_000,

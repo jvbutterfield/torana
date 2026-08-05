@@ -437,6 +437,24 @@ export const AgentApiTokenSchema = z
      * other tokens that share any of those bots.
      */
     max_concurrent_side_sessions: IntCoerce.min(1).max(512).optional(),
+    /**
+     * Grant `ask` turns started with this token a session-scoped Buzz
+     * capability, so the agent can drive the pinned Buzz CLI through the
+     * credential broker during the turn. Off by default: without it an ask
+     * turn has the CLI and the configured endpoint but no authorization,
+     * and `torana buzz` fails with "no Buzz capability is available for
+     * this runner session".
+     *
+     * The capability carries the agent's own `agents[].tools.buzz` policy
+     * profile — this flag does not narrow it per-token or per-resource. A
+     * token pointed at a `maintainer`-profile agent therefore grants that
+     * whole profile for the duration of each turn.
+     *
+     * Managed conversation turns (and `send`, which enqueues into them)
+     * already receive a capability from the normal dispatch path; this flag
+     * only concerns the Agent API `ask` route.
+     */
+    buzz_tools: z.boolean().default(false),
   })
   .strict();
 

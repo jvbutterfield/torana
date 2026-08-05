@@ -216,6 +216,7 @@ async function startSoakHarness(cfg: SoakConfig): Promise<Harness> {
           secret_ref: `\${INLINE:${bearerSecret}}`,
           bot_ids: [cfg.botId],
           scopes: ["ask", "send"],
+          buzz_tools: false,
         },
       ],
       side_sessions: {
