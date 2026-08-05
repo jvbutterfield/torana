@@ -19,12 +19,16 @@
 //   reply-env      — like normal, but also includes process.env.TORANA_SESSION_ID
 //                    verbatim in the reply text so tests can assert the env
 //                    var was (or was NOT) set for this subprocess.
+//   buzz-probe     — reply reports what this subprocess sees of the Buzz
+//                    capability contract: `session=<TORANA_SESSION_ID>
+//                    capability=<yes|no>`, resolved exactly the way
+//                    src/cli/buzz.ts does. See ./buzz-probe.ts.
 //
 // Env vars read:
 //   TORANA_SESSION_ID — if set, stamped on the `session_id` field of init
 //     and the `result` event so tests can verify side-session isolation.
 
-export {}; // mark as module so top-level declarations are module-scoped
+import { buzzProbeReply } from "./buzz-probe.js";
 
 const mode = process.argv[2] ?? "normal";
 const rawEnvSessionId = process.env.TORANA_SESSION_ID;
@@ -75,7 +79,10 @@ async function main(): Promise<void> {
       // absent) so tests can assert whether TORANA_SESSION_ID was set.
       const envTag =
         mode === "reply-env" ? ` env=${rawEnvSessionId ?? "unset"}` : "";
-      const reply = `echo[${sessionId}]: ${content}${envTag}`;
+      const reply =
+        mode === "buzz-probe"
+          ? buzzProbeReply()
+          : `echo[${sessionId}]: ${content}${envTag}`;
 
       emit({
         type: "stream_event",
