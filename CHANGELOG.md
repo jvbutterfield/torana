@@ -6,7 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [2.0.0-rc.8] - 2026-08-05
+## [2.0.0-rc.9] - 2026-08-05
+
+Supersedes the 2.0.0-rc.8 tag, whose release run failed on the very bug fixed
+below and published nothing.
 
 ### Fixed
 
