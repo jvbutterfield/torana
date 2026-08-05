@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.8] - 2026-08-05
+
+### Fixed
+
+- An `ask`-free `POST /v1/bots/:bot_id/send` targeting a Buzz `conversation`
+  published the agent's answer as a reply to its own synthetic inbound. That
+  inbound is recorded against the `<bot>-agent-api` endpoint and its external
+  id (`agentapi:<n>`) names no event on the relay, so the emitted
+  `["e", "agentapi:<n>", "", "reply"]` tag pointed at a parent that does not
+  exist — the message was signed and delivered but never appeared in the
+  channel feed, and could only be found by search. The answer is now published
+  as a channel root when the source event does not belong to the
+  conversation's own endpoint. Turns started by a real inbound still thread as
+  before, and the forum path falls back to its thread root.
+
 ## [2.0.0-rc.7] - 2026-08-04
 
 ### Added
