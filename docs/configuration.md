@@ -299,6 +299,7 @@ agent_api:
       secret_ref: ${TORANA_CI_TOKEN} # env-interpolated bearer string
       bot_ids: ["reviewer"]
       scopes: ["ask", "send"]
+      buzz_tools: false # opt-in Buzz CLI access for this token's ask turns
   side_sessions:
     idle_ttl_ms: 3600000 # 1h
     hard_ttl_ms: 86400000 # 24h
@@ -313,22 +314,23 @@ agent_api:
     max_files_per_request: 10
 ```
 
-| Key                             | Type                | Default     | Notes                                                                                                                                                                     |
-| ------------------------------- | ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                       | bool                | `false`     | When `false`, only `/v1/health` is served; all other `/v1/*` routes 404                                                                                                   |
-| `tokens[].name`                 | string              | —           | `^[a-z][a-z0-9_-]{0,63}$`; unique within the block                                                                                                                        |
-| `tokens[].secret_ref`           | string (≥ 32 chars) | —           | Resolved via `${VAR}` interpolation. Schema enforces a 32-char minimum (generate with `openssl rand -base64 32`). SHA-256 hashed at load; raw value added to log redactor |
-| `tokens[].bot_ids`              | string[]            | —           | Must reference configured bots (enforced by schema + doctor `C010`)                                                                                                       |
-| `tokens[].scopes`               | `(ask\|send)[]`     | —           | Min length 1                                                                                                                                                              |
-| `side_sessions.idle_ttl_ms`     | int ≥ 60000         | `3600000`   | Unused-for-this-long → reap                                                                                                                                               |
-| `side_sessions.hard_ttl_ms`     | int ≥ 60000         | `86400000`  | Absolute lifetime; `idle_ttl_ms ≤ hard_ttl_ms` (doctor `C013`)                                                                                                            |
-| `side_sessions.max_per_bot`     | int 1..64           | `8`         |                                                                                                                                                                           |
-| `side_sessions.max_global`      | int 1..512          | `64`        | `max_per_bot ≤ max_global` (doctor `C013`)                                                                                                                                |
-| `send.idempotency_retention_ms` | int ≥ 60000         | `86400000`  | Sweeps hourly                                                                                                                                                             |
-| `ask.default_timeout_ms`        | int 1000..300000    | `60000`     | Clamped to `max_timeout_ms` on every request                                                                                                                              |
-| `ask.max_timeout_ms`            | int 1000..300000    | `300000`    |                                                                                                                                                                           |
-| `ask.max_body_bytes`            | int ≥ 4096          | `104857600` | Multipart aggregate cap                                                                                                                                                   |
-| `ask.max_files_per_request`     | int 1..50           | `10`        |                                                                                                                                                                           |
+| Key                             | Type                | Default     | Notes                                                                                                                                                                                                                          |
+| ------------------------------- | ------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`                       | bool                | `false`     | When `false`, only `/v1/health` is served; all other `/v1/*` routes 404                                                                                                                                                        |
+| `tokens[].name`                 | string              | —           | `^[a-z][a-z0-9_-]{0,63}$`; unique within the block                                                                                                                                                                             |
+| `tokens[].secret_ref`           | string (≥ 32 chars) | —           | Resolved via `${VAR}` interpolation. Schema enforces a 32-char minimum (generate with `openssl rand -base64 32`). SHA-256 hashed at load; raw value added to log redactor                                                      |
+| `tokens[].bot_ids`              | string[]            | —           | Must reference configured bots (enforced by schema + doctor `C010`)                                                                                                                                                            |
+| `tokens[].scopes`               | `(ask\|send)[]`     | —           | Min length 1                                                                                                                                                                                                                   |
+| `tokens[].buzz_tools`           | bool                | `false`     | Grants this token's `ask` turns a session-scoped Buzz capability. Requires the target agent to set `tools.buzz.default_endpoint_id`. Carries the agent's full `tools.buzz` policy profile — see [`agent-api.md`](agent-api.md) |
+| `side_sessions.idle_ttl_ms`     | int ≥ 60000         | `3600000`   | Unused-for-this-long → reap                                                                                                                                                                                                    |
+| `side_sessions.hard_ttl_ms`     | int ≥ 60000         | `86400000`  | Absolute lifetime; `idle_ttl_ms ≤ hard_ttl_ms` (doctor `C013`)                                                                                                                                                                 |
+| `side_sessions.max_per_bot`     | int 1..64           | `8`         |                                                                                                                                                                                                                                |
+| `side_sessions.max_global`      | int 1..512          | `64`        | `max_per_bot ≤ max_global` (doctor `C013`)                                                                                                                                                                                     |
+| `send.idempotency_retention_ms` | int ≥ 60000         | `86400000`  | Sweeps hourly                                                                                                                                                                                                                  |
+| `ask.default_timeout_ms`        | int 1000..300000    | `60000`     | Clamped to `max_timeout_ms` on every request                                                                                                                                                                                   |
+| `ask.max_timeout_ms`            | int 1000..300000    | `300000`    |                                                                                                                                                                                                                                |
+| `ask.max_body_bytes`            | int ≥ 4096          | `104857600` | Multipart aggregate cap                                                                                                                                                                                                        |
+| `ask.max_files_per_request`     | int 1..50           | `10`        |                                                                                                                                                                                                                                |
 
 Pre-flight: `torana doctor` runs `C009..C014` against this block. See
 [`security.md`](security.md#agent-api-auth) for the auth model and

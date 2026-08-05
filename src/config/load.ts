@@ -192,6 +192,14 @@ export interface ResolvedAgentApiToken {
    * always populated by the loader.
    */
   maxConcurrentSideSessions?: number;
+  /**
+   * Resolved `buzz_tools` — when true, `ask` turns started with this token
+   * receive a session-scoped Buzz capability from the credential broker.
+   * Optional only because test fixtures may construct stub tokens by hand;
+   * in production this is always populated by the loader. Absent is treated
+   * as false at every read site.
+   */
+  buzzTools?: boolean;
 }
 
 export interface ResolvedPublisherApiToken {
@@ -431,6 +439,7 @@ function resolveAgentApiTokens(
       scopes: [...tok.scopes],
       maxConcurrentSideSessions:
         tok.max_concurrent_side_sessions ?? perTokenDefault,
+      buzzTools: tok.buzz_tools,
     });
     // Literal-token nudge: look for a `secret_ref: <not-${...}>` pattern
     // for this token's name in the raw source. The YAML is already

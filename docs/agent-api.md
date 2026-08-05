@@ -36,6 +36,7 @@ agent_api:
       secret_ref: ${TORANA_CI_TOKEN}
       bot_ids: ["reviewer"]
       scopes: ["ask", "send"]
+      buzz_tools: false # opt-in: let ask turns use the Buzz CLI
   side_sessions:
     idle_ttl_ms: 3_600_000 # 1h of no use → reaped
     hard_ttl_ms: 86_400_000 # 24h absolute lifetime
@@ -59,6 +60,46 @@ without side-session support, and TTL/cap invariant violations all surface
 there. Config v2 accepts this legacy `agent_api.side_sessions` block for
 compatibility and normalizes it into the gateway-wide `sessions.*` limits; do
 not configure both forms for the same setting.
+
+---
+
+## Buzz tools on `ask` turns
+
+An agent answering an `ask` request runs in a side-session. By default that
+session gets **no** Buzz capability, so `torana buzz` fails inside it with
+`no Buzz capability is available for this runner session` — even when the
+agent has the CLI installed and a Buzz endpoint configured. Managed
+conversation turns (and `send`, which enqueues into them) are unaffected;
+they receive a capability from the normal dispatch path.
+
+Set `buzz_tools: true` on a token to grant the turns it starts the same
+endpoint-scoped capability:
+
+```yaml
+agent_api:
+  tokens:
+    - name: digest-cron
+      secret_ref: ${TORANA_DIGEST_TOKEN}
+      bot_ids: ["cato"]
+      scopes: ["ask"]
+      buzz_tools: true
+```
+
+The capability is minted per turn against the agent's
+`agents[].tools.buzz.default_endpoint_id`, lives at most as long as that
+turn's `timeout_ms` plus one minute, and is revoked when the turn ends —
+including turns still running behind a `202`. Config load fails if the token
+names an agent with no `tools.buzz` block, or one that sets no
+`default_endpoint_id`: an `ask` turn has no conversation to resolve an
+endpoint from, so such a grant would silently mint nothing.
+
+**The grant is the agent's whole policy profile.** It does not narrow
+`tools.buzz` per token or per channel, so a token pointed at a
+`policy: maintainer` agent can drive that agent's full command allowlist for
+the duration of each turn. Scope the agent's profile, not the token. This
+matters most when the turn's input is untrusted — a digest built from
+incoming mail is a prompt-injection surface, and the broker's command policy
+is the control that bounds it (see [security](security.md)).
 
 ---
 

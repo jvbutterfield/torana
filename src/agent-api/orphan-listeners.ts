@@ -28,6 +28,7 @@ interface Registration {
   unsubs: Array<() => void>;
   backstopTimer: ReturnType<typeof setTimeout> | null;
   resolved: boolean;
+  onRelease?: () => void;
 }
 
 export class OrphanListenerManager {
@@ -49,6 +50,17 @@ export class OrphanListenerManager {
     turnId: number;
     /** Backstop — if no terminal event within this window, force-release. */
     backstopMs?: number;
+    /**
+     * Teardown that must happen on exactly the same schedule as the pool
+     * release this listener owns — currently revoking the turn's Buzz
+     * capability. Runs on every exit: terminal event, backstop, and
+     * shutdown. Must be idempotent; must not throw.
+     *
+     * The handler cannot do this itself. Once a 202 goes out the turn is
+     * still running, so tearing down in the handler's `finally` would strip
+     * the agent's capability mid-turn.
+     */
+    onRelease?: () => void;
   }): void {
     const { botId, sessionId, turnId } = opts;
     const session =
@@ -68,6 +80,7 @@ export class OrphanListenerManager {
       unsubs: [],
       backstopTimer: null,
       resolved: false,
+      onRelease: opts.onRelease,
     };
     this.regs.set(key, reg);
 
@@ -88,6 +101,7 @@ export class OrphanListenerManager {
       if (reg.backstopTimer) clearTimeout(reg.backstopTimer);
       this.applyTerminalToDb(turnId, source, ev);
       recordOrphanResolution(this.metrics, botId, outcome);
+      this.runOnRelease(reg);
       try {
         this.pool.release(botId, sessionId);
       } catch (err) {
@@ -159,12 +173,33 @@ export class OrphanListenerManager {
         }
       }
       if (reg.backstopTimer) clearTimeout(reg.backstopTimer);
+      this.runOnRelease(reg);
       try {
         this.pool.release(reg.botId, reg.sessionId);
       } catch {
         /* ok */
       }
       this.regs.delete(key);
+    }
+  }
+
+  /**
+   * Always call this BEFORE `pool.release`. Releasing first makes the
+   * session available to the next acquire, which may mint a fresh
+   * capability against the same runner session id — a revoke landing after
+   * that would delete the *new* turn's capability file, not this turn's.
+   */
+  private runOnRelease(reg: Registration): void {
+    if (!reg.onRelease) return;
+    try {
+      reg.onRelease();
+    } catch (err) {
+      this.log.warn("orphan release hook failed", {
+        bot_id: reg.botId,
+        session_id: reg.sessionId,
+        turn_id: reg.turnId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

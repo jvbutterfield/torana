@@ -261,6 +261,7 @@ export async function startGateway(
         metrics,
         pool: agentApiPool,
         orphans: agentApiOrphans,
+        buzzBroker,
       }),
     );
     const retention = config.agent_api.send.idempotency_retention_ms;

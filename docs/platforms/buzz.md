@@ -50,5 +50,7 @@ its descriptor and signed event are persisted for exact retry.
 
 Workspace actions use the endpoint-scoped broker described in
 [security](../security.md). The normal runner environment contains no private
-key or auth tag. See [operations](../operations.md) for rotation, replay,
+key or auth tag. Conversation turns receive a session-scoped capability
+automatically; Agent API `ask` turns receive one only when their token sets
+`buzz_tools: true` (see [agent-api](../agent-api.md)). See [operations](../operations.md) for rotation, replay,
 draining, and canary rollout.

@@ -19,10 +19,19 @@ export {}; // mark as module so top-level declarations are module-scoped
 //                       where AskBodySchema enforces min timeout_ms=1000).
 //   error-turn       — ready, then on every turn emit a `result` with
 //                       is_error=true so the runner emits `{kind:"error"}`.
+//   buzz-probe       — like `normal`, but the reply reports what this
+//                       subprocess sees of the Buzz capability contract:
+//                       `session=<TORANA_SESSION_ID> capability=<yes|no>`,
+//                       where capability resolves the file exactly the way
+//                       src/cli/buzz.ts does. Lets a test assert the agent
+//                       could actually have published during its own turn,
+//                       rather than trusting the gateway's bookkeeping.
 
 const mode = process.argv[2] ?? "normal";
 
 process.stdout.write("\n"); // harmless — claude sometimes warms the pipe
+
+import { buzzProbeReply } from "./buzz-probe.js";
 
 function emit(obj: unknown): void {
   process.stdout.write(JSON.stringify(obj) + "\n");
@@ -85,12 +94,14 @@ async function main(): Promise<void> {
       }
 
       const content = env.message?.content ?? "";
+      const reply =
+        mode === "buzz-probe" ? buzzProbeReply() : `echo: ${content}`;
       // text_delta
       emit({
         type: "stream_event",
         event: {
           type: "content_block_delta",
-          delta: { type: "text_delta", text: `echo: ${content}` },
+          delta: { type: "text_delta", text: reply },
         },
       });
       if (mode === "slow-echo") {
@@ -114,7 +125,7 @@ async function main(): Promise<void> {
       emit({
         type: "result",
         is_error: false,
-        result: `echo: ${content}`,
+        result: reply,
         duration_ms: 1,
         stop_reason: "end_turn",
       });

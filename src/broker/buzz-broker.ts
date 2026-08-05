@@ -277,10 +277,28 @@ export class BuzzCredentialBroker {
     return result;
   }
 
+  /**
+   * Mint a session-scoped capability for one turn.
+   *
+   * `conversation` is null for turns that have no conversation to resolve an
+   * endpoint from — Agent API `ask`. That case falls through to the agent's
+   * configured `defaultEndpointId`, the same branch a non-Buzz conversation
+   * already takes. Callers must not fabricate a `ConversationRef` to reach
+   * it: a synthetic ref with `platform: "buzz"` would need an `endpointId`
+   * the caller does not have.
+   *
+   * `ttlMs` overrides the default lifetime, which is derived from
+   * `worker_tuning.turn_timeout_secs` — the *managed*-turn budget. Callers
+   * on a different clock (Agent API turns clamp to
+   * `agent_api.ask.max_timeout_ms`) must pass their own, or a long turn can
+   * outlive its own capability. Clamped to the same 1 minute .. 24 hour
+   * bounds as the default.
+   */
   issueCapability(args: {
     agentId: string;
     sessionId: string;
-    conversation: ConversationRef;
+    conversation: ConversationRef | null;
+    ttlMs?: number;
   }): BuzzCapabilityFile | null {
     if (!SESSION_ID.test(args.sessionId)) {
       throw new Error("invalid runner session id for Buzz capability");
@@ -288,7 +306,7 @@ export class BuzzCredentialBroker {
     const tools = this.toolsFor(args.agentId);
     if (!tools) return null;
     const endpointId =
-      args.conversation.platform === "buzz"
+      args.conversation?.platform === "buzz"
         ? args.conversation.endpointId
         : tools.defaultEndpointId;
     if (!endpointId || !tools.allowedEndpointIds.includes(endpointId)) {
@@ -313,7 +331,8 @@ export class BuzzCredentialBroker {
           24 * 60 * 60 * 1000,
           Math.max(
             60_000,
-            this.config.worker_tuning.turn_timeout_secs * 1000 + 60_000,
+            args.ttlMs ??
+              this.config.worker_tuning.turn_timeout_secs * 1000 + 60_000,
           ),
         ),
     };

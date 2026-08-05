@@ -60,6 +60,20 @@ export type AcquireResult =
       ephemeral: boolean;
       runnerSession: RunnerSession;
       durableSessionKey: string;
+      /**
+       * The id the runner subprocess receives as `TORANA_SESSION_ID`.
+       *
+       * Equal to `sessionId` on every path today: agent-API acquires pass it
+       * through, and `acquireConversation` already derives its `sessionId`
+       * with the same `runnerSessionId(durableSessionKey)` the opaque form
+       * uses. The two are nonetheless computed separately in
+       * `spawnAndRegister`, so anything keyed to what the subprocess
+       * observes — notably the Buzz capability file the CLI shim reads from
+       * `<TORANA_BUZZ_CAPABILITY_DIR>/<TORANA_SESSION_ID>.json` — should use
+       * this field, which is defined to track the runner, rather than
+       * `sessionId`, which is defined to identify the pool entry.
+       */
+      runnerSessionId: string;
     }
   | { kind: "capacity" }
   | { kind: "token_capacity"; tokenName: string; limit: number }
@@ -290,6 +304,7 @@ export class ConversationSessionManager {
             ephemeral: existing.ephemeral,
             runnerSession: existing.runnerSession!,
             durableSessionKey: existing.durableSessionKey,
+            runnerSessionId: existing.runnerSessionId,
           };
         }
       }
@@ -635,6 +650,7 @@ export class ConversationSessionManager {
       ephemeral,
       runnerSession: entry.runnerSession,
       durableSessionKey,
+      runnerSessionId: opaqueRunnerId,
     };
   }
 

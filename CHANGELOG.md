@@ -6,6 +6,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.7] - 2026-08-04
+
+### Added
+
+- `agent_api.tokens[].buzz_tools` (default `false`) grants a token's `ask`
+  turns a session-scoped Buzz capability, so an agent reached through
+  `POST /v1/bots/:bot_id/ask` can drive the pinned Buzz CLI through the
+  credential broker during its turn. Previously only managed conversation
+  turns received one, and `torana buzz` failed inside an `ask` turn with
+  `no Buzz capability is available for this runner session`. The capability
+  is minted per turn against the agent's `tools.buzz.default_endpoint_id`,
+  expires with the turn's own timeout, and is revoked when the turn ends —
+  including turns still running behind a `202`. Config load rejects the flag
+  when the target agent has no `tools.buzz` block or sets no
+  `default_endpoint_id`. `POST /v1/bots/:bot_id/send` was never affected.
+
+  Note that the grant carries the agent's entire `tools.buzz` policy profile;
+  it does not narrow it per token or per channel.
+
 ## [2.0.0-rc.6] - 2026-08-03
 
 ### Fixed

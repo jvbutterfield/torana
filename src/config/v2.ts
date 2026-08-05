@@ -851,6 +851,41 @@ export const ConfigV2Schema = z
         });
       }
     }
+    // `agent_api.tokens[].buzz_tools` grants ask turns a session-scoped Buzz
+    // capability. The broker resolves the endpoint for a capability with no
+    // conversation from `tools.buzz.default_endpoint_id`, so a token pointed
+    // at an agent without a Buzz tools block — or with one that names no
+    // default endpoint — would mint nothing and fail at turn time instead of
+    // at load. Reject both here rather than at 03:00 when a cron fires.
+    for (const [tokenIndex, token] of config.agent_api.tokens.entries()) {
+      if (!token.buzz_tools) continue;
+      for (const [botIndex, botId] of token.bot_ids.entries()) {
+        const agent = config.agents.find((candidate) => candidate.id === botId);
+        // Unknown-agent references are reported by the v1 token validation.
+        if (!agent) continue;
+        const tools = agent.tools?.buzz;
+        const path = [
+          "agent_api",
+          "tokens",
+          tokenIndex,
+          "bot_ids",
+          botIndex,
+        ] as const;
+        if (!tools) {
+          ctx.addIssue({
+            code: "custom",
+            path: [...path],
+            message: `buzz_tools requires agent '${botId}' to configure tools.buzz`,
+          });
+        } else if (!tools.default_endpoint_id) {
+          ctx.addIssue({
+            code: "custom",
+            path: [...path],
+            message: `buzz_tools requires agent '${botId}' to set tools.buzz.default_endpoint_id — Agent API turns have no conversation to resolve an endpoint from`,
+          });
+        }
+      }
+    }
     const publisherIds = new Set<string>();
     const publisherPubkeys = new Set<string>();
     for (const [publisherIndex, publisher] of config.publishers.entries()) {
