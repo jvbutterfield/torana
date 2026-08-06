@@ -9,7 +9,13 @@ import type {
   ResolvedAgentApiToken,
   ResolvedPublisherApiToken,
 } from "./config/load.js";
-import { normalizedV1Model, type NormalizedConfigModel } from "./config/v2.js";
+import {
+  normalizedV1Model,
+  type ConfigV2,
+  type NormalizedConfigModel,
+} from "./config/v2.js";
+import { BuzzProvisioningService } from "./platform/buzz/provisioning.js";
+import { provisioningKeyFromEnv } from "./config/provisioning-secrets.js";
 import {
   logger,
   setLogLevel,
@@ -63,6 +69,12 @@ export interface StartOptions {
   publisherApiTokens?: ResolvedPublisherApiToken[];
   /** Platform-neutral endpoint/session metadata from either config version. */
   normalized?: NormalizedConfigModel;
+  /**
+   * The parsed v2 config. Required for runtime endpoint provisioning, which
+   * re-validates its rows by merging them into this object and running the
+   * same schema the YAML went through.
+   */
+  configV2?: ConfigV2 | null;
 }
 
 export interface RunningGateway {
@@ -243,6 +255,36 @@ export async function startGateway(
     uptimeSecs: () => metrics.uptimeSecs(),
   });
 
+  // Provisioning is constructed before the routes that use it and before the
+  // Buzz transport that it drives; the transport is attached below, once it
+  // exists. Endpoints restored from the database are merged into the endpoint
+  // list the transport is built from, so a provisioned endpoint starts exactly
+  // like a YAML one.
+  const provisioningKey = provisioningKeyFromEnv();
+  const provisioning = new BuzzProvisioningService({
+    db,
+    configV2: opts.configV2 ?? null,
+    key: provisioningKey,
+    transport: null,
+    maxEndpoints: normalized.sessions?.max_global,
+  });
+  const persisted = provisioning.loadPersisted();
+  for (const error of persisted.errors) {
+    log.error("provisioned Buzz endpoint could not be restored", { error });
+  }
+  if (persisted.errors.length > 0 && persisted.endpoints.length === 0) {
+    // Fail closed: an operator who deployed an agent through the provider must
+    // not silently get a gateway running without it.
+    throw new Error(
+      `provisioned Buzz endpoints could not be restored: ${persisted.errors.join("; ")}`,
+    );
+  }
+  if (persisted.endpoints.length > 0) {
+    log.info("restored provisioned Buzz endpoints", {
+      count: persisted.endpoints.length,
+    });
+  }
+
   const agentApiUnregs: Unregister[] = [];
   let agentApiPool: SideSessionPool | null = null;
   let agentApiOrphans: OrphanListenerManager | null = null;
@@ -262,6 +304,7 @@ export async function startGateway(
         pool: agentApiPool,
         orphans: agentApiOrphans,
         buzzBroker,
+        provisioning,
       }),
     );
     const retention = config.agent_api.send.idempotency_retention_ms;
@@ -358,7 +401,7 @@ export async function startGateway(
     buzzTransport = new BuzzTransport({
       db,
       normalized,
-      endpoints: normalized.endpoints,
+      endpoints: [...normalized.endpoints, ...persisted.endpoints],
       alerts,
       adapters,
       onAccepted: async ({ endpointId, inboundEventId, normalizedEvent }) =>
@@ -376,6 +419,7 @@ export async function startGateway(
       onProactive: ({ endpointId, channelId, prompt }) =>
         registry.handleBuzzHeartbeat({ endpointId, channelId, prompt }),
     });
+    provisioning.attachTransport(buzzTransport);
     transports.push(buzzTransport);
   }
 

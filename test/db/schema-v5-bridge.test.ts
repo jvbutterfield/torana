@@ -93,6 +93,7 @@ describe("schema-v5 compatibility bridge", () => {
       "0004_normalized_platform_state",
       "0005_normalized_turns_outbox",
       "0006_publisher_publications",
+      "0007_provisioned_endpoints",
     ]);
     expect(plan.backfills?.inbound_updates).toBe(1);
     expect(JSON.stringify(plan.backfills)).not.toContain("secret-free count");
@@ -109,7 +110,7 @@ describe("schema-v5 compatibility bridge", () => {
     });
 
     const migration = applyMigrations(dbPath);
-    expect(migration.snapshotPath).toBe(`${dbPath}.pre-v6`);
+    expect(migration.snapshotPath).toBe(`${dbPath}.pre-v7`);
     expect(existsSync(migration.snapshotPath!)).toBe(true);
 
     let bridge = new GatewayDB(dbPath);
@@ -328,7 +329,7 @@ describe("schema-v5 compatibility bridge", () => {
     runtime.close();
   });
 
-  test("the pre-v6 snapshot restores the v3 emergency fallback", () => {
+  test("the pre-v7 snapshot restores the v3 emergency fallback", () => {
     createV3Database();
     const migration = applyMigrations(dbPath);
     const restored = join(tmpDir, "restored.db");

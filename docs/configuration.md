@@ -345,6 +345,10 @@ agent_api:
       bot_ids: ["reviewer"]
       scopes: ["ask", "send"]
       buzz_tools: false # opt-in Buzz CLI access for this token's ask turns
+    - name: buzz-provisioner # dedicated: endpoints:admin cannot be combined
+      secret_ref: ${TORANA_ADMIN_TOKEN_BUZZ_PROVISION}
+      bot_ids: ["cato"] # which agents it may attach endpoints to
+      scopes: ["endpoints:admin"]
   side_sessions:
     idle_ttl_ms: 3600000 # 1h
     hard_ttl_ms: 86400000 # 24h
@@ -454,3 +458,46 @@ The runner always invokes `codex exec [resume <thread_id>] --json --skip-git-rep
 ## Strict mode
 
 Unknown keys at any nesting level produce a precise error (`bots[0].runnr: Unrecognized key`). Keep your config tidy.
+
+## Buzz endpoint provisioning
+
+Buzz endpoints normally live in this file. They can also be created at runtime
+through `PUT /v1/admin/buzz/endpoints/<id>`, which is how a Buzz Desktop
+provider deploys an agent onto Torana. A provisioned endpoint is stored in the
+gateway database on the data volume and is otherwise identical to a YAML one:
+it is re-validated through the same schema on every load, so identity checks,
+auth-tag authorization, globally unique endpoint ids, and the shared-identity
+rules apply unchanged.
+
+Three things make it safe to expose:
+
+- **`TORANA_PROVISIONING_SECRETS_KEY` (required to provision).** 32 bytes as 64
+  hex characters or base64 — `openssl rand -hex 32`. Each row's private key and
+  auth tag are sealed with AES-256-GCM under this key, bound to the endpoint id,
+  so a ciphertext cannot be moved between rows. The key is deliberately not in
+  the database: a restored or copied volume without it yields rows that cannot
+  be opened, and startup fails closed rather than running an endpoint nobody can
+  account for. **Back up the key separately from the volume — a restore without
+  it cannot recover those agent identities.** Doctor check `C029` reports
+  whether every stored row decrypts with the configured key.
+- **A dedicated token.** The routes require the `endpoints:admin` scope, and
+  config validation rejects a token that combines it with `ask` or `send`. The
+  token's `bot_ids` still bound which agents it may attach endpoints to.
+- **Agent binding.** Every deploy names an `agent_id` that already exists in
+  this file with a runner. Provisioning creates _endpoints_, never agents or
+  runners, so an identity with no agent to bind to — an outbound-only publisher,
+  for instance — is refused rather than half-created.
+
+Precedence, which matters because `torana.yaml` is baked into a deploy image
+while provisioned rows live on the volume:
+
+1. **A YAML endpoint always wins.** A deploy whose endpoint id _or_ whose
+   derived pubkey collides with a YAML-declared endpoint is rejected with
+   "managed by static config".
+2. **Provisioned endpoints survive redeploys untouched.** They are never
+   regenerated from image state.
+3. **Migrating an agent from YAML to provisioned is an explicit operator
+   sequence** — remove the endpoint block, redeploy, then provider-deploy. It
+   never happens automatically.
+
+`torana endpoints status` shows `yaml` or `provisioned` per endpoint.

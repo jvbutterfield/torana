@@ -475,6 +475,8 @@ describe("owner !shutdown lifecycle", () => {
         "supervisor reports disabled",
       );
       expect(transport.snapshots()[0]!.connected).toBe(false);
+      await transport.stop();
+      transports.splice(transports.indexOf(transport), 1);
       db.close();
     },
     { timeout: 30_000 },
@@ -517,6 +519,8 @@ describe("owner !shutdown lifecycle", () => {
       expect(db.getEndpointState("alpha-buzz")!.stateReason).toBe(
         OWNER_SHUTDOWN,
       );
+      await transport.stop();
+      transports.splice(transports.indexOf(transport), 1);
       db.close();
     },
     { timeout: 30_000 },
@@ -650,6 +654,8 @@ describe("owner !shutdown lifecycle", () => {
         () => relay.presence().some((e) => e.content === "offline"),
         "offline presence after drain",
       );
+      await transport.stop();
+      transports.splice(transports.indexOf(transport), 1);
       db.close();
     },
     { timeout: 40_000 },
@@ -707,6 +713,8 @@ describe("owner !shutdown lifecycle", () => {
         "endpoint disabled after the drain budget expired",
       );
       expect(db.endpointBacklog("alpha-buzz").running).toBe(1);
+      await transport.stop();
+      transports.splice(transports.indexOf(transport), 1);
       db.close();
     },
     { timeout: 30_000 },

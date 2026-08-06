@@ -183,7 +183,7 @@ export interface ResolvedAgentApiToken {
   /** SHA-256 of the UTF-8 bytes of `secret`. 32 bytes. */
   hash: Uint8Array;
   bot_ids: readonly string[];
-  scopes: readonly ("ask" | "send")[];
+  scopes: readonly ("ask" | "send" | "endpoints:admin")[];
   /**
    * Resolved per-token cap on concurrent inflight side-sessions: explicit
    * `max_concurrent_side_sessions` from the token block when set, otherwise
@@ -224,6 +224,13 @@ export interface LoadedConfig {
   publisherApiTokens: ResolvedPublisherApiToken[];
   /** Warnings emitted during load that are non-fatal. */
   warnings: string[];
+  /**
+   * The parsed v2 config, or null for a v1 config. Runtime endpoint
+   * provisioning re-validates a merged config through the same schema as the
+   * YAML it is merging into, which needs the parsed object rather than the
+   * normalized projection.
+   */
+  configV2: ConfigV2 | null;
 }
 
 /** Internal: load from a string with interpolation + validation. */
@@ -359,6 +366,7 @@ export function loadConfigFromString(
     agentApiTokens,
     publisherApiTokens,
     warnings,
+    configV2: parsedV2,
   };
 }
 

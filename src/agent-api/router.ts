@@ -19,11 +19,23 @@ import {
   handleDeleteSession,
 } from "./handlers/sessions.js";
 
+import {
+  ProvisioningError,
+  ProvisionRequestSchema,
+  type BuzzProvisioningService,
+} from "../platform/buzz/provisioning.js";
+
 import pkg from "../../package.json" with { type: "json" };
 
 export interface AgentApiRouterDeps extends AgentApiDeps {
   pool: SideSessionPool;
   orphans: OrphanListenerManager;
+  /**
+   * Present when Buzz endpoint provisioning is available. Absent leaves the
+   * routes registered but answering 503, so a probe can tell "this build has
+   * no provisioning" from "this path is not routed at all".
+   */
+  provisioning?: BuzzProvisioningService;
 }
 
 /**
@@ -122,8 +134,195 @@ export function registerAgentApiRoutes(
   );
 
   registerAdminRoutes(unregs, router, deps);
+  registerProvisioningRoutes(unregs, router, deps);
 
   return unregs;
+}
+
+/**
+ * Buzz endpoint provisioning — the only `/v1/*` surface deliberately exposed
+ * through the public edge, because a provider running on an operator's Desktop
+ * has to reach it. Three consequences, all enforced here:
+ *
+ *  - the routes require the dedicated `endpoints:admin` scope, never `ask`;
+ *  - the request body is capped before it is parsed;
+ *  - the token's `bot_ids` still bound which agents it may attach endpoints to.
+ *
+ * These must stay under `/v1/`. The deployment's edge proxy 404s `/v1/*` except
+ * for a literal allowlist of these paths and forwards everything else
+ * verbatim, so a route mounted at a bare `/admin/...` would be silently public.
+ */
+function registerProvisioningRoutes(
+  unregs: Unregister[],
+  router: HttpRouter,
+  deps: AgentApiRouterDeps,
+): void {
+  const path = "/v1/admin/buzz/endpoints/:endpoint_id";
+
+  unregs.push(
+    router.route(
+      "PUT",
+      path,
+      provisionAuthed(deps, async (req, params, token) => {
+        const provisioning = deps.provisioning;
+        if (!provisioning) return provisioningUnavailable();
+        const endpointId = decodeURIComponent(params.endpoint_id!);
+        const raw = await readCappedBody(req);
+        if (raw === null) {
+          return errorResponse(
+            "invalid_body",
+            `request body exceeds ${PROVISION_MAX_BODY_BYTES} bytes`,
+          );
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(raw);
+        } catch {
+          return errorResponse("invalid_body", "body must be JSON");
+        }
+        const parsed = ProvisionRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          return errorResponse(
+            "invalid_body",
+            parsed.error.issues
+              .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+              .join("; "),
+          );
+        }
+        if (!token.bot_ids.includes(parsed.data.agent_id)) {
+          return mapAuthFailure({
+            kind: "bot_not_permitted",
+            botId: parsed.data.agent_id,
+          });
+        }
+        try {
+          const outcome = await provisioning.upsert(
+            endpointId,
+            parsed.data,
+            token.name,
+          );
+          return jsonResponse(200, {
+            endpoint_id: outcome.endpointId,
+            agent_id: parsed.data.agent_id,
+            pubkey: outcome.pubkey,
+            result: outcome.kind,
+          });
+        } catch (error) {
+          return provisioningError(error);
+        }
+      }),
+    ),
+  );
+
+  unregs.push(
+    router.route(
+      "GET",
+      path,
+      provisionAuthed(deps, async (_req, params, token) => {
+        const provisioning = deps.provisioning;
+        if (!provisioning) return provisioningUnavailable();
+        const status = provisioning.status(
+          decodeURIComponent(params.endpoint_id!),
+        );
+        if (!status || !token.bot_ids.includes(status.agentId)) {
+          return adminNotFound();
+        }
+        return jsonResponse(200, {
+          endpoint_id: status.endpointId,
+          agent_id: status.agentId,
+          pubkey: status.pubkey,
+          lifecycle_state: status.lifecycleState,
+          runtime_state: status.runtimeState,
+          connected: status.connected,
+          presence: status.presence
+            ? {
+                last_published_at: status.presence.lastPublishedAt,
+                consecutive_failures: status.presence.consecutiveFailures,
+                stale: status.presence.stale,
+              }
+            : null,
+          created_at: status.createdAt,
+          updated_at: status.updatedAt,
+          provisioned_by: status.provisionedBy,
+        });
+      }),
+    ),
+  );
+
+  unregs.push(
+    router.route(
+      "DELETE",
+      path,
+      provisionAuthed(deps, async (_req, params, token) => {
+        const provisioning = deps.provisioning;
+        if (!provisioning) return provisioningUnavailable();
+        const endpointId = decodeURIComponent(params.endpoint_id!);
+        const status = provisioning.status(endpointId);
+        if (!status || !token.bot_ids.includes(status.agentId)) {
+          return adminNotFound();
+        }
+        await provisioning.remove(endpointId);
+        return jsonResponse(200, {
+          endpoint_id: endpointId,
+          result: "removed",
+        });
+      }),
+    ),
+  );
+}
+
+const PROVISION_MAX_BODY_BYTES = 64 * 1024;
+
+/** Read at most the cap. Returns null when the body is larger. */
+async function readCappedBody(req: Request): Promise<string | null> {
+  const declared = req.headers.get("Content-Length");
+  if (declared && Number(declared) > PROVISION_MAX_BODY_BYTES) return null;
+  const raw = await req.text();
+  if (Buffer.byteLength(raw, "utf8") > PROVISION_MAX_BODY_BYTES) return null;
+  return raw;
+}
+
+function provisioningUnavailable(): Response {
+  return jsonResponse(503, {
+    error: "unavailable",
+    message: "endpoint provisioning is not configured on this gateway",
+  });
+}
+
+function provisioningError(error: unknown): Response {
+  if (error instanceof ProvisioningError) {
+    switch (error.code) {
+      case "unknown_agent":
+      case "invalid_request":
+        return errorResponse("invalid_body", error.message);
+      case "conflict":
+      case "capacity":
+        return adminConflict(error.message);
+      case "not_configured":
+        return jsonResponse(503, {
+          error: "unavailable",
+          message: error.message,
+        });
+    }
+  }
+  throw error;
+}
+
+function provisionAuthed(
+  deps: AgentApiDeps,
+  handler: AdminHandler,
+): (req: Request, params: Record<string, string>) => Promise<Response> {
+  return async (req, params) => {
+    const a = authenticate(deps.tokens, req.headers.get("Authorization"));
+    if ("kind" in a) return mapAuthFailure(a);
+    if (!a.token.scopes.includes("endpoints:admin")) {
+      return mapAuthFailure({
+        kind: "scope_not_permitted",
+        scope: "endpoints:admin",
+      });
+    }
+    return handler(req, params, a.token);
+  };
 }
 
 function registerAdminRoutes(

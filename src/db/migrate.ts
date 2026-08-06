@@ -4,7 +4,8 @@
 //   - Fresh install: DB doesn't exist or has no tables. Apply schema.sql, set user_version=TARGET.
 //   - v0-v2 upgrades apply the legacy migrations followed by the normalized
 //     compatibility expansion.
-//   - v3 applies 0004..0006; v4 applies 0005 + 0006; v5 applies 0006; v6 is current.
+//   - v3 applies 0004..0007; v4 applies 0005..0007; v5 applies 0006 + 0007;
+//     v6 applies 0007; v7 is current.
 //
 // Migration is idempotent: running twice is a no-op. Failure rolls back the
 // transaction; next run re-applies from scratch.
@@ -101,7 +102,7 @@ export function detectVersion(db: Database): number | null {
   );
 }
 
-export const TARGET_VERSION = 6;
+export const TARGET_VERSION = 7;
 
 const STEP_0001: MigrationStep = {
   id: "0001_persona_to_bot_id",
@@ -157,9 +158,18 @@ const STEP_0006: MigrationStep = {
   },
 } as unknown as MigrationStep;
 
-const STEP_V6_MAINTENANCE: MigrationStep = {
-  id: "v6_incremental_auto_vacuum",
-  description: "Enable and verify incremental auto-vacuum for schema v6",
+const STEP_0007: MigrationStep = {
+  id: "0007_provisioned_endpoints",
+  description:
+    "Add DB-backed provisioned Buzz endpoints with encrypted secrets",
+  get sql(): string {
+    return readMigrationSql("0007_provisioned_endpoints.sql");
+  },
+} as unknown as MigrationStep;
+
+const STEP_V7_MAINTENANCE: MigrationStep = {
+  id: "v7_incremental_auto_vacuum",
+  description: "Enable and verify incremental auto-vacuum for schema v7",
   sql: "",
 };
 
@@ -175,7 +185,9 @@ function freshInstallStep(): MigrationStep {
       "\n" +
       STEP_0005.sql +
       "\n" +
-      STEP_0006.sql,
+      STEP_0006.sql +
+      "\n" +
+      STEP_0007.sql,
   };
 }
 
@@ -207,7 +219,15 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: version,
         targetVersion: TARGET_VERSION,
-        steps: mode.auto_vacuum === 2 ? [] : [STEP_V6_MAINTENANCE],
+        steps: mode.auto_vacuum === 2 ? [] : [STEP_V7_MAINTENANCE],
+        backfills,
+      };
+    }
+    if (version === 6) {
+      return {
+        currentVersion: 6,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0007],
         backfills,
       };
     }
@@ -215,7 +235,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 5,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0006],
+        steps: [STEP_0006, STEP_0007],
         backfills,
       };
     }
@@ -223,7 +243,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 4,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0005, STEP_0006],
+        steps: [STEP_0005, STEP_0006, STEP_0007],
         backfills,
       };
     }
@@ -231,7 +251,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 3,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0004, STEP_0005, STEP_0006],
+        steps: [STEP_0004, STEP_0005, STEP_0006, STEP_0007],
         backfills,
       };
     }
@@ -239,7 +259,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 2,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0003, STEP_0004, STEP_0005, STEP_0006],
+        steps: [STEP_0003, STEP_0004, STEP_0005, STEP_0006, STEP_0007],
         backfills,
       };
     }
@@ -247,7 +267,14 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 1,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0002, STEP_0003, STEP_0004, STEP_0005, STEP_0006],
+        steps: [
+          STEP_0002,
+          STEP_0003,
+          STEP_0004,
+          STEP_0005,
+          STEP_0006,
+          STEP_0007,
+        ],
         backfills,
       };
     }
@@ -262,6 +289,7 @@ export function planMigration(dbPath: string): MigrationPlan {
           STEP_0004,
           STEP_0005,
           STEP_0006,
+          STEP_0007,
         ],
         backfills,
       };
@@ -398,7 +426,7 @@ function assertMigrationDiskSpace(dbPath: string): void {
   const requiredBytes = databaseBytes * 2 + 16 * 1024 * 1024;
   if (availableBytes < requiredBytes) {
     throw new Error(
-      `insufficient disk space for schema-v6 snapshot/VACUUM: ` +
+      `insufficient disk space for schema-v${TARGET_VERSION} snapshot/VACUUM: ` +
         `need at least ${requiredBytes} bytes, have ${availableBytes}`,
     );
   }

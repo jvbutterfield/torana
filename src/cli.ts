@@ -469,11 +469,20 @@ async function main(argv: string[]): Promise<void> {
       const db = new GatewayDB(config.gateway.db_path!);
       try {
         if (action === "status") {
+          // Where an endpoint came from decides how an operator changes it: a
+          // YAML endpoint needs a config edit and a redeploy, a provisioned
+          // one is owned by the provider and survives redeploys untouched.
+          const provisionedIds = new Set(
+            db.listProvisionedEndpoints().map((row) => row.endpointId),
+          );
           const rows = db
             .listExternalEndpoints()
             .filter((row) => !endpointId || row.endpointId === endpointId)
             .map((row) => ({
               ...row,
+              source: provisionedIds.has(row.endpointId)
+                ? ("provisioned" as const)
+                : ("yaml" as const),
               backlog: db.endpointBacklog(row.endpointId),
             }));
           if (endpointId && rows.length === 0) {
@@ -485,7 +494,7 @@ async function main(argv: string[]): Promise<void> {
             for (const row of rows) {
               const backlog = row.backlog;
               console.log(
-                `${row.endpointId}\t${row.platform}\t${row.lifecycleState}\tqueued=${backlog.queued} running=${backlog.running} outbox=${backlog.outbox}${row.stateReason ? `\treason=${row.stateReason}` : ""}`,
+                `${row.endpointId}\t${row.platform}\t${row.source}\t${row.lifecycleState}\tqueued=${backlog.queued} running=${backlog.running} outbox=${backlog.outbox}${row.stateReason ? `\treason=${row.stateReason}` : ""}`,
               );
             }
           }
@@ -560,8 +569,15 @@ async function main(argv: string[]): Promise<void> {
       return;
     }
     case "migrate": {
-      if (args.migrationTo !== null && args.migrationTo !== 6) {
-        throw new Error("migrate currently supports only --to 6");
+      // `--to` stays an explicit acknowledgement of the target rather than a
+      // free-form version selector: the documented bridge activation is 6, and
+      // 7 is the current schema.
+      if (
+        args.migrationTo !== null &&
+        args.migrationTo !== 6 &&
+        args.migrationTo !== 7
+      ) {
+        throw new Error("migrate currently supports only --to 6 or --to 7");
       }
       const path = resolveConfigPath(args.configPath);
       const { config, secrets } = loadConfigFromFile(path);
@@ -584,6 +600,7 @@ async function main(argv: string[]): Promise<void> {
         agentApiTokens,
         publisherApiTokens,
         warnings,
+        configV2,
       } = loadConfigFromFile(path);
       setSecrets(secrets);
       setLogLevel(config.gateway.log_level);
@@ -599,6 +616,7 @@ async function main(argv: string[]): Promise<void> {
         autoMigrate: args.autoMigrate,
         agentApiTokens,
         publisherApiTokens,
+        configV2,
       });
 
       const onSignal = async (signal: string): Promise<void> => {
@@ -652,7 +670,7 @@ Gateway options:
   --config, -c <path>   Path to torana.yaml (defaults to $TORANA_CONFIG or ./torana.yaml)
   --auto-migrate        (start) Apply DB migrations automatically if stale
   --dry-run             (migrate) Print planned steps without applying
-  --to 6                (migrate) Explicit schema-v6 bridge activation
+  --to <6|7>            (migrate) Explicit schema bridge/target activation
   --format <text|json>  (doctor) Output format (default: text)
   --server <url>        (doctor) Run remote R001..R003 probes against <url>
   --token <tok>         (doctor) Bearer token for remote probe

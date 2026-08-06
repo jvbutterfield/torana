@@ -104,17 +104,28 @@ export interface BuzzTransportOptions {
 
 export class BuzzTransport implements Transport {
   readonly kind = "buzz" as const;
-  readonly botIds: readonly string[];
   private supervisors: BuzzEndpointSupervisor[];
+  private readonly opts: BuzzTransportOptions;
+  private started = false;
 
   constructor(opts: BuzzTransportOptions) {
+    this.opts = opts;
     this.supervisors = opts.endpoints
       .filter((endpoint) => endpoint.platform === "buzz" && endpoint.buzz)
       .map((endpoint) => new BuzzEndpointSupervisor({ ...opts, endpoint }));
-    this.botIds = this.supervisors.map((item) => item.agentId);
+  }
+
+  /**
+   * Derived rather than captured at construction: provisioning can attach an
+   * endpoint to an agent after startup, and a stale list would leave that
+   * agent's endpoint invisible to everything that iterates transports.
+   */
+  get botIds(): readonly string[] {
+    return this.supervisors.map((item) => item.agentId);
   }
 
   async start(_onUpdate: OnUpdateHandler): Promise<void> {
+    this.started = true;
     for (const supervisor of this.supervisors) supervisor.start();
   }
 
@@ -123,11 +134,67 @@ export class BuzzTransport implements Transport {
   }
 
   async stop(): Promise<void> {
+    this.started = false;
     await Promise.all(this.supervisors.map((item) => item.stop()));
   }
 
   snapshots(): BuzzEndpointHealth[] {
     return this.supervisors.map((item) => item.snapshot());
+  }
+
+  snapshot(endpointId: string): BuzzEndpointHealth | null {
+    return (
+      this.supervisors
+        .find((item) => item.endpointId === endpointId)
+        ?.snapshot() ?? null
+    );
+  }
+
+  /**
+   * Add or replace a supervisor at runtime — the transport capability that
+   * makes provisioning possible without a process restart.
+   *
+   * Replacing is a full teardown of the old supervisor first (drain intake,
+   * announce offline, close), because two supervisors on one endpoint id would
+   * mean two subscriptions and two independently signed replies. Idempotent:
+   * re-adding the same endpoint is a clean replace, not a duplicate.
+   */
+  async upsertEndpoint(endpoint: NormalizedEndpointConfig): Promise<void> {
+    if (endpoint.platform !== "buzz" || !endpoint.buzz) {
+      throw new Error("only Buzz endpoints can be provisioned");
+    }
+    await this.removeEndpoint(endpoint.id);
+    const supervisor = new BuzzEndpointSupervisor({ ...this.opts, endpoint });
+    this.supervisors.push(supervisor);
+    if (this.started) supervisor.start();
+  }
+
+  /**
+   * Stop and drop a supervisor. Returns false when there was nothing to stop.
+   *
+   * With `drainReason`, in-flight turns are allowed to finish and the endpoint
+   * announces `offline` before the socket closes — what a deliberate delete
+   * should do. Without it (the replace path of `upsertEndpoint`) the endpoint
+   * is coming straight back, so the drain would only add latency.
+   */
+  async removeEndpoint(
+    endpointId: string,
+    opts: { drainReason?: string } = {},
+  ): Promise<boolean> {
+    const index = this.supervisors.findIndex(
+      (item) => item.endpointId === endpointId,
+    );
+    if (index === -1) return false;
+    const [supervisor] = this.supervisors.splice(index, 1);
+    if (opts.drainReason) {
+      await supervisor!.drainAndAnnounceOffline(opts.drainReason);
+    }
+    await supervisor!.stop();
+    return true;
+  }
+
+  hasEndpoint(endpointId: string): boolean {
+    return this.supervisors.some((item) => item.endpointId === endpointId);
   }
 }
 
@@ -882,16 +949,37 @@ class BuzzEndpointSupervisor {
    */
   private async beginOwnerShutdown(): Promise<void> {
     if (this.ownerShutdownInProgress) return;
-    this.ownerShutdownInProgress = true;
     log.info("Buzz owner shutdown requested", {
       endpoint_id: this.endpointId,
       agent_id: this.agentId,
     });
+    await this.drainAndAnnounceOffline(OWNER_SHUTDOWN);
+    this.db.setEndpointLifecycle(this.endpointId, "disabled", OWNER_SHUTDOWN);
+    this.state = "disabled";
+    this.client?.close();
+    log.info("Buzz endpoint stopped by owner", {
+      endpoint_id: this.endpointId,
+    });
+  }
+
+  /**
+   * Stop taking work, let in-flight turns finish, then say goodbye while the
+   * connection is still up.
+   *
+   * The ordering is the whole point. Announcing `offline` after the socket is
+   * gone is impossible, and skipping it leaves a stopped agent showing online
+   * until the relay's 180 s TTL lapses. Callers set the terminal lifecycle
+   * state themselves, because "stopped by its owner" and "deleted by its
+   * provider" are different facts about the same endpoint.
+   */
+  async drainAndAnnounceOffline(reason: string): Promise<void> {
+    if (this.ownerShutdownInProgress) return;
+    this.ownerShutdownInProgress = true;
     try {
       // Intake stops first so nothing new is accepted while we drain, and the
       // lifecycle row shows `draining` to any operator looking at it.
       await this.stopIngress();
-      this.db.setEndpointLifecycle(this.endpointId, "draining", OWNER_SHUTDOWN);
+      this.db.setEndpointLifecycle(this.endpointId, "draining", reason);
       this.state = "draining";
 
       const deadline = Date.now() + this.ownerShutdownDrainMs;
@@ -902,16 +990,14 @@ class BuzzEndpointSupervisor {
       }
       const remaining = this.db.endpointBacklog(this.endpointId);
       if (remaining.running > 0) {
-        log.warn("Buzz owner shutdown drain timed out", {
+        log.warn("Buzz endpoint drain timed out", {
           endpoint_id: this.endpointId,
+          reason,
           running: remaining.running,
           drain_ms: this.ownerShutdownDrainMs,
         });
       }
 
-      // Announce offline while the connection is still up. The relay would
-      // expire presence on its own after its TTL, but leaving a stopped agent
-      // showing online for that long is the exact ambiguity I5 removes.
       if (!this.outboundOnly) {
         await this.adapter
           .signal(this.signalConversation(), {
@@ -921,12 +1007,6 @@ class BuzzEndpointSupervisor {
           .catch(() => false);
       }
     } finally {
-      this.db.setEndpointLifecycle(this.endpointId, "disabled", OWNER_SHUTDOWN);
-      this.state = "disabled";
-      this.client?.close();
-      log.info("Buzz endpoint stopped by owner", {
-        endpoint_id: this.endpointId,
-      });
       this.ownerShutdownInProgress = false;
     }
   }

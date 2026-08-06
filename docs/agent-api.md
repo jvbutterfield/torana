@@ -526,6 +526,46 @@ The forced endpoint action requires the JSON body
 the endpoint to be draining first. An unauthorized or out-of-scope resource is
 reported as not found so tokens cannot enumerate other agents' state.
 
+### Buzz endpoint provisioning
+
+| Method   | Route                          | Purpose                         |
+| -------- | ------------------------------ | ------------------------------- |
+| `PUT`    | `/v1/admin/buzz/endpoints/:id` | Create or reconcile, then start |
+| `GET`    | `/v1/admin/buzz/endpoints/:id` | Lifecycle, connection, presence |
+| `DELETE` | `/v1/admin/buzz/endpoints/:id` | Drain, announce offline, remove |
+
+These three are the only `/v1/*` routes intended to be reachable from outside
+the deployment, because a Buzz Desktop provider runs on an operator's own
+machine. They therefore have their own rules, which differ from every route
+above:
+
+- they require the dedicated **`endpoints:admin`** scope, never `ask`, and
+  config validation rejects a token that mixes the two;
+- the request body is capped at 64 KiB before it is parsed;
+- the token's `bot_ids` still bound which agents an endpoint may attach to.
+
+`PUT` is idempotent and keyed on the pubkey derived from the submitted key, not
+on the endpoint id: an identical deploy against a live, healthy endpoint is a
+strict no-op (`"result": "unchanged"`), a deploy against a disabled or failed
+one replaces its configuration and restarts it (`"replaced"`), and a deploy
+that would create a second live endpoint for an identity that already has one
+is rejected. This mirrors the Desktop's own deploy loop, where "Start" is an
+unconditional deploy rather than a conditional one.
+
+```sh
+curl -X PUT "$TORANA_URL/v1/admin/buzz/endpoints/cato-buzz" \
+  -H "Authorization: Bearer $TORANA_ADMIN_TOKEN_BUZZ_PROVISION" \
+  -d '{"agent_id":"cato","relay_url":"wss://relay.example",
+       "private_key":"nsec1…","auth_tag":"{…}","owner_pubkey":"…"}'
+# {"endpoint_id":"cato-buzz","agent_id":"cato","pubkey":"…","result":"created"}
+```
+
+Secrets are sealed at rest and never appear in a response; see
+[configuration](configuration.md#buzz-endpoint-provisioning) for the key, the
+agent-binding rule, and the YAML-versus-provisioned precedence rules. There is
+no `undeploy`: stopping a remote agent is the owner's `!shutdown`, described in
+[operations](operations.md#owner-shutdown-remote-agent-stop).
+
 When `torana ask` receives a 202 the CLI exits **6** and prints `turn_id`
 on stdout so you can pipe it into `torana turns get`:
 

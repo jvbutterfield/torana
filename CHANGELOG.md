@@ -6,6 +6,45 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- Buzz endpoints can be created at runtime instead of only in `torana.yaml`:
+  `PUT|GET|DELETE /v1/admin/buzz/endpoints/<id>`, the surface a Buzz Desktop
+  provider deploys against. A provisioned endpoint is stored in the gateway
+  database and re-validated through the same config schema as a YAML one, so
+  identity checks, auth-tag authorization, unique endpoint ids, and
+  shared-identity rules apply unchanged. `BuzzTransport` gained runtime
+  add/replace/remove of endpoint supervisors, so a deploy needs no restart.
+
+  The routes require a new dedicated `endpoints:admin` scope — config
+  validation rejects a token that combines it with `ask` or `send`, because
+  these are the only `/v1/*` routes meant to be reachable from outside the
+  deployment. Bodies are capped at 64 KiB, and a token's `bot_ids` still bound
+  which agents it may attach endpoints to.
+
+  Every deploy names an `agent_id` that already exists in YAML with a runner:
+  provisioning creates endpoints, never agents or runners. `PUT` is idempotent
+  and keyed on the pubkey derived from the submitted key, so an identical
+  deploy against a live endpoint is a strict no-op, one against a disabled
+  endpoint replaces and restarts it, and a second live endpoint for one
+  identity is refused. A YAML endpoint always wins a collision, by id or by
+  identity.
+
+  Secrets are sealed at rest with AES-256-GCM under a new required
+  `TORANA_PROVISIONING_SECRETS_KEY`, bound to the endpoint id. The key is not
+  in the database: a volume restored without it yields rows that fail closed,
+  and startup refuses rather than running an endpoint nobody can account for.
+  **Back the key up separately from the volume.** Doctor check `C029` reports
+  whether every stored row decrypts, and `torana endpoints status` now labels
+  each endpoint `yaml` or `provisioned`.
+
+### Migration
+
+- Schema v7 adds the `provisioned_endpoints` table. Run
+  `torana migrate --to 7` (or start with `--auto-migrate`). The upgrade is
+  additive — no existing table changes — and a v6 database keeps working with a
+  v6 binary if you need to roll back before any endpoint is provisioned.
+
 ### Fixed
 
 - A healthy Buzz endpoint could show offline to other community members

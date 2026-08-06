@@ -26,6 +26,11 @@ import {
 } from "./platform/buzz/protocol.js";
 import { redactString } from "./log.js";
 import { BUZZ_CLI_PIN } from "./broker/buzz-policy.js";
+import {
+  openSecret,
+  provisioningKeyFromEnv,
+  PROVISIONING_KEY_ENV,
+} from "./config/provisioning-secrets.js";
 
 export interface DoctorCheck {
   id: string;
@@ -840,6 +845,77 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       detail: endpoint
         ? `alerts target configured on ${endpoint.platform} endpoint '${endpoint.id}'${endpoint.enabled ? "" : " (disabled)"}`
         : "alerts target endpoint is unavailable",
+    });
+  }
+
+  // C029 — provisioned Buzz endpoints and the key that can open them. Rows
+  // without a usable key are a hard failure, not a warning: the operator
+  // believes those agents are deployed, and the gateway will refuse to start.
+  if (existsSync(config.gateway.db_path!)) {
+    try {
+      // A read-only handle on purpose: opening the full GatewayDB emits
+      // startup log lines, and doctor's `--format json` output must stay
+      // parseable.
+      const probe = new Database(config.gateway.db_path!, { readonly: true });
+      try {
+        const rows = probe
+          .query(
+            `SELECT endpoint_id, private_key_ciphertext FROM sqlite_master
+             JOIN provisioned_endpoints WHERE sqlite_master.type='table'
+               AND sqlite_master.name='provisioned_endpoints'`,
+          )
+          .all() as Array<{
+          endpoint_id: string;
+          private_key_ciphertext: string;
+        }>;
+        const key = provisioningKeyFromEnv();
+        if (rows.length === 0) {
+          checks.push({
+            id: "C029",
+            status: "skip",
+            detail: key
+              ? "no provisioned Buzz endpoints; provisioning key is configured"
+              : "no provisioned Buzz endpoints",
+          });
+        } else if (!key) {
+          checks.push({
+            id: "C029",
+            status: "fail",
+            detail: `${rows.length} provisioned Buzz endpoint(s) stored but ${PROVISIONING_KEY_ENV} is not set`,
+          });
+        } else {
+          let unopenable = 0;
+          for (const row of rows) {
+            try {
+              openSecret(key, row.endpoint_id, row.private_key_ciphertext);
+            } catch {
+              unopenable += 1;
+            }
+          }
+          checks.push({
+            id: "C029",
+            status: unopenable === 0 ? "ok" : "fail",
+            detail:
+              unopenable === 0
+                ? `${rows.length} provisioned Buzz endpoint(s) decrypt with the configured key`
+                : `${unopenable} of ${rows.length} provisioned Buzz endpoint(s) cannot be decrypted with the configured ${PROVISIONING_KEY_ENV}`,
+          });
+        }
+      } finally {
+        probe.close();
+      }
+    } catch (error) {
+      checks.push({
+        id: "C029",
+        status: "warn",
+        detail: `provisioned endpoints unavailable: ${redactString(error instanceof Error ? error.message : String(error))}`,
+      });
+    }
+  } else {
+    checks.push({
+      id: "C029",
+      status: "skip",
+      detail: "database does not exist; provisioned endpoints not inspected",
     });
   }
 

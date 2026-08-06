@@ -414,7 +414,11 @@ export const BotSchema = z
 
 // ---------- agent API ----------
 
-export const AgentApiScopeSchema = z.enum(["ask", "send"]);
+// `endpoints:admin` is deliberately a separate scope rather than a flag on an
+// existing one. The Buzz provisioning routes are the only `/v1/*` surface
+// exposed through the public edge, so an agent's messaging token must not be
+// able to reach them.
+export const AgentApiScopeSchema = z.enum(["ask", "send", "endpoints:admin"]);
 export type AgentApiScope = z.infer<typeof AgentApiScopeSchema>;
 
 export const AgentApiTokenSchema = z
@@ -732,6 +736,21 @@ export const ConfigSchema = z
           });
         }
         tokenNames.add(tok.name);
+        // "Dedicated" is structural, not a convention. A token that can
+        // create Buzz endpoints through the publicly reachable admin routes
+        // must not also be a messaging token that agents and scripts hand
+        // around.
+        if (
+          tok.scopes.includes("endpoints:admin") &&
+          tok.scopes.some((scope) => scope !== "endpoints:admin")
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["agent_api", "tokens", tIdx, "scopes"],
+            message:
+              "endpoints:admin must be the token's only scope; provisioning uses a dedicated token",
+          });
+        }
         for (const [bIdx, botId] of tok.bot_ids.entries()) {
           if (!ids.has(botId)) {
             ctx.addIssue({

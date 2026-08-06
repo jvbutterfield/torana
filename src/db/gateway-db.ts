@@ -41,6 +41,54 @@ export interface BuzzCursorState {
 
 export type EndpointLifecycleState = "active" | "draining" | "disabled";
 
+/**
+ * A Buzz endpoint created through the provisioning API rather than declared in
+ * `torana.yaml`. `privateKeyCiphertext`/`authTagCiphertext` are sealed
+ * envelopes — this row never carries plaintext, and it is never logged.
+ */
+export interface ProvisionedEndpointRow {
+  endpointId: string;
+  agentId: string;
+  derivedPubkey: string;
+  configJson: string;
+  privateKeyCiphertext: string;
+  authTagCiphertext: string | null;
+  provisionedBy: string;
+  deployNonce: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RawProvisionedEndpoint {
+  endpoint_id: string;
+  agent_id: string;
+  derived_pubkey: string;
+  config_json: string;
+  private_key_ciphertext: string;
+  auth_tag_ciphertext: string | null;
+  provisioned_by: string;
+  deploy_nonce: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function toProvisionedEndpoint(
+  row: RawProvisionedEndpoint,
+): ProvisionedEndpointRow {
+  return {
+    endpointId: row.endpoint_id,
+    agentId: row.agent_id,
+    derivedPubkey: row.derived_pubkey,
+    configJson: row.config_json,
+    privateKeyCiphertext: row.private_key_ciphertext,
+    authTagCiphertext: row.auth_tag_ciphertext,
+    provisionedBy: row.provisioned_by,
+    deployNonce: row.deploy_nonce,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export type PublisherEnqueueResult =
   | { kind: "accepted"; publicationId: number; outboxId: number }
   | { kind: "replay"; publicationId: number; outboxId: number }
@@ -1046,6 +1094,116 @@ export class GatewayDB {
       stateReason: row.state_reason,
       externalIdentity: row.external_identity,
     }));
+  }
+
+  // ── Provisioned Buzz endpoints ────────────────────────────────────────────
+  // Rows created by the provisioning API instead of by torana.yaml. Secrets
+  // are already sealed by the caller; this layer never sees plaintext and
+  // never logs a row.
+
+  private provisionedSchema(): boolean {
+    return !!this._db
+      .query(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provisioned_endpoints'",
+      )
+      .get();
+  }
+
+  listProvisionedEndpoints(): ProvisionedEndpointRow[] {
+    if (!this.provisionedSchema()) return [];
+    return (
+      this._db
+        .query(
+          `SELECT endpoint_id, agent_id, derived_pubkey, config_json,
+                private_key_ciphertext, auth_tag_ciphertext, provisioned_by,
+                deploy_nonce, created_at, updated_at
+         FROM provisioned_endpoints ORDER BY endpoint_id`,
+        )
+        .all() as RawProvisionedEndpoint[]
+    ).map(toProvisionedEndpoint);
+  }
+
+  getProvisionedEndpoint(endpointId: string): ProvisionedEndpointRow | null {
+    if (!this.provisionedSchema()) return null;
+    const row = this._db
+      .query(
+        `SELECT endpoint_id, agent_id, derived_pubkey, config_json,
+                private_key_ciphertext, auth_tag_ciphertext, provisioned_by,
+                deploy_nonce, created_at, updated_at
+         FROM provisioned_endpoints WHERE endpoint_id=?`,
+      )
+      .get(endpointId) as RawProvisionedEndpoint | null;
+    return row ? toProvisionedEndpoint(row) : null;
+  }
+
+  /**
+   * Reconciliation is keyed on the identity the relay authenticates, not on
+   * the endpoint id an operator happened to type.
+   */
+  getProvisionedEndpointByPubkey(
+    pubkey: string,
+  ): ProvisionedEndpointRow | null {
+    if (!this.provisionedSchema()) return null;
+    const row = this._db
+      .query(
+        `SELECT endpoint_id, agent_id, derived_pubkey, config_json,
+                private_key_ciphertext, auth_tag_ciphertext, provisioned_by,
+                deploy_nonce, created_at, updated_at
+         FROM provisioned_endpoints WHERE derived_pubkey=?`,
+      )
+      .get(pubkey) as RawProvisionedEndpoint | null;
+    return row ? toProvisionedEndpoint(row) : null;
+  }
+
+  upsertProvisionedEndpoint(row: {
+    endpointId: string;
+    agentId: string;
+    derivedPubkey: string;
+    configJson: string;
+    privateKeyCiphertext: string;
+    authTagCiphertext: string | null;
+    provisionedBy: string;
+    deployNonce: string | null;
+  }): void {
+    if (!this.provisionedSchema()) {
+      throw new Error("provisioned_endpoints table is missing; run migrations");
+    }
+    this._db
+      .prepare(
+        `INSERT INTO provisioned_endpoints
+           (endpoint_id, agent_id, derived_pubkey, config_json,
+            private_key_ciphertext, auth_tag_ciphertext, provisioned_by,
+            deploy_nonce)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(endpoint_id) DO UPDATE SET
+           agent_id=excluded.agent_id,
+           derived_pubkey=excluded.derived_pubkey,
+           config_json=excluded.config_json,
+           private_key_ciphertext=excluded.private_key_ciphertext,
+           auth_tag_ciphertext=excluded.auth_tag_ciphertext,
+           provisioned_by=excluded.provisioned_by,
+           deploy_nonce=excluded.deploy_nonce,
+           updated_at=datetime('now')`,
+      )
+      .run(
+        row.endpointId,
+        row.agentId,
+        row.derivedPubkey,
+        row.configJson,
+        row.privateKeyCiphertext,
+        row.authTagCiphertext,
+        row.provisionedBy,
+        row.deployNonce,
+      );
+  }
+
+  deleteProvisionedEndpoint(endpointId: string): boolean {
+    if (!this.provisionedSchema()) return false;
+    return (
+      this._db
+        .prepare("DELETE FROM provisioned_endpoints WHERE endpoint_id=?")
+        .run(endpointId).changes === 1
+    );
   }
 
   setEndpointLifecycle(
