@@ -6,6 +6,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Changed
+
+- The pinned Buzz CLI moved from `desktop-v0.5.4` to `desktop-v0.5.5`
+  (commit `8342dfcc5890b81a269a8ec3db73a8a56f76ce79`, Apple-silicon release
+  asset `502011159`). The default `platforms.buzz.cli_sha256` is now
+  `8f59ea1a877fce972ce1d0165b9deda457085c21ee2c36ef497b8038812fdac9` and
+  doctor C024 names Buzz 0.5.5. The 0.5.5 command surface is identical to
+  0.5.4 — the regenerated `cli-manifest.json` differs only in the binary
+  checksum — so no broker policy classification changed. Deployments must
+  rebuild their Linux `buzz` from the new tag in the same change that takes
+  this Torana version; a new CLI with an older broker manifest, or the
+  reverse, is not a supported pair.
+
 ## [2.0.0-rc.9] - 2026-08-05
 
 Supersedes the 2.0.0-rc.8 tag, whose release run failed on the very bug fixed
@@ -16,7 +29,7 @@ below and published nothing.
 - Opening the gateway database could fail outright with `database is locked`
   instead of waiting. `applyMigrations` leaves a fresh database in `delete`
   journal mode, so the first `GatewayDB` open changes the mode to WAL — a
-  change that needs exclusive access — and `busy_timeout` was set *after* that
+  change that needs exclusive access — and `busy_timeout` was set _after_ that
   pragma, leaving it to run with SQLite's default timeout of zero. Any
   concurrent reader, including a second short-lived `torana` CLI invocation,
   made the open fail immediately. The timeout is now established first, so the

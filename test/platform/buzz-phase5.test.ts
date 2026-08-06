@@ -685,7 +685,9 @@ describe("Agent API send into a Buzz channel", () => {
     // which is diagnostic and does not affect threading; what must never carry
     // it is a threading tag.
     expect(
-      signed.tags.some((tag) => tag[0] === "e" && tag[1]?.includes("agentapi:")),
+      signed.tags.some(
+        (tag) => tag[0] === "e" && tag[1]?.includes("agentapi:"),
+      ),
     ).toBe(false);
     db.close();
   });

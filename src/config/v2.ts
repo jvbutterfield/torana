@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BUZZ_CLI_PIN } from "../broker/buzz-policy.js";
 import type { Config } from "./schema.js";
 import {
   AgentApiSchema,
@@ -102,9 +103,9 @@ const PlatformsSchema = z
         cli_sha256: z
           .string()
           .regex(/^[0-9a-f]{64}$/)
-          .default(
-            "97a80164a98fa8d11ffb307a9f360a6754e9c80b537c145f9e61e07cd198a770",
-          ),
+          // Single-sourced from the broker pin so a CLI upgrade cannot leave
+          // the shipped default describing the previous binary.
+          .default(BUZZ_CLI_PIN.sha256),
         reconnect: z
           .object({
             base_ms: Int.min(100).default(1000),
@@ -1478,8 +1479,7 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
     buzzPlatform: {
       enabled: false,
       cli_path: "buzz",
-      cli_sha256:
-        "97a80164a98fa8d11ffb307a9f360a6754e9c80b537c145f9e61e07cd198a770",
+      cli_sha256: BUZZ_CLI_PIN.sha256,
       reconnect: { base_ms: 1000, cap_ms: 30_000 },
       subscription: {
         historical_limit: 500,

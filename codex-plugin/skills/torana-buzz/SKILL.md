@@ -76,7 +76,7 @@ return that answer normally and let Torana's durable transport publish it.
 
 ## Stable command surface
 
-The broker recognizes the pinned Buzz 0.5.4 manifest:
+The broker recognizes the pinned Buzz 0.5.5 manifest:
 
 - `messages`: send, send-diff, edit, delete, get, thread, search, vote
 - `channels`: list, get, search, create, update, topic, purpose, join, leave,
