@@ -1,6 +1,12 @@
 # Buzz remote-agents conformance and provider plan
 
-**Status:** Draft — not started. No phase may begin before this plan is reviewed.
+**Status:** Implemented. Phases 1–5 are complete and gated; Phase 6 is complete
+for everything a repository can produce, and its live-environment steps (release
+cut, image pin, migration, deploy-and-observe, record conversion, shutdown
+drill, manual Desktop deploy) remain outstanding with acceptance criteria in
+[release-readiness.md](release-readiness.md). Per-phase evidence, including the
+two places this plan's assumptions turned out to be wrong, is in
+[tasks/buzz-remote-agents-progress.md](../tasks/buzz-remote-agents-progress.md).
 
 **Objective:** make Torana-hosted Buzz agents fully independent of the Buzz
 Desktop app's lifecycle and fully conformant with the Buzz remote-agents
