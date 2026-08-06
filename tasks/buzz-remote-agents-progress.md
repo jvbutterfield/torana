@@ -376,8 +376,22 @@ Two deploys failed first, and both taught something worth keeping:
    (already capped at 64 KiB) and a regression test drives the full
    PUT-poll-poll-poll-DELETE sequence.
 
+**Presence soak, Torana side: PASS** (2026-08-06). 30.9 min across all five
+production endpoints — 31/31 samples fresh, worst staleness 31.7 s, ~148 s of
+margin against the 180 s TTL, zero stale flips, zero failed publishes, zero
+disconnects. A 10 s-poll follow-up measured the true refresh interval directly
+at 30.1–31.8 s (mean 30.2 s), confirming the fake-relay soak's prediction that
+production cadence is the heartbeat plus RTT.
+
+Worth keeping: the first pass polled at 60 s against a 30 s heartbeat and
+reported an apparent 61.9 s gap. That is aliasing — each sample sees the newest
+publish two refreshes on — and the same run's 31.7 s worst staleness already
+contradicted it. Poll faster than the heartbeat; the analyzer now flags the
+condition rather than letting the number be misread.
+
 **Still outstanding**, all needing the Desktop or a deliberate drill: the
-30-minute cross-client presence soak with Desktop closed, an owner-mention
+client-side half of the presence soak with Desktop confirmed closed, an
+owner-mention
 canary on the new build, the four record conversions plus Dev Team's record
 flag, the `!shutdown` drill, and one manual Desktop deploy. Provisioning itself
 is deployed but **off** (`BUZZ_PROVISION_ENABLED` unset), verified by the

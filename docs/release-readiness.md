@@ -191,10 +191,49 @@ after a body-carrying PUT on the same keep-alive connection hung, because the
 generic path forwards request bodies as streams. Both are fixed, tested, and
 recorded in the deployment runbook's symptom table.
 
+### Presence soak — Torana side, 2026-08-06
+
+Sampled `/health` from inside the container across **30.9 minutes**, all five
+production Buzz endpoints (`alfred-buzz`, `cato-buzz`, `dev-team-buzz`,
+`harper-buzz`, `jules-buzz`):
+
+| Measure                                      | Result                  |
+| -------------------------------------------- | ----------------------- |
+| Samples showing a fresh publish              | 31 / 31, every endpoint |
+| Worst observed staleness                     | 31.7 s                  |
+| Margin against the relay's 180 s TTL         | ~148 s                  |
+| Stale flips / failed publishes / disconnects | none                    |
+| Runtime state                                | `healthy` throughout    |
+
+A second, finer-grained watch (10 s poll, 4.7 min) measured the refresh
+interval directly rather than inferring it: **30.1–31.8 s, mean 30.2 s** — the
+configured 30 s heartbeat plus roughly 200 ms of relay round-trip. That
+confirms the prediction recorded from the fake-relay soak: production cadence
+is the interval plus RTT, and the RTT here is small.
+
+**Measurement caveat, recorded because it nearly produced a wrong conclusion.**
+The first pass polled every 60 s against a 30 s heartbeat and reported an
+apparent 61.9 s "refresh gap". That is aliasing, not the system: each sample
+sees the newest publish two refreshes on, so the apparent gap collapses to the
+poll period. The same run's worst observed staleness was 31.7 s, which is
+impossible at a true 61 s cadence, and the 10 s watch settled it. Any future
+run must poll faster than the heartbeat; the analyzer now detects this
+condition and reads the staleness bound instead.
+
+**What this establishes and what it does not.** It establishes that the US-022
+fix works under real production traffic: presence publishes continuously, the
+rate limiter suppresses none of it, and the endpoints hold ~148 s of headroom
+before the relay would expire them. It does _not_ establish independence from
+Buzz Desktop — whether Desktop was running during the window was not observed
+— and it cannot speak to what other members' clients render, since relay
+fan-out is per-node upstream.
+
 ### Still outstanding — requires the Desktop or a live drill
 
-1. **Presence soak from a second community member's client**: every Torana
-   agent shows online continuously for ≥ 30 min with Buzz Desktop closed.
+1. **Presence soak, client side**: a second community member confirms every
+   Torana agent shows online continuously for ≥ 30 min **with Buzz Desktop
+   confirmed closed**. The Torana half is done and recorded above; this is the
+   half that closes the independence claim.
 2. **Owner-mention canary** on the new build.
 3. **Record conversion.** Jules and Cato re-deployed through the provider for
    consistent `railway:agent-team:<endpoint-id>` addressing; Alfred and Harper
