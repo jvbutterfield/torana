@@ -130,9 +130,7 @@ function makeLoaded(
     owner_pubkey: OWNER_PUBKEY,
     allowed_pubkeys: [],
     subscribe: "mentions_and_dms",
-    ...(options.ownerShutdown
-      ? { owner_shutdown: options.ownerShutdown }
-      : {}),
+    ...(options.ownerShutdown ? { owner_shutdown: options.ownerShutdown } : {}),
     channel_overrides: {},
   });
   return loadConfigFromString(yaml.dump(upgraded), { skipInterpolation: true });
@@ -194,7 +192,7 @@ function createRelay() {
             auth.pubkey === ENDPOINT_PUBKEY &&
             Boolean(
               ownerTag &&
-                verifyOwnerAuthTag(ownerTag as typeof AUTH_TAG, auth.pubkey),
+              verifyOwnerAuthTag(ownerTag as typeof AUTH_TAG, auth.pubkey),
             );
           socket.data.authenticated = ok;
           socket.send(JSON.stringify(["OK", auth.id, ok, "authenticated"]));
