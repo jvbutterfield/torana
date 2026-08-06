@@ -98,3 +98,89 @@ external open-relay E2E, fresh cross-process Codex and Claude restart checks,
 completion of the 24-hour canary observation and mixed-platform soak, full-team
 rollout, and rollback
 rehearsal. Do not tag or publish 2.0.0 until those gates are recorded.
+
+## Buzz remote-agents conformance and provider (US-021 … US-026)
+
+Implementation evidence for
+[buzz-remote-agents-plan.md](buzz-remote-agents-plan.md); per-phase detail in
+[tasks/buzz-remote-agents-progress.md](../tasks/buzz-remote-agents-progress.md).
+
+**Versions and hashes.** Buzz `desktop-v0.5.5` at
+`8342dfcc5890b81a269a8ec3db73a8a56f76ce79`, Apple-silicon asset `502011159`
+(97,561,748 bytes), archive SHA-256
+`7fe09906460fd85e6f215af4074b50c2963f2bd3e218c75de4d6fb21a11520e3`, bundled and
+installed CLI `8f59ea1a877fce972ce1d0165b9deda457085c21ee2c36ef497b8038812fdac9`
+(byte-for-byte identical), CDHash `92f000da71c9dd221335c037d203eb8e5bc6f833`,
+Team ID `EYF346PHUG` unchanged. Verified live by re-downloading the release, not
+transcribed. The 0.5.5 command surface is identical to 0.5.4 — the regenerated
+manifest differs only in the checksum — so no broker policy tier changed.
+
+**Spec pin.** `docs/remote-agents.md` at the `desktop-v0.5.5` tree supersedes
+`28ae6cd21`. `NIP-OA.md` and `NIP-AA.md` are unchanged between them. Two
+normative deltas: the I3 presence TTL is 180 s (the plan already assumed this),
+and a new "one create attempt per call" rule, which the provider implements as
+one `PUT` per deploy followed by poll-only.
+
+**Local gate, all green.** `bun test` 1512 pass / 16 skip / 0 fail; typecheck,
+lint, and format clean; build + `verify-pack` (16/16 SQL files, now including
+the 0006 and 0007 migrations that were missing from the required list); skill
+parity 3/3; spike tests 10/10; `manifest:check` and `provenance:check` pass.
+
+**Presence soak (Phase 2 gate).** 10 minutes against the fake relay with up to
+1500 ms injected latency on every publish and query: 93 presence refreshes,
+worst gap 7893 ms, mean 6419 ms, zero suppressed, zero failed, endpoint healthy
+throughout. Reproduce with `BUZZ_PRESENCE_SOAK=1 bun test
+test/soak/buzz-presence.test.ts`. Carry into production observation: the
+supervisor waits `heartbeat_secs` _after_ each refresh completes, so the real
+cadence is the interval plus relay round-trip — roughly 30 s + RTT at the
+shipped default, not exactly 30 s.
+
+**Provider E2E (Phase 5 gate).** `BUZZ_PROVIDER_E2E=1 bun test
+test/provider/provider.e2e.test.ts` compiles the real binary, starts a gateway,
+and deploys against it: the endpoint connects and publishes presence, a second
+identical deploy reconciles to `unchanged`, and neither stdout nor stderr nor
+the status response contains the nsec or the admin token.
+
+**Deployment repo.** `agent-team` commit `04bbf3a` lands the edge policy ahead
+of the Torana release that ships the routes: the literal method-scoped proxy
+allowlist with neighbour-still-404 regression tests, a 64 KiB body cap,
+per-client rate limiting, the `BUZZ_PROVISION_ENABLED` /
+`TORANA_ADMIN_TOKEN_BUZZ_PROVISION` / `TORANA_PROVISIONING_SECRETS_KEY` env
+contract with credential-reuse rejection, and the provider-based conversion
+runbook.
+
+### Still outstanding — requires a live environment
+
+None of the following can be produced from the repository; each needs the
+Railway deployment, the hosted relay, or the Desktop UI:
+
+1. **Release cut.** Bump the package version, tag `vX.Y.Z`, and let
+   `release.yml` publish. Nothing here has been tagged or published.
+2. **Image pin.** Bump `BUZZ_SOURCE_TAG`/`BUZZ_SOURCE_COMMIT` to
+   `desktop-v0.5.5` / `8342dfcc…ce79` **and** the `torana@` package pin in the
+   same `agent-team` commit — the runbook's atomicity rule. The Dockerfile was
+   deliberately left on 0.5.4 rather than half-bumped. Verify the in-image
+   `sha256sum /usr/local/bin/buzz` matches
+   `/usr/local/share/torana/buzz-cli.sha256`, and that doctor `C024` names
+   0.5.5.
+3. **Migration.** Schema v7 (`provisioned_endpoints`). Run
+   `torana migrate --to 7` under the usual snapshot gate.
+4. **Deploy and observe.** All supervisors up, endpoints authenticated and
+   subscribed, zero pending outbox, owner-mention canary — plus the new
+   **presence soak from a second community member's client**: every Torana
+   agent shows online continuously for ≥ 30 min with Buzz Desktop closed.
+5. **Record conversion.** Jules and Cato re-deployed through the provider for
+   consistent `railway:agent-team:<endpoint-id>` addressing; Alfred and Harper
+   converted. Order per agent is fixed by the precedence rule: remove the YAML
+   endpoint, redeploy, provider-deploy, then retire the `BUZZ_*_<AGENT>`
+   variables. One agent at a time, verifying no duplicate local runtime spawns
+   on an explicit mention. **Dev Team is record-flag only** — it is an
+   outbound-only publisher principal with no runner, so provider deploy refuses
+   it naturally (no agent to bind to); its Desktop record just needs marking
+   provider-backed or archiving.
+6. **Shutdown drill.** `!shutdown` one canary agent; verify drain, offline
+   presence, and stay-down across a gateway restart; re-deploy through the
+   provider; verify the second Start reconciles to a no-op.
+7. **Manual Desktop deploy.** One real deploy from Buzz Desktop 0.5.5 on macOS
+   into a staging Torana, which is the only way to exercise the Desktop's own
+   discovery, form rendering, and payload shape.
