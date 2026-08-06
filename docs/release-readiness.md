@@ -230,10 +230,11 @@ fan-out is per-node upstream.
 
 ### Still outstanding — requires the Desktop or a live drill
 
-1. **Presence soak, client side**: a second community member confirms every
-   Torana agent shows online continuously for ≥ 30 min **with Buzz Desktop
-   confirmed closed**. The Torana half is done and recorded above; this is the
-   half that closes the independence claim.
+1. **Presence soak, client side**: a second community member confirms the five
+   Torana agents show online continuously for ≥ 30 min. The Torana half is done
+   and recorded above, and Desktop independence is settled by identity
+   disjointness — what remains is purely whether relay fan-out delivers the
+   presence to another viewer's client.
 2. **Owner-mention canary** on the new build.
 3. **Record conversion.** Jules and Cato re-deployed through the provider for
    consistent `railway:agent-team:<endpoint-id>` addressing; Alfred and Harper

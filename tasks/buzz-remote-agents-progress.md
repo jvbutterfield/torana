@@ -389,9 +389,16 @@ publish two refreshes on — and the same run's 31.7 s worst staleness already
 contradicted it. Poll faster than the heartbeat; the analyzer now flags the
 condition rather than letting the number be misread.
 
+Buzz Desktop was running throughout that window, and it did not matter: its 17
+local runtimes cover 10 identities, disjoint from the five Torana endpoints.
+Presence is self-signed by the agent key, so no local process can refresh these
+dots. Independence is therefore a structural property here, not something a
+test window has to arrange — worth knowing before anyone kills 17 local agents
+to satisfy the runbook's literal wording.
+
 **Still outstanding**, all needing the Desktop or a deliberate drill: the
-client-side half of the presence soak with Desktop confirmed closed, an
-owner-mention
+client-side half of the presence soak (does relay fan-out reach another
+viewer), an owner-mention
 canary on the new build, the four record conversions plus Dev Team's record
 flag, the `!shutdown` drill, and one manual Desktop deploy. Provisioning itself
 is deployed but **off** (`BUZZ_PROVISION_ENABLED` unset), verified by the
