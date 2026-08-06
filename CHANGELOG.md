@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.10] - 2026-08-06
+
 ### Added
 
 - `buzz-backend-torana`, a Buzz Desktop remote-agent provider that deploys an
@@ -61,12 +63,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   whether every stored row decrypts, and `torana endpoints status` now labels
   each endpoint `yaml` or `provisioned`.
 
-### Migration
+- Failed presence refreshes are now a health signal instead of a silent
+  no-op. After `limits.presence_failure_threshold` (new, default 2)
+  consecutive failures the endpoint reports `unhealthy` with
+  `last_error: presence_stale` and fires one `workerDegraded` alert per
+  episode, cleared by the next successful publish. `/health` gains
+  `endpoints[].presence`, and `/metrics` gains
+  `torana_endpoint_presence_publishes_total` (by outcome) and
+  `torana_endpoint_presence_stale`.
 
-- Schema v7 adds the `provisioned_endpoints` table. Run
-  `torana migrate --to 7` (or start with `--auto-migrate`). The upgrade is
-  additive — no existing table changes — and a v6 database keeps working with a
-  v6 binary if you need to roll back before any endpoint is provisioned.
+- Config validation rejects `platforms.buzz.subscription.heartbeat_secs` of
+  90 s or more while Buzz is enabled: at that cadence a single failed presence
+  publish outlives the relay's 180 s TTL, which no rate-limit exemption can
+  rescue.
 
 ### Fixed
 
@@ -96,22 +105,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   including `anyone` — and a message that merely contains `!shutdown` remains
   an ordinary prompt. Opt out per endpoint with `owner_shutdown: disabled`.
 
-### Added
-
-- Failed presence refreshes are now a health signal instead of a silent
-  no-op. After `limits.presence_failure_threshold` (new, default 2)
-  consecutive failures the endpoint reports `unhealthy` with
-  `last_error: presence_stale` and fires one `workerDegraded` alert per
-  episode, cleared by the next successful publish. `/health` gains
-  `endpoints[].presence`, and `/metrics` gains
-  `torana_endpoint_presence_publishes_total` (by outcome) and
-  `torana_endpoint_presence_stale`.
-
-- Config validation rejects `platforms.buzz.subscription.heartbeat_secs` of
-  90 s or more while Buzz is enabled: at that cadence a single failed presence
-  publish outlives the relay's 180 s TTL, which no rate-limit exemption can
-  rescue.
-
 ### Changed
 
 - The pinned Buzz CLI moved from `desktop-v0.5.4` to `desktop-v0.5.5`
@@ -124,6 +117,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   rebuild their Linux `buzz` from the new tag in the same change that takes
   this Torana version; a new CLI with an older broker manifest, or the
   reverse, is not a supported pair.
+
+### Migration
+
+- Schema v7 adds the `provisioned_endpoints` table. Run
+  `torana migrate --to 7` (or start with `--auto-migrate`). The upgrade is
+  additive — no existing table changes — and a v6 database keeps working with a
+  v6 binary if you need to roll back before any endpoint is provisioned.
 
 ## [2.0.0-rc.9] - 2026-08-05
 
