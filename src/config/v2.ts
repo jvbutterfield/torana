@@ -18,6 +18,7 @@ import {
 } from "./schema.js";
 import {
   BUZZ_KINDS,
+  BUZZ_PRESENCE_TTL_SECS,
   decodeSecret,
   normalizePubkey,
   ownerAuthTagAllowsEvent,
@@ -152,6 +153,13 @@ const LimitsV2Schema = z
     buzz_edit_cadence_ms: Int.min(100).default(2000),
     typing_min_interval_ms: Int.min(100).default(4000),
     presence_min_interval_ms: Int.min(100).default(30_000),
+    // Consecutive failed lifecycle presence publishes before the endpoint is
+    // marked unhealthy. Two, so the endpoint is flagged while a third
+    // heartbeat can still land inside the relay's 180 s presence TTL.
+    presence_failure_threshold: Int.min(1).default(2),
+    // How long an owner `!shutdown` waits for in-flight turns before it
+    // announces offline and disables the endpoint anyway.
+    owner_shutdown_drain_ms: Int.min(0).default(30_000),
     reaction_min_interval_ms: Int.min(100).default(1000),
     agent_reply_rate_per_conversation: z.string().default("6/60s"),
     agent_reply_rate_per_endpoint: z.string().default("60/60s"),
@@ -232,6 +240,10 @@ const BuzzEndpointSchema = z
     subscribe: z
       .enum(["mentions_and_dms", "all_channels"])
       .default("mentions_and_dms"),
+    // Honour the owner's `!shutdown` message as a stop command rather than as
+    // a prompt (remote-agents invariant I5). Disabling it makes the endpoint
+    // answer its own stop command, which is the failure the spec names.
+    owner_shutdown: z.enum(["enabled", "disabled"]).default("enabled"),
     triggers: z
       .object({
         feed: z
@@ -1068,6 +1080,27 @@ export const ConfigV2Schema = z
         message: "does not reference a configured endpoint",
       });
     }
+    // Presence liveness (spec invariant I3). A Buzz client decides "online"
+    // solely from presence events that the relay expires
+    // BUZZ_PRESENCE_TTL_SECS after the last one, so the heartbeat has to
+    // refresh well inside that window. Lifecycle presence bypasses
+    // `limits.presence_min_interval_ms`, so a rate limit at or above the
+    // heartbeat interval is harmless and is deliberately *not* rejected — the
+    // shipped defaults (30 s heartbeat, 30 000 ms limit) are exactly that
+    // combination. What is not survivable is a heartbeat so slow that one
+    // dropped publish outlives the TTL, which no bypass can rescue.
+    const heartbeatSecs =
+      config.platforms.buzz?.subscription.heartbeat_secs ?? 30;
+    if (
+      config.platforms.buzz?.enabled &&
+      heartbeatSecs * 2 >= BUZZ_PRESENCE_TTL_SECS
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["platforms", "buzz", "subscription", "heartbeat_secs"],
+        message: `must be under ${BUZZ_PRESENCE_TTL_SECS / 2}s so a single failed presence publish cannot outlive the relay's ${BUZZ_PRESENCE_TTL_SECS}s presence TTL`,
+      });
+    }
     if (config.alerts?.target) {
       const targetEndpoint = config.agents
         .flatMap((agent) => agent.endpoints)
@@ -1110,6 +1143,7 @@ export interface NormalizedBuzzRuntimeConfig {
   includeReactionsInContext: boolean;
   customEmojiPalette: Record<string, string>;
   subscribe: BuzzEndpointConfig["subscribe"];
+  ownerShutdown: BuzzEndpointConfig["owner_shutdown"];
   triggers: BuzzEndpointConfig["triggers"];
   channelOverrides: Record<
     string,
@@ -1292,6 +1326,7 @@ export function normalizeV2(config: ConfigV2): {
                       endpoint.include_reactions_in_context,
                     customEmojiPalette: { ...endpoint.custom_emoji_palette },
                     subscribe: endpoint.subscribe,
+                    ownerShutdown: endpoint.owner_shutdown,
                     triggers: endpoint.triggers,
                     channelOverrides: Object.fromEntries(
                       Object.entries(endpoint.channel_overrides).map(
@@ -1501,6 +1536,8 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       buzz_edit_cadence_ms: 2000,
       typing_min_interval_ms: 4000,
       presence_min_interval_ms: 30_000,
+      presence_failure_threshold: 2,
+      owner_shutdown_drain_ms: 30_000,
       reaction_min_interval_ms: 1000,
       agent_reply_rate_per_conversation: "6/60s",
       agent_reply_rate_per_endpoint: "60/60s",

@@ -66,6 +66,8 @@ export type BuzzInboundDecision =
       checkpoint?: { cursorScope: string; createdAt: number; eventId: string };
     };
 
+export type BuzzSignalOutcome = "published" | "suppressed" | "failed";
+
 export class BuzzAdapter implements PlatformAdapter<Event> {
   readonly endpoint: MessagingEndpoint;
   readonly config: NormalizedBuzzRuntimeConfig;
@@ -238,6 +240,18 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
         kind: "accepted",
         event: normalized,
         reason: null,
+        cursorScope,
+      };
+    }
+    // Owner "Stop" (remote-agents invariant I5). Checked before the author and
+    // mention gates so it works identically on every `respond_to` setting: an
+    // `anyone` endpoint must not let a non-owner stop it, and a `nobody`
+    // endpoint must still obey its owner.
+    if (this.isOwnerShutdown(event)) {
+      return {
+        kind: "control",
+        event: normalized,
+        reason: "owner_shutdown",
         cursorScope,
       };
     }
@@ -515,18 +529,28 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
     conversation: ConversationRef,
     signal: import("../types.js").EphemeralSignal,
   ): Promise<boolean> {
-    if (!this.publisher) return false;
+    return (await this.signalDetailed(conversation, signal)) === "published";
+  }
+
+  /**
+   * `signal()` with the outcome the supervisor needs: a presence refresh that
+   * was suppressed by the rate limiter and one that the relay rejected are
+   * indistinguishable through a boolean, but only the second is a liveness
+   * problem worth alerting on.
+   */
+  async signalDetailed(
+    conversation: ConversationRef,
+    signal: import("../types.js").EphemeralSignal,
+  ): Promise<BuzzSignalOutcome> {
+    if (!this.publisher) return "failed";
     const rateKind = signal.kind;
-    if (
-      !(signal.kind === "presence" && signal.state === "offline") &&
-      this.remainingRateLimit(rateKind) > 0
-    )
-      return false;
+    if (!this.rateLimitExempt(signal) && this.remainingRateLimit(rateKind) > 0)
+      return "suppressed";
     const tags: string[][] = [];
     let content: string;
     let kind: number;
     if (signal.kind === "typing") {
-      if (!signal.active) return true;
+      if (!signal.active) return "published";
       kind = BUZZ_KINDS.typing;
       content = "";
       tags.push(["h", conversation.channelId]);
@@ -545,12 +569,29 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
         parseOwnerAuthTag(this.config.authTag ?? undefined),
       );
       const result = await this.publisher(event);
-      if (!result.ok) return false;
+      if (!result.ok) return "failed";
       this.lastPublished.set(rateKind, Date.now());
-      return true;
+      return "published";
     } catch {
-      return false;
+      return "failed";
     }
+  }
+
+  /**
+   * `offline` is the clean-stop announcement — suppressing it would leave a
+   * stopped endpoint showing online until the relay's TTL lapses. Lifecycle
+   * presence is the heartbeat that keeps that TTL from lapsing at all; with a
+   * heartbeat at or inside `presence_min_interval_ms` the limiter would drop
+   * every other refresh and halve the safety margin against the relay's
+   * 180 s expiry.
+   */
+  private rateLimitExempt(
+    signal: import("../types.js").EphemeralSignal,
+  ): boolean {
+    return (
+      signal.kind === "presence" &&
+      (signal.state === "offline" || signal.lifecycle === true)
+    );
   }
 
   async materializeAttachments(event: InboundEvent, config: Config) {
@@ -562,6 +603,33 @@ export class BuzzAdapter implements PlatformAdapter<Event> {
       authTag: this.config.authTag,
       fetchImpl: this.mediaFetch,
     });
+  }
+
+  /**
+   * The Desktop's remote-agent "Stop" button. Written against the upstream
+   * implementation at the pinned tree rather than against a guess:
+   * `is_owner_control_command` (`crates/buzz-acp/src/lib.rs`) requires a stream
+   * message whose **trimmed content equals `!shutdown` exactly** and which
+   * `p`-tags the agent; the caller then requires the author to be the resolved
+   * owner. The Desktop publishes exactly that — `sendChannelMessage(channelId,
+   * "!shutdown", …, [agent.pubkey])` — so the mention is a tag, never inline
+   * text, and a message that merely contains `!shutdown` is an ordinary prompt.
+   *
+   * Torana accepts both stream-message kinds where upstream accepts only
+   * kind 9. Every other message path here treats V1 and V2 as the same thing,
+   * and an owner stop that worked in one channel but not another would be a
+   * worse surprise than the divergence.
+   */
+  private isOwnerShutdown(event: Event): boolean {
+    return (
+      this.config.ownerShutdown === "enabled" &&
+      (event.kind === BUZZ_KINDS.streamMessageV1 ||
+        event.kind === BUZZ_KINDS.streamMessageV2) &&
+      event.content.trim() === "!shutdown" &&
+      this.config.ownerPubkey !== null &&
+      event.pubkey === this.config.ownerPubkey &&
+      allTags(event, "p").includes(this.config.pubkey)
+    );
   }
 
   private authorAllowed(pubkey: string): boolean {

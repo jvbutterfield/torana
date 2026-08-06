@@ -694,6 +694,15 @@ function registerFixedRoutes(
         runtimeByEndpoint.get(endpoint.endpointId)?.disconnectedSince ?? null,
       subscriptions:
         runtimeByEndpoint.get(endpoint.endpointId)?.channels ?? null,
+      presence: runtimeByEndpoint.get(endpoint.endpointId)?.presence
+        ? {
+            last_published_at: runtimeByEndpoint.get(endpoint.endpointId)!
+              .presence.lastPublishedAt,
+            consecutive_failures: runtimeByEndpoint.get(endpoint.endpointId)!
+              .presence.consecutiveFailures,
+            stale: runtimeByEndpoint.get(endpoint.endpointId)!.presence.stale,
+          }
+        : null,
       queue: { queued: endpoint.queued, running: endpoint.running },
       conversations: endpoint.conversations,
       sessions: endpoint.sessions,
@@ -732,6 +741,13 @@ function registerFixedRoutes(
           endpointId: endpoint.endpointId,
           state: endpoint.state,
           channels: endpoint.channels,
+          presence: {
+            attempted: endpoint.presence.attempted,
+            suppressed: endpoint.presence.suppressed,
+            failed: endpoint.presence.failed,
+            consecutiveFailures: endpoint.presence.consecutiveFailures,
+            stale: endpoint.presence.stale,
+          },
         })),
       );
       return new Response(body, {

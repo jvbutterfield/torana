@@ -201,6 +201,13 @@ export interface RuntimeEndpointMetric {
   endpointId: string;
   state: string;
   channels: number;
+  presence?: {
+    attempted: number;
+    suppressed: number;
+    failed: number;
+    consecutiveFailures: number;
+    stale: boolean;
+  };
 }
 
 export class Metrics {
@@ -495,12 +502,37 @@ export class Metrics {
       "# HELP torana_endpoint_subscriptions Runtime subscription count for externally connected endpoints.",
     );
     lines.push("# TYPE torana_endpoint_subscriptions gauge");
+    lines.push(
+      "# HELP torana_endpoint_presence_publishes_total Lifecycle presence publishes by outcome. A healthy endpoint only increments 'published'.",
+    );
+    lines.push("# TYPE torana_endpoint_presence_publishes_total counter");
+    lines.push(
+      "# HELP torana_endpoint_presence_stale Endpoint is connected but its presence refreshes are not landing.",
+    );
+    lines.push("# TYPE torana_endpoint_presence_stale gauge");
     for (const endpoint of runtimeEndpoints) {
       lines.push(
         `torana_endpoint_connection_state{platform="buzz",endpoint_id="${endpoint.endpointId}",state="${endpoint.state}"} 1`,
       );
       lines.push(
         `torana_endpoint_subscriptions{platform="buzz",endpoint_id="${endpoint.endpointId}"} ${endpoint.channels}`,
+      );
+      const presence = endpoint.presence;
+      if (!presence) continue;
+      const labels = `platform="buzz",endpoint_id="${endpoint.endpointId}"`;
+      lines.push(
+        `torana_endpoint_presence_publishes_total{${labels},outcome="published"} ${
+          presence.attempted - presence.suppressed - presence.failed
+        }`,
+      );
+      lines.push(
+        `torana_endpoint_presence_publishes_total{${labels},outcome="suppressed"} ${presence.suppressed}`,
+      );
+      lines.push(
+        `torana_endpoint_presence_publishes_total{${labels},outcome="failed"} ${presence.failed}`,
+      );
+      lines.push(
+        `torana_endpoint_presence_stale{${labels}} ${presence.stale ? 1 : 0}`,
       );
     }
 

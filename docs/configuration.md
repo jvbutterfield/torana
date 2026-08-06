@@ -42,6 +42,8 @@ limits:
   typing_min_interval_ms: 4000
   reaction_min_interval_ms: 1000
   presence_min_interval_ms: 30000
+  presence_failure_threshold: 2
+  owner_shutdown_drain_ms: 30000
 
 agents:
   - id: cato
@@ -55,6 +57,7 @@ agents:
         auth_tag: "${BUZZ_AUTH_TAG_CATO}"
         owner_pubkey: "${BUZZ_OWNER_PUBKEY}"
         respond_to: owner_only
+        owner_shutdown: enabled # owner "!shutdown" stops the endpoint
         reactions: { received_emoji: "👀" } # null disables acknowledgements
         rerun_on_edit: false
         include_reactions_in_context: false
@@ -66,6 +69,48 @@ agents:
         default_endpoint_id: cato-buzz
         allowed_endpoint_ids: [cato-buzz]
 ```
+
+#### Presence, heartbeats, and the relay's TTL
+
+A Buzz client decides whether an agent is online from one thing only: kind
+`20001` presence events signed by the agent's own key. The relay expires
+presence 180 seconds after the last accepted one, so the online dot is a
+countdown that each endpoint supervisor restarts every
+`platforms.buzz.subscription.heartbeat_secs` (default 30).
+
+Two settings interact here, and the interaction is deliberate:
+
+- `limits.presence_min_interval_ms` (default 30000) rate-limits
+  **conversation- and runner-driven** presence signals only. The supervisor's
+  own lifecycle refresh — the connect-time publish and every heartbeat — is
+  exempt. Without that exemption a heartbeat sitting at or inside the rate
+  limit loses roughly every other refresh, halving the margin against the
+  180 s TTL, and the shipped defaults (30 s heartbeat, 30000 ms limit) sit
+  exactly on that boundary. Configuring a limit longer than the heartbeat is
+  therefore allowed and harmless.
+- `heartbeat_secs` must stay under 90. One dropped publish must not outlive
+  the relay's TTL, and config validation rejects anything that could. Leave it
+  at the default unless you have a measured reason.
+
+#### Owner `!shutdown`
+
+`owner_shutdown` (endpoint-level, default `enabled`) makes a stream message
+whose trimmed content is exactly `!shutdown`, p-tagging the endpoint and signed
+by `owner_pubkey`, a stop command rather than a prompt — that is what Buzz
+Desktop's "Stop" publishes for a remote agent. The endpoint drains for up to
+`limits.owner_shutdown_drain_ms` (default 30000), publishes presence `offline`,
+and is disabled durably; it does not come back on restart. `disabled` restores
+the previous behaviour, where the agent answers its own stop command. See
+[operations](operations.md#owner-shutdown-remote-agent-stop).
+
+`limits.presence_failure_threshold` (default 2) is how many consecutive
+lifecycle presence publishes may fail before the endpoint is marked
+`unhealthy` with `last_error: presence_stale` and a `workerDegraded` alert
+fires — once per episode, cleared by the next successful publish. Two failures
+flags the problem while a third heartbeat can still land inside the TTL.
+`/health` reports `endpoints[].presence`, and `/metrics` exposes
+`torana_endpoint_presence_publishes_total` by outcome plus
+`torana_endpoint_presence_stale`.
 
 `message_max_bytes` is the UTF-8 content ceiling. `max_frame_bytes` is the
 larger signed WebSocket envelope ceiling and must be at least 4096 bytes above

@@ -129,4 +129,15 @@ export type OutboundOperation =
 
 export type EphemeralSignal =
   | { kind: "typing"; active: boolean }
-  | { kind: "presence"; state: "online" | "away" | "offline" };
+  | {
+      kind: "presence";
+      state: "online" | "away" | "offline";
+      /**
+       * Set by an endpoint supervisor's own lifecycle loop (connect and
+       * heartbeat refreshes). Such a publish is the liveness signal itself —
+       * on Buzz it is the *only* thing a viewer's client reads — so it is
+       * exempt from the presence rate limit. Conversation- and runner-driven
+       * presence leaves this unset and stays rate-limited.
+       */
+      lifecycle?: boolean;
+    };

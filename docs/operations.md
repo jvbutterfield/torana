@@ -40,6 +40,11 @@
       "diagnosis": "none",
       "last_error": null,
       "subscriptions": 4,
+      "presence": {
+        "last_published_at": 1786000000000,
+        "consecutive_failures": 0,
+        "stale": false
+      },
       "queue": { "queued": 0, "running": 0 },
       "conversations": 12,
       "sessions": 8,
@@ -54,6 +59,17 @@ Returns HTTP 503 if any bot's runner isn't ready or a Buzz endpoint is
 unhealthy. `diagnosis` is a bounded operator hint (`key`, `auth`, `membership`,
 or `reconnect`); the redacted `last_error` carries the supporting detail.
 
+`presence` is the liveness signal Buzz clients actually read. An endpoint whose
+`last_error` is `presence_stale` is **connected but going invisible**: the
+relay expires presence 180 s after the last accepted publish, so once
+`consecutive_failures` reaches `limits.presence_failure_threshold` the endpoint
+is marked unhealthy and alerts, while the connection itself is still fine.
+Diagnose it as a publish/permission problem on the agent's own key, not as a
+reconnect. Note that presence fan-out is per relay node upstream, so an agent
+can legitimately look offline to some viewers and online to others while
+`presence.stale` is `false` — that asymmetry is not a Torana fault and is not
+fixable from here.
+
 ## Metrics endpoint
 
 `GET /metrics` → Prometheus text exposition format. **Off by default** — set `metrics.enabled: true` to expose.
@@ -67,7 +83,15 @@ telegram_api_calls_total{status="2xx"} 1024
 torana_endpoint_connection_state{platform="buzz",endpoint_id="cato-buzz",state="healthy"} 1
 torana_conversation_queue_depth{platform="buzz",endpoint_id="cato-buzz",state="queued"} 0
 torana_endpoint_outbox_depth{platform="buzz",endpoint_id="cato-buzz",status="dead"} 0
+torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="cato-buzz",outcome="published"} 120
+torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="cato-buzz",outcome="suppressed"} 0
+torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="cato-buzz",outcome="failed"} 0
+torana_endpoint_presence_stale{platform="buzz",endpoint_id="cato-buzz"} 0
 ```
+
+A non-zero `outcome="suppressed"` means a lifecycle presence refresh was
+dropped by the presence rate limiter, which the lifecycle exemption is supposed
+to make impossible — treat it as a regression, not as tuning.
 
 `bot_state` values: `0=disabled`, `1=starting`, `2=ready`, `3=busy`, `4=crash_loop`.
 
@@ -154,6 +178,35 @@ On `SIGTERM`/`SIGINT`:
 5. HTTP/relay sockets close, then SQLite checkpoints and closes. Exit 0.
 
 Hard-cutoff at `shutdown.hard_timeout_secs` (default 25). Tuned to fit within Railway's 30s SIGKILL window.
+
+## Owner `!shutdown` (remote-agent Stop)
+
+Buzz Desktop's "Stop" for a provider-backed agent is not an RPC — it publishes
+a stream message whose content is exactly `!shutdown`, p-tagging the agent,
+signed by the owner. Torana treats that as a control command, never as a
+prompt:
+
+1. intake stops and the endpoint's `lifecycle_state` becomes `draining` with
+   `state_reason = owner_shutdown`;
+2. in-flight turns drain for up to `limits.owner_shutdown_drain_ms`
+   (default 30000) — the relay connection stays up for this, so replies still
+   land;
+3. presence `offline` is published, so clients stop showing the agent as
+   online immediately instead of waiting out the relay's 180 s TTL;
+4. `lifecycle_state` becomes `disabled`, and the connection closes.
+
+**It stays down.** `disabled` is durable and a process restart does not
+re-enable it — that is the point of the invariant, not an accident. Bringing
+it back is an explicit action: `torana endpoints resume <id>` or, once the
+provider exists, a Desktop "Start" (provider deploy).
+
+Only the endpoint's configured `owner_pubkey` can do this, on every
+`respond_to` setting, including `anyone`. A `!shutdown` from anyone else is an
+ordinary message, and so is a message that merely contains the word — the
+match is on the trimmed content being exactly `!shutdown`, which is what the
+Desktop sends and what the upstream harness matches. Set
+`owner_shutdown: disabled` on the endpoint to opt out; the endpoint then
+answers stop commands as prompts, which is the pre-conformance behaviour.
 
 ## Config reload
 

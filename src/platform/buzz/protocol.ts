@@ -10,6 +10,15 @@ import {
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
+/**
+ * Relay-side expiry for kind-20001 presence, in seconds — `PRESENCE_TTL_SECS`
+ * in `buzz-pubsub/src/presence.rs` at the pinned Buzz tree. A client shows an
+ * agent online for exactly this long after its last accepted presence event
+ * and no longer; the number is the relay's, not ours, so it is recorded here
+ * rather than configured.
+ */
+export const BUZZ_PRESENCE_TTL_SECS = 180;
+
 export const BUZZ_KINDS = Object.freeze({
   deletion: 5,
   reaction: 7,

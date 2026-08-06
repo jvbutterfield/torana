@@ -6,6 +6,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- A healthy Buzz endpoint could show offline to other community members
+  because of Torana's own rate limiter. The supervisor republishes presence
+  every `platforms.buzz.subscription.heartbeat_secs` (default 30 s) while
+  `limits.presence_min_interval_ms` (default 30 000 ms) suppressed any
+  presence publish inside its window — the heartbeat sat exactly on its own
+  rate-limit boundary, so publish-latency jitter or an interleaved
+  conversation-driven presence signal dropped refreshes and stretched the
+  effective cadence toward 60 s against the relay's 180 s presence TTL. The
+  supervisor's lifecycle presence (connect and heartbeat) is now exempt from
+  that limit, exactly as the clean-stop `offline` publish already was.
+  Conversation- and runner-driven presence stays rate-limited.
+
+- Buzz Desktop's remote-agent "Stop" was answered instead of obeyed. Stop
+  publishes a stream message whose content is exactly `!shutdown`, mentioning
+  the agent and signed by the owner; Torana routed it into an ordinary
+  conversation turn, so the agent replied to its own stop command and kept
+  running — the failure the remote-agents specification calls out as
+  invariant I5. Such a message is now a control command: intake stops, the
+  endpoint goes `draining`, in-flight turns finish (up to the new
+  `limits.owner_shutdown_drain_ms`, default 30000), presence `offline` is
+  published, and the endpoint is disabled durably. It stays down across a
+  process restart; `torana endpoints resume` is the way back. Only the
+  configured `owner_pubkey` can do this — on every `respond_to` setting,
+  including `anyone` — and a message that merely contains `!shutdown` remains
+  an ordinary prompt. Opt out per endpoint with `owner_shutdown: disabled`.
+
+### Added
+
+- Failed presence refreshes are now a health signal instead of a silent
+  no-op. After `limits.presence_failure_threshold` (new, default 2)
+  consecutive failures the endpoint reports `unhealthy` with
+  `last_error: presence_stale` and fires one `workerDegraded` alert per
+  episode, cleared by the next successful publish. `/health` gains
+  `endpoints[].presence`, and `/metrics` gains
+  `torana_endpoint_presence_publishes_total` (by outcome) and
+  `torana_endpoint_presence_stale`.
+
+- Config validation rejects `platforms.buzz.subscription.heartbeat_secs` of
+  90 s or more while Buzz is enabled: at that cadence a single failed presence
+  publish outlives the relay's 180 s TTL, which no rate-limit exemption can
+  rescue.
+
 ### Changed
 
 - The pinned Buzz CLI moved from `desktop-v0.5.4` to `desktop-v0.5.5`

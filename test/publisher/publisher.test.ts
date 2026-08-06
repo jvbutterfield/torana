@@ -266,6 +266,14 @@ describe("publisher configuration and durable enqueue", () => {
             channels: 1,
             lastError: null,
             disconnectedSince: null,
+            presence: {
+              attempted: 1,
+              suppressed: 0,
+              failed: 0,
+              consecutiveFailures: 0,
+              lastPublishedAt: Date.now(),
+              stale: false,
+            },
           },
         ],
       });

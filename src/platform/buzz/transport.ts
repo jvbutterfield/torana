@@ -10,7 +10,7 @@ import { logger } from "../../log.js";
 import type { OnUpdateHandler, Transport } from "../../transport/types.js";
 import type { PlatformAdapter } from "../capabilities.js";
 import type { InboundEvent } from "../types.js";
-import { BuzzAdapter } from "./adapter.js";
+import { BuzzAdapter, type BuzzSignalOutcome } from "./adapter.js";
 import { BuzzRelayClient } from "./client.js";
 import {
   BUZZ_KINDS,
@@ -24,6 +24,21 @@ import {
 } from "./protocol.js";
 
 const log = logger("transport.buzz");
+
+/**
+ * `lastError` marker for an endpoint that is connected but whose presence
+ * refreshes are not landing. Distinct from a disconnect: the relay session is
+ * fine, but clients are about to stop seeing the agent as online.
+ */
+export const PRESENCE_STALE = "presence_stale";
+
+/**
+ * `state_reason` written when an endpoint is stopped by its owner's
+ * `!shutdown`. Deliberately not `config_disabled`: that reason is the one the
+ * config sync treats as "re-enable me when the config says so", which would
+ * bring a stopped agent back on the next restart.
+ */
+export const OWNER_SHUTDOWN = "owner_shutdown";
 
 export type BuzzEndpointHealthState =
   | "disabled"
@@ -40,6 +55,22 @@ export interface BuzzEndpointHealth {
   channels: number;
   lastError: string | null;
   disconnectedSince: number | null;
+  presence: BuzzPresenceHealth;
+}
+
+export interface BuzzPresenceHealth {
+  /** Lifecycle presence publishes the supervisor tried to make. */
+  attempted: number;
+  /** Dropped before signing because the presence rate limit was still open. */
+  suppressed: number;
+  /** Signed but not accepted by the relay. */
+  failed: number;
+  /** Failures since the last accepted publish. */
+  consecutiveFailures: number;
+  /** `Date.now()` of the last accepted lifecycle presence publish. */
+  lastPublishedAt: number | null;
+  /** True once `consecutiveFailures` reaches the configured threshold. */
+  stale: boolean;
 }
 
 export interface BuzzTransportOptions {
@@ -137,6 +168,17 @@ class BuzzEndpointSupervisor {
   private membershipRefresh: Promise<void> = Promise.resolve();
   private sleepResolvers = new Set<() => void>();
   private heartbeatSequence = 0;
+  private presence: BuzzPresenceHealth = {
+    attempted: 0,
+    suppressed: 0,
+    failed: 0,
+    consecutiveFailures: 0,
+    lastPublishedAt: null,
+    stale: false,
+  };
+  private alertedPresenceStale = false;
+  private ownerShutdownInProgress = false;
+  private readonly ownerShutdownDrainMs: number;
   private readonly outboundOnly: boolean;
   private readonly destinationChannelId: string | null;
 
@@ -173,6 +215,8 @@ class BuzzEndpointSupervisor {
       opts.clientFactory ?? ((options) => new BuzzRelayClient(options));
     this.random = opts.random ?? Math.random;
     this.lifecyclePollMs = opts.lifecyclePollMs ?? 250;
+    this.ownerShutdownDrainMs =
+      this.normalized.limits.owner_shutdown_drain_ms ?? 30_000;
   }
 
   start(): void {
@@ -220,6 +264,7 @@ class BuzzEndpointSupervisor {
       channels: this.accessibleChannels.size,
       lastError: this.lastError,
       disconnectedSince: this.disconnectedSince,
+      presence: { ...this.presence },
     };
   }
 
@@ -270,10 +315,7 @@ class BuzzEndpointSupervisor {
           throw new Error("publisher destination membership is not active");
         }
         if (!this.outboundOnly && this.ingressEnabled) {
-          await this.adapter.signal(this.signalConversation(), {
-            kind: "presence",
-            state: "online",
-          });
+          await this.publishLifecyclePresence();
           await this.recoverAcceptedEvents();
         }
         if (this.ingressEnabled) this.subscribeMembership(client);
@@ -620,6 +662,17 @@ class BuzzEndpointSupervisor {
         await this.dispatchAccepted(recorded.id, raw as Event);
       }
     } else if (decision.kind === "control" && recorded.kind === "inserted") {
+      if (decision.reason === "owner_shutdown") {
+        // Deliberately not awaited: the drain outlives this event handler, and
+        // the relay read loop must not block on it.
+        void this.beginOwnerShutdown().catch((error) => {
+          log.warn("Buzz owner shutdown failed", {
+            endpoint_id: this.endpointId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return false;
+      }
       await this.onControl?.({
         endpointId: this.endpointId,
         inboundEventId: recorded.id,
@@ -729,7 +782,13 @@ class BuzzEndpointSupervisor {
       const lifecycle = this.db.getEndpointState(
         this.endpointId,
       )?.lifecycleState;
-      if (lifecycle !== "active") {
+      // An owner shutdown drives `draining` itself and needs the connection to
+      // survive until it has published `offline`; every other transition out
+      // of `active` closes here as before.
+      if (
+        lifecycle !== "active" &&
+        !(this.ownerShutdownInProgress && lifecycle === "draining")
+      ) {
         client.close();
         return;
       }
@@ -743,10 +802,7 @@ class BuzzEndpointSupervisor {
           discoveryFilters(this.adapter.config.pubkey),
           this.subscriptionId(`heartbeat-${++this.heartbeatSequence}`),
         );
-        await this.adapter.signal(this.signalConversation(), {
-          kind: "presence",
-          state: "online",
-        });
+        await this.publishLifecyclePresence();
         nextHeartbeatAt = Date.now() + heartbeatMs;
       }
       if (now >= nextFeedAt) {
@@ -816,6 +872,133 @@ class BuzzEndpointSupervisor {
         await this.handleRelayEvent(event);
       }
     }
+  }
+
+  /**
+   * Owner "Stop" (remote-agents invariant I5): drain, announce offline, and
+   * stay down. `disabled` is durable in the endpoints table and survives a
+   * process restart, so coming back up is an explicit operator action
+   * (`torana endpoints resume`) or a provider deploy — never automatic.
+   */
+  private async beginOwnerShutdown(): Promise<void> {
+    if (this.ownerShutdownInProgress) return;
+    this.ownerShutdownInProgress = true;
+    log.info("Buzz owner shutdown requested", {
+      endpoint_id: this.endpointId,
+      agent_id: this.agentId,
+    });
+    try {
+      // Intake stops first so nothing new is accepted while we drain, and the
+      // lifecycle row shows `draining` to any operator looking at it.
+      await this.stopIngress();
+      this.db.setEndpointLifecycle(this.endpointId, "draining", OWNER_SHUTDOWN);
+      this.state = "draining";
+
+      const deadline = Date.now() + this.ownerShutdownDrainMs;
+      while (Date.now() < deadline) {
+        const backlog = this.db.endpointBacklog(this.endpointId);
+        if (backlog.running === 0) break;
+        await this.sleep(Math.min(this.lifecyclePollMs, 250));
+      }
+      const remaining = this.db.endpointBacklog(this.endpointId);
+      if (remaining.running > 0) {
+        log.warn("Buzz owner shutdown drain timed out", {
+          endpoint_id: this.endpointId,
+          running: remaining.running,
+          drain_ms: this.ownerShutdownDrainMs,
+        });
+      }
+
+      // Announce offline while the connection is still up. The relay would
+      // expire presence on its own after its TTL, but leaving a stopped agent
+      // showing online for that long is the exact ambiguity I5 removes.
+      if (!this.outboundOnly) {
+        await this.adapter
+          .signal(this.signalConversation(), {
+            kind: "presence",
+            state: "offline",
+          })
+          .catch(() => false);
+      }
+    } finally {
+      this.db.setEndpointLifecycle(this.endpointId, "disabled", OWNER_SHUTDOWN);
+      this.state = "disabled";
+      this.client?.close();
+      log.info("Buzz endpoint stopped by owner", {
+        endpoint_id: this.endpointId,
+      });
+      this.ownerShutdownInProgress = false;
+    }
+  }
+
+  /**
+   * Publish the supervisor's own presence refresh — the only signal a Buzz
+   * client reads to decide whether this agent is online. The relay expires
+   * presence 180 s after the last accepted publish, so a run of failures is a
+   * countdown to a healthy agent showing offline, and is treated as a health
+   * problem well before the TTL can lapse rather than as a silent no-op.
+   */
+  private async publishLifecyclePresence(): Promise<BuzzSignalOutcome> {
+    this.presence.attempted += 1;
+    const outcome = await this.adapter
+      .signalDetailed(this.signalConversation(), {
+        kind: "presence",
+        state: "online",
+        lifecycle: true,
+      })
+      .catch((): BuzzSignalOutcome => "failed");
+
+    if (outcome === "suppressed") {
+      // Unreachable while the lifecycle exemption holds. Counted rather than
+      // ignored so a regression shows up in metrics instead of as an
+      // intermittently offline agent.
+      this.presence.suppressed += 1;
+      log.warn("Buzz lifecycle presence was rate-limited", {
+        endpoint_id: this.endpointId,
+      });
+      return outcome;
+    }
+
+    if (outcome === "published") {
+      this.presence.consecutiveFailures = 0;
+      this.presence.lastPublishedAt = Date.now();
+      if (this.presence.stale) {
+        this.presence.stale = false;
+        this.alertedPresenceStale = false;
+        if (this.state === "unhealthy" && this.lastError === PRESENCE_STALE) {
+          this.state = "healthy";
+          this.lastError = null;
+        }
+        log.info("Buzz presence recovered", { endpoint_id: this.endpointId });
+      }
+      return outcome;
+    }
+
+    this.presence.failed += 1;
+    this.presence.consecutiveFailures += 1;
+    const threshold = this.presenceFailureThreshold();
+    log.warn("Buzz presence publish failed", {
+      endpoint_id: this.endpointId,
+      consecutive_failures: this.presence.consecutiveFailures,
+      threshold,
+    });
+    if (this.presence.consecutiveFailures >= threshold) {
+      this.presence.stale = true;
+      this.state = "unhealthy";
+      this.lastError = PRESENCE_STALE;
+      if (!this.alertedPresenceStale) {
+        this.alertedPresenceStale = true;
+        void this.alerts?.workerDegraded(
+          this.agentId,
+          `Buzz endpoint ${this.endpointId} failed ${this.presence.consecutiveFailures} consecutive presence publishes; clients will show it offline once the relay's presence TTL lapses`,
+        );
+      }
+    }
+    return outcome;
+  }
+
+  private presenceFailureThreshold(): number {
+    return this.normalized.limits.presence_failure_threshold;
   }
 
   private maybeAlertDisconnected(): boolean {

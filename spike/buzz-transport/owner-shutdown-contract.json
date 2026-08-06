@@ -1,0 +1,49 @@
+{
+  "capturedAt": "2026-08-06",
+  "purpose": "Pin the exact wire shape of Buzz Desktop's remote-agent Stop so Torana's matcher is written against the implementation rather than an assumption.",
+  "source": {
+    "repository": "https://github.com/block/buzz",
+    "tag": "desktop-v0.5.5",
+    "commit": "8342dfcc5890b81a269a8ec3db73a8a56f76ce79",
+    "method": "read from the pinned source tree; not a live GUI capture",
+    "citations": [
+      {
+        "path": "desktop/src/features/agents/lib/managedAgentControlActions.ts",
+        "detail": "Stop for a provider-backed agent calls sendChannelMessage(channelId, \"!shutdown\", undefined, undefined, [agent.pubkey]). The content is the literal string; the mention is passed as mentionPubkeys, never rendered into the content."
+      },
+      {
+        "path": "desktop/src/shared/api/tauriManagedAgentMessages.ts",
+        "detail": "mentionPubkeys is forwarded to the Tauri send command, which emits it as p tags."
+      },
+      {
+        "path": "crates/buzz-acp/src/lib.rs",
+        "detail": "is_owner_control_command(event, kind, \"!shutdown\", agent_pubkey) == (kind == KIND_STREAM_MESSAGE && event.content.trim() == \"!shutdown\" && event p-tags the agent). The caller additionally requires event.pubkey == resolved owner; a non-owner match deliberately falls through to normal prompt handling instead of being dropped."
+      },
+      {
+        "path": "crates/buzz-core/src/kind.rs",
+        "detail": "KIND_STREAM_MESSAGE = 9, documented in place as the shutdown convention: \"a stream message whose content is !shutdown and a #p tag mentioning the agent\". KIND_STREAM_MESSAGE_V2 = 40002."
+      }
+    ]
+  },
+  "contract": {
+    "kind": 9,
+    "contentMatch": "trimmed content equals \"!shutdown\" exactly",
+    "mention": "a p tag whose value is the agent's pubkey",
+    "author": "must equal the endpoint's resolved owner pubkey",
+    "nonOwner": "not a control command; handled as an ordinary message"
+  },
+  "toranaDivergences": [
+    "Torana also honours kind 40002 (stream message V2). Upstream matches kind 9 only. Every other message path in Torana treats V1 and V2 identically, so accepting only one would make an owner stop work in some channels and not others.",
+    "The plan's draft matcher stripped leading mention tokens (\"@Name\", \"nostr:npub…\") before comparing. The source shows the Desktop never puts the mention in the content, and upstream compares the trimmed content exactly, so stripping would only widen the matcher past upstream and risk stopping an agent on a message a Desktop-hosted agent would answer normally."
+  ],
+  "exampleEvent": {
+    "kind": 9,
+    "content": "!shutdown",
+    "tags": [
+      ["h", "11111111-2222-4333-8444-555555555555"],
+      ["p", "<agent pubkey hex>"]
+    ],
+    "pubkey": "<owner pubkey hex>",
+    "note": "Signed by the owner's key. Signature and id omitted: the shape, not a specific event, is what the matcher is written against."
+  }
+}

@@ -34,8 +34,24 @@ kinds, and removed membership fail closed before runner dispatch.
 
 Messages, edits, deletes, reactions, forum operations, and votes are signed
 before durable delivery. An uncertain or operator-requested replay republishes
-the exact stored event ID; it never re-signs. Typing and presence are
-rate-limited best effort signals and are not replayed.
+the exact stored event ID; it never re-signs. Typing and conversation-driven
+presence are rate-limited best-effort signals and are not replayed.
+
+The endpoint's owner can stop it from Buzz Desktop: a stream message whose
+trimmed content is exactly `!shutdown` and which mentions the endpoint, signed
+by `owner_pubkey`, drains in-flight turns, publishes presence `offline`, and
+disables the endpoint durably. Nobody else can, on any `respond_to` setting,
+and a message that merely contains `!shutdown` is an ordinary prompt. Opt out
+with `owner_shutdown: disabled`. See
+[operations](../operations.md#owner-shutdown-remote-agent-stop).
+
+The supervisor's own presence heartbeat is not best-effort in the same sense:
+it is the only thing a Buzz client reads to decide whether the agent is online,
+and the relay expires presence 180 s after the last accepted publish. That
+refresh is therefore exempt from `limits.presence_min_interval_ms`, and a run
+of failed refreshes marks the endpoint unhealthy with `presence_stale` before
+the TTL can lapse. See
+[configuration](../configuration.md#presence-heartbeats-and-the-relays-ttl).
 
 Stream channels default to one session per channel. Forum roots default to one
 session per root. DMs, streams, forums, workflows, and Telegram remain isolated
