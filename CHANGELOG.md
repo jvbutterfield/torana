@@ -8,6 +8,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- `buzz-backend-torana`, a Buzz Desktop remote-agent provider that deploys an
+  agent onto a Torana gateway, so an operator can move an agent's runtime off
+  their Desktop from the Desktop's own UI. It implements the L2
+  `info`/`deploy` protocol at `protocol_version: 1` and ships as a compiled
+  single-file executable for darwin-arm64 and linux-x64, checksummed in the
+  release, because it runs on a machine that may have no Bun.
+
+  It creates endpoints, never agents or runners: the target agent must already
+  exist in the gateway's config. Deploy is one `PUT` followed by polling —
+  never a second create attempt inside the same call — and it refuses a null
+  auth tag, a relay-mesh or desktop-loopback relay, a plaintext gateway URL,
+  and reserved identity env vars, each with a message that says why. Knobs
+  Torana owns (system prompt, model, timeouts, parallelism) are reported back
+  as unapplied rather than silently dropped.
+
+  The gateway bearer lives in the provider's own `~/.config/torana/provider.json`
+  (mode 0600), never in the Desktop-persisted provider config. Secrets are held
+  in memory only, sent over TLS only, and scrubbed from every error the binary
+  emits — the Desktop redacts provider output as well, but this does not rely
+  on that. There is no stop path: Desktop "Stop" publishes `!shutdown`, which
+  the endpoint honours. Windows is unsupported pending an upstream discovery
+  fix. See `src/provider/README.md`.
+
 - Buzz endpoints can be created at runtime instead of only in `torana.yaml`:
   `PUT|GET|DELETE /v1/admin/buzz/endpoints/<id>`, the surface a Buzz Desktop
   provider deploys against. A provisioned endpoint is stored in the gateway

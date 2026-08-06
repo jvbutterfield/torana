@@ -65,6 +65,34 @@ jobs:
       - name: Verify pack manifest
         run: bun run scripts/verify-pack.ts
 
+      # The Buzz Desktop provider runs on an operator's own machine, where
+      # Bun may not be installed, so it ships as a compiled single-file
+      # executable per target rather than as a script. Checksums are published
+      # with it: this binary receives an agent's nsec, so an operator must be
+      # able to verify what they put on their PATH.
+      - name: Build buzz-backend-torana (darwin-arm64)
+        run: |
+          bun build src/provider/buzz-backend-torana.ts \
+            --compile --target=bun-darwin-arm64 \
+            --outfile dist-provider/darwin-arm64/buzz-backend-torana
+      - name: Build buzz-backend-torana (linux-x64)
+        run: |
+          bun build src/provider/buzz-backend-torana.ts \
+            --compile --target=bun-linux-x64 \
+            --outfile dist-provider/linux-x64/buzz-backend-torana
+      - name: Checksum provider binaries
+        run: |
+          cd dist-provider
+          find . -type f -name 'buzz-backend-torana' -print0 \
+            | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload provider binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: buzz-backend-torana
+          path: dist-provider/
+          if-no-files-found: error
+
       # Compute the npm dist-tag: prerelease versions (anything with a `-`
       # after the version) publish under `rc` so they don't take the `latest`
       # pointer from a stable release. Stable versions publish as `latest`.
