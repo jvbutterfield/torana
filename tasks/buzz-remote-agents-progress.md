@@ -13,7 +13,7 @@ each gate).
 | 3 — owner `!shutdown` conformance        | ✅ Complete    | `US-023` | 13 tests; matcher pinned to upstream source, not a guess     |
 | 4 — dynamic endpoint provisioning API    | ✅ Complete    | `US-024` | 30 tests; schema v7; secrets sealed, verified at rest        |
 | 5 — `buzz-backend-torana` provider       | ✅ Complete    | `US-025` | 30 tests + E2E against a live gateway                       |
-| 6 — rollout                              | 🟡 Partial     | `US-026` | docs + `agent-team` edge policy landed; live steps pending   |
+| 6 — rollout                              | 🟡 Partial     | `US-026` | rc.10 published + deployed, schema v7 live; drills pending    |
 
 ## Phase 1 evidence (US-021)
 
@@ -353,13 +353,32 @@ Everything that can be produced from a repository is done and recorded in
   land *before* the Torana release that ships the routes is deployed, and it
   has.
 
-**Not done, and not doable from here.** The remaining Phase 6 items are live
-operations — a release cut and npm publish, the image pin, the schema-v7
-migration, deploy-and-observe with the 30-minute cross-client presence soak, the
-four record conversions plus Dev Team's record flag, the shutdown drill, and one
-manual Desktop deploy. Each is enumerated with its acceptance criteria under
-"Still outstanding — requires a live environment" in `release-readiness.md`.
-The Dockerfile was deliberately left pinned to Buzz `desktop-v0.5.4`: the CLI
-tag and the Torana package pin must move in one commit, and that Torana version
-is not published yet. Bumping the tag alone would pair a new CLI with an older
-broker manifest, which the broker rejects on checksum.
+**Released and deployed on 2026-08-06.** `torana@2.0.0-rc.10` is on the npm
+`rc` dist-tag; `agent-team` moved the Buzz tag and the package pin together
+(`aa5d472`), schema v7 applied itself on first boot with a v6 snapshot kept,
+and Railway deployment `bf55fe88` promoted with all five Buzz endpoints
+healthy and connected. Full evidence in `release-readiness.md`.
+
+Two deploys failed first, and both taught something worth keeping:
+
+1. The migration cannot live in `entrypoint.sh` — `torana migrate --config`
+   loads and validates the whole config, so it needs the secrets that
+   `torana-start` exports. It also cannot discard stderr, which is what turned
+   a one-line config error into an opaque "could not read the migration plan"
+   repeated until the healthcheck gave up. Railway's pre-deploy phase was
+   confirmed not to have the volume attached, so the migration could never have
+   run there either.
+2. The gateway proxy wedged on the provisioning route's own access pattern: a
+   GET immediately after a body-carrying PUT on one keep-alive connection hung,
+   because the generic path forwards bodies as streams. That is exactly what
+   the provider does — PUT, then poll — so it would have failed on the first
+   real deploy rather than in a test. The route now forwards a buffered body
+   (already capped at 64 KiB) and a regression test drives the full
+   PUT-poll-poll-poll-DELETE sequence.
+
+**Still outstanding**, all needing the Desktop or a deliberate drill: the
+30-minute cross-client presence soak with Desktop closed, an owner-mention
+canary on the new build, the four record conversions plus Dev Team's record
+flag, the `!shutdown` drill, and one manual Desktop deploy. Provisioning itself
+is deployed but **off** (`BUZZ_PROVISION_ENABLED` unset), verified by the
+provisioning path 404ing publicly under every method.

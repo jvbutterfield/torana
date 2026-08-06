@@ -149,27 +149,54 @@ per-client rate limiting, the `BUZZ_PROVISION_ENABLED` /
 contract with credential-reuse rejection, and the provider-based conversion
 runbook.
 
-### Still outstanding — requires a live environment
+### Released and deployed, 2026-08-06
 
-None of the following can be produced from the repository; each needs the
-Railway deployment, the hosted relay, or the Desktop UI:
+1. **`torana@2.0.0-rc.10`** published on the `rc` dist-tag by `release.yml`
+   run `31103224191` (tag `v2.0.0-rc.10`, integrity
+   `sha512-LBdqsOVymg2ifCKmHMvIhQOoIVIH7FgihV4OhCKHlrFCDCIaZ6TI0/M5EvogoEkKjxDwW+3lDhCzpJtfxVcJgQ==`).
+   The registry tarball was installed in a disposable directory and verified to
+   contain all seven migrations. The release also builds and checksums the
+   provider binaries: `2318781f…011a` (darwin-arm64), `e148ba14…a764`
+   (linux-x64).
+2. **Image pin.** `agent-team` `aa5d472` moved `BUZZ_SOURCE_TAG`,
+   `BUZZ_SOURCE_COMMIT`, and the `torana@` package pin in one commit. In the
+   running container `sha256sum /usr/local/bin/buzz` and
+   `/usr/local/share/torana/buzz-cli.sha256` both read
+   `c83fcfbe57e9c7a368c0deb4749a028a0f5e5ddbd8e5e9a7111bfcc9acb62876`, and
+   `torana version` reports `2.0.0-rc.10`.
+3. **Migration.** Schema v7 applied on the first boot of the new image, by
+   `deploy/bin/torana-migrate`:
+   `schema 6 → 7; snapshotting before migrating` →
+   `snapshot written to /data/gateway/gateway.db.pre-v7` →
+   `migrations complete from=6 to=7 steps=1` → `migrated to user_version=7`,
+   followed by `torana ready`. The v6 rollback copy is on the volume.
+4. **Deploy and observe.** Railway deployment `bf55fe88` (commit `194f4de`)
+   promoted SUCCESS. `/health` reports `status: ok`, all five runners ready,
+   and all five Buzz endpoints — `alfred-buzz`, `cato-buzz`, `dev-team-buzz`,
+   `harper-buzz`, `jules-buzz` — `active` / `healthy` / `connected` with
+   `diagnosis: none`, zero pending outbox, and the new presence block showing
+   `stale: false`, `consecutive_failures: 0`. The dead outbox rows that remain
+   are from May and predate this work. Publicly, `/v1/bots`, `/v1/health`,
+   `/v1/admin/sessions`, and `/v1/admin/endpoints` all 404, and so does the
+   provisioning path under every method — provisioning is off by default and
+   was left off.
 
-1. **Release cut.** Bump the package version, tag `vX.Y.Z`, and let
-   `release.yml` publish. Nothing here has been tagged or published.
-2. **Image pin.** Bump `BUZZ_SOURCE_TAG`/`BUZZ_SOURCE_COMMIT` to
-   `desktop-v0.5.5` / `8342dfcc…ce79` **and** the `torana@` package pin in the
-   same `agent-team` commit — the runbook's atomicity rule. The Dockerfile was
-   deliberately left on 0.5.4 rather than half-bumped. Verify the in-image
-   `sha256sum /usr/local/bin/buzz` matches
-   `/usr/local/share/torana/buzz-cli.sha256`, and that doctor `C024` names
-   0.5.5.
-3. **Migration.** Schema v7 (`provisioned_endpoints`). Run
-   `torana migrate --to 7` under the usual snapshot gate.
-4. **Deploy and observe.** All supervisors up, endpoints authenticated and
-   subscribed, zero pending outbox, owner-mention canary — plus the new
-   **presence soak from a second community member's client**: every Torana
+Two deployments failed before this one, both worth recording. The first put the
+migration in `entrypoint.sh`, which runs before the secrets that `torana.yaml`
+interpolates are exported, so `torana migrate --config` could not load the
+config; the script had also discarded stderr, which turned a one-line cause
+into an opaque failure. The second surfaced a pre-existing proxy bug that the
+provisioning route would have hit on its first real deploy: a GET immediately
+after a body-carrying PUT on the same keep-alive connection hung, because the
+generic path forwards request bodies as streams. Both are fixed, tested, and
+recorded in the deployment runbook's symptom table.
+
+### Still outstanding — requires the Desktop or a live drill
+
+1. **Presence soak from a second community member's client**: every Torana
    agent shows online continuously for ≥ 30 min with Buzz Desktop closed.
-5. **Record conversion.** Jules and Cato re-deployed through the provider for
+2. **Owner-mention canary** on the new build.
+3. **Record conversion.** Jules and Cato re-deployed through the provider for
    consistent `railway:agent-team:<endpoint-id>` addressing; Alfred and Harper
    converted. Order per agent is fixed by the precedence rule: remove the YAML
    endpoint, redeploy, provider-deploy, then retire the `BUZZ_*_<AGENT>`
@@ -178,9 +205,9 @@ Railway deployment, the hosted relay, or the Desktop UI:
    outbound-only publisher principal with no runner, so provider deploy refuses
    it naturally (no agent to bind to); its Desktop record just needs marking
    provider-backed or archiving.
-6. **Shutdown drill.** `!shutdown` one canary agent; verify drain, offline
+4. **Shutdown drill.** `!shutdown` one canary agent; verify drain, offline
    presence, and stay-down across a gateway restart; re-deploy through the
    provider; verify the second Start reconciles to a no-op.
-7. **Manual Desktop deploy.** One real deploy from Buzz Desktop 0.5.5 on macOS
+5. **Manual Desktop deploy.** One real deploy from Buzz Desktop 0.5.5 on macOS
    into a staging Torana, which is the only way to exercise the Desktop's own
    discovery, form rendering, and payload shape.
