@@ -108,7 +108,7 @@ Ship it as rc.11 **before or with** the provisioning deploy.
    provide for free. The `offline`-on-stop half is what actually matters there
    and is directly observable: stop an endpoint and watch its dot go out
    immediately instead of lingering ~3 min.
-2. 🟡 **Provider install — binary done 2026-08-07, token file pending.**
+2. ✅ **Provider install — complete 2026-08-07.**
    `buzz-backend-torana` from rc.11 run `31140035625` is installed at
    `~/.local/bin/buzz-backend-torana` (mode 0755, on `PATH`). Verified against
    `SHA256SUMS` before install, and the installed copy re-digests to
@@ -118,12 +118,23 @@ Ship it as rc.11 **before or with** the provisioning deploy.
    `protocol_version 1`, and `version 2.0.0-rc.11` — the same version the
    gateway is running, which is the cheap way to catch a provider/gateway skew.
 
-   **Remaining, owner-only:** write `~/.config/torana/provider.json` containing
-   `{"admin_token":"…"}` at mode 0600. The directory does not exist yet. Use
-   `(umask 077 && printf … > file)` so the file is never briefly world-readable.
-   The mode is advisory — nothing enforces it — and the token must never go in
-   the Desktop's provider form, which stores `torana_admin_token_ref` (a name,
+   `~/.config/torana/provider.json` written by the owner: mode 0600, valid
+   JSON, single `admin_token` key, 44 chars with no stray whitespace. The mode
+   is advisory — nothing enforces it — and the token must never go in the
+   Desktop's provider form, which stores `torana_admin_token_ref` (a name,
    default `default`) instead. Invariant I2.
+
+   **Token verified end-to-end against production**, over the same public path
+   the provider will use: `GET /v1/admin/buzz/endpoints/<unknown-id>` with the
+   bearer read out of `provider.json` returns **404 `not_found`**, i.e. it
+   cleared auth and the `endpoints:admin` scope gate and only missed on the id.
+
+   Reading that 404 needs one distinction, or it proves nothing: the edge proxy
+   also 404s, and a proxy 404 would look like success. They are told apart by
+   the body — the proxy returns plain-text `Not Found`, the gateway returns
+   JSON. A JSON body means the request reached the application. Unauthenticated,
+   the same path returns JSON `401 missing_auth`, which confirms the path is
+   routed rather than blocked.
 
    macOS note: the README's `sha256sum -c SHA256SUMS` is the Linux spelling;
    on the Mac it is `shasum -a 256 -c SHA256SUMS`.
