@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- An outbound-only publisher advertised itself as online. Connect-time
+  presence was already gated on the endpoint being a real agent, but the
+  heartbeat published regardless, so a publisher stayed silent for one
+  interval and then announced itself every heartbeat thereafter. A publisher
+  has no runner and cannot answer, so showing it online tells the community it
+  can be talked to when it cannot. The heartbeat now matches the connect-time
+  gate. The membership query still runs — the connection is real and its health
+  still tracked; it simply is not announced.
+
+  This inconsistency predates the presence-heartbeat work, but that work made
+  it fully effective: the rate limiter had been masking it into an
+  intermittent announcement.
+
 ## [2.0.0-rc.10] - 2026-08-06
 
 ### Added

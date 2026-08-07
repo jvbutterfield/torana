@@ -869,7 +869,12 @@ class BuzzEndpointSupervisor {
           discoveryFilters(this.adapter.config.pubkey),
           this.subscriptionId(`heartbeat-${++this.heartbeatSequence}`),
         );
-        await this.publishLifecyclePresence();
+        // Outbound-only publishers stay silent, matching the connect-time
+        // path. A publisher has no runner and cannot answer, so advertising it
+        // as online tells the community it can be talked to when it cannot.
+        // The membership query above still runs: the connection is real and
+        // its health is still worth tracking, we just do not announce it.
+        if (!this.outboundOnly) await this.publishLifecyclePresence();
         nextHeartbeatAt = Date.now() + heartbeatMs;
       }
       if (now >= nextFeedAt) {

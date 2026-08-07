@@ -649,3 +649,66 @@ describe("presence configuration", () => {
     ).toBe(true);
   });
 });
+
+describe("outbound-only publishers", () => {
+  test(
+    "a publisher connects and stays healthy without announcing presence",
+    async () => {
+      // A publisher has no runner and cannot answer, so showing it online tells
+      // the community it can be talked to when it cannot. The connect-time path
+      // already stayed silent; the heartbeat used to announce anyway, which the
+      // rate limiter had been masking intermittently.
+      const relay = createPresenceRelay();
+      const loaded = makeLoaded(relay.url, { heartbeatSecs: 5 });
+      const db = openDb(loaded);
+
+      // Re-label the endpoint as a publisher principal, which is what a
+      // `publishers:` block produces.
+      const endpoints = loaded.normalized.endpoints.map((endpoint) =>
+        endpoint.id === "alpha-buzz"
+          ? { ...endpoint, principalKind: "publisher" as const }
+          : endpoint,
+      );
+      // A publisher supervisor also requires its destination channel to be a
+      // channel it is actually a member of, or it refuses to come up.
+      const normalized = {
+        ...loaded.normalized,
+        endpoints,
+        publishers: [
+          {
+            id: "alpha",
+            enabled: true,
+            endpointId: "alpha-buzz",
+            destinationConversationId: CHANNEL,
+          },
+        ],
+      };
+      const transport = new BuzzTransport({
+        db,
+        normalized,
+        endpoints,
+        lifecyclePollMs: 10,
+      });
+      transports.push(transport);
+      await transport.start(async () => {});
+      await waitFor(
+        () => transport.snapshots()[0]?.state === "healthy",
+        "publisher connected",
+      );
+
+      // Long enough for several heartbeats at a 5 s interval.
+      await Bun.sleep(12_000);
+
+      expect(relay.presence()).toHaveLength(0);
+      const snapshot = transport.snapshots()[0]!;
+      expect(snapshot.presence.attempted).toBe(0);
+      expect(snapshot.presence.lastPublishedAt).toBeNull();
+      // Silence is not a health problem: the connection is real and fine.
+      expect(snapshot.state).toBe("healthy");
+      expect(snapshot.presence.stale).toBe(false);
+      expect(snapshot.connected).toBe(true);
+      db.close();
+    },
+    { timeout: 40_000 },
+  );
+});
