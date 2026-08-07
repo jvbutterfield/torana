@@ -25,7 +25,47 @@ jobs:
       contents: read
       id-token: write
     steps:
+      # fetch-depth: 0 so the on-main check below can compute merge-base. A
+      # tag push otherwise arrives as a shallow clone with no shared history
+      # to compare against.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Two release-integrity gates, deliberately the first things that run.
+      #
+      # `npm publish` ships whatever version package.json holds — the tag is
+      # only what triggers the workflow, and nothing downstream reconciles the
+      # two. Without these checks a mistagged release runs the entire pipeline
+      # (install, typecheck, test, audit, build, provider binaries) and fails
+      # at the last step, and a tag on a side branch would publish unmerged
+      # code under a legitimate version number. An npm version can never be
+      # reused, so both are worth catching in the first ten seconds.
+      - name: Verify the tag matches package.json
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag '$GITHUB_REF_NAME' does not match package.json version '$version'." \
+                 "Expected tag 'v$version'. Bump package.json in a 'release: prepare' commit, or retag."
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches package.json $version"
+
+      # Runs on every path that can publish, including a workflow_dispatch with
+      # dry_run: false — that input is the other way to reach `npm publish`.
+      - name: Verify the release commit is on main
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run == false }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::commit $(git rev-parse --short HEAD) is not an ancestor of origin/main." \
+                 "Releases publish from main; merge the branch before tagging."
+            exit 1
+          fi
+          echo "$(git rev-parse --short HEAD) is on main"
 
       - uses: oven-sh/setup-bun@v2
         with:
