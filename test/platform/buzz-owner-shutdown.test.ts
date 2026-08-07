@@ -2,7 +2,7 @@
 //
 // The wire shape under test is pinned in
 // `spike/buzz-transport/owner-shutdown-contract.json`, read from the Buzz
-// source at `desktop-v0.5.5`: a stream message whose trimmed content is
+// source at `desktop-v0.5.6`: a stream message whose trimmed content is
 // exactly `!shutdown`, p-tagging the agent, authored by the endpoint's owner.
 // Everything else — a near-miss content, a non-owner author, a missing
 // mention — must stay an ordinary message.
@@ -299,7 +299,7 @@ describe("owner !shutdown matching", () => {
     expect(contract.contract.kind).toBe(BUZZ_KINDS.streamMessageV1);
     expect(contract.contract.contentMatch).toContain("exactly");
     expect(contract.source.commit).toBe(
-      "8342dfcc5890b81a269a8ec3db73a8a56f76ce79",
+      "277d98a5cfb6d3b9af8b75122988f7a7df33ed5d",
     );
   });
 
