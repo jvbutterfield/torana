@@ -5,7 +5,7 @@
     "claude": "2.1.220 (Claude Code)",
     "codex": "codex-cli 0.146.0"
   },
-  "caveat": "Idle CLI baselines only. Provider-authenticated in-turn peaks and the Railway deployment ceiling remain required for the production capacity gate.",
+  "caveat": "Idle CLI baselines only. Sizing a deployment additionally requires provider-authenticated in-turn peaks (capacity-authenticated.json) and your own deployment's memory ceiling.",
   "measurements": [
     {
       "runner": "claude",

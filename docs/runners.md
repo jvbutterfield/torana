@@ -47,18 +47,18 @@ Claude `pass_continue_flag` is retained only for `legacy_agent` compatibility.
 
 ```yaml
 bots:
-  - id: cato
+  - id: assistant
     token: ${TELEGRAM_BOT_TOKEN_CATO}
     runner:
       type: claude-code
       cli_path: claude
-      args: ["--agent", "cato"]
+      args: ["--agent", "assistant"]
       cwd: /data/content
       pass_continue_flag: true
       acknowledge_dangerous: true # REQUIRED — see below
       env:
         CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
-        CLAUDE_CONFIG_DIR: /data/state/claude-config/cato
+        CLAUDE_CONFIG_DIR: /data/state/claude-config/assistant
 ```
 
 ### `acknowledge_dangerous` is required
@@ -251,7 +251,7 @@ Long-lived `codex-jsonl` wrappers can emit a synthetic `{"type":"ready"}` line o
 runner:
   type: claude-code
   env:
-    CLAUDE_CONFIG_DIR: /data/state/claude-config/cato # not sensitive
+    CLAUDE_CONFIG_DIR: /data/state/claude-config/assistant # not sensitive
   secrets:
     ANTHROPIC_API_KEY: sk-ant-XXXXXXXXXXXXXXXXXXXXX # masked in logs + validate
 ```

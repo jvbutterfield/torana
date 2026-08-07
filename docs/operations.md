@@ -20,8 +20,8 @@
 {
   "status": "ok",
   "bots": {
-    "cato": {
-      "botId": "cato",
+    "assistant": {
+      "botId": "assistant",
       "runner_ready": true,
       "mailbox_depth": 0,
       "last_turn_at": "2026-04-18T12:00:00Z",
@@ -31,8 +31,8 @@
   },
   "endpoints": [
     {
-      "endpoint_id": "cato-buzz",
-      "agent_id": "cato",
+      "endpoint_id": "assistant-buzz",
+      "agent_id": "assistant",
       "platform": "buzz",
       "lifecycle_state": "active",
       "runtime_state": "healthy",
@@ -76,17 +76,17 @@ fixable from here.
 
 ```
 gateway_uptime_secs 3847
-bot_state{bot_id="cato"} 2
-turns_total{bot_id="cato",status="completed"} 142
-turns_total{bot_id="cato",status="failed"} 3
+bot_state{bot_id="assistant"} 2
+turns_total{bot_id="assistant",status="completed"} 142
+turns_total{bot_id="assistant",status="failed"} 3
 telegram_api_calls_total{status="2xx"} 1024
-torana_endpoint_connection_state{platform="buzz",endpoint_id="cato-buzz",state="healthy"} 1
-torana_conversation_queue_depth{platform="buzz",endpoint_id="cato-buzz",state="queued"} 0
-torana_endpoint_outbox_depth{platform="buzz",endpoint_id="cato-buzz",status="dead"} 0
-torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="cato-buzz",outcome="published"} 120
-torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="cato-buzz",outcome="suppressed"} 0
-torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="cato-buzz",outcome="failed"} 0
-torana_endpoint_presence_stale{platform="buzz",endpoint_id="cato-buzz"} 0
+torana_endpoint_connection_state{platform="buzz",endpoint_id="assistant-buzz",state="healthy"} 1
+torana_conversation_queue_depth{platform="buzz",endpoint_id="assistant-buzz",state="queued"} 0
+torana_endpoint_outbox_depth{platform="buzz",endpoint_id="assistant-buzz",status="dead"} 0
+torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="assistant-buzz",outcome="published"} 120
+torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="assistant-buzz",outcome="suppressed"} 0
+torana_endpoint_presence_publishes_total{platform="buzz",endpoint_id="assistant-buzz",outcome="failed"} 0
+torana_endpoint_presence_stale{platform="buzz",endpoint_id="assistant-buzz"} 0
 ```
 
 A non-zero `outcome="suppressed"` means a lifecycle presence refresh was
@@ -150,9 +150,11 @@ stopped, replace the database with `gateway.db.pre-v5` (and its matching WAL/
 SHM sidecars if present), then start the pre-migration binary and verify with
 `torana doctor`.
 
-### v0 → v1 (agent-team only)
+### v0 → v1 (pre-release deployments only)
 
-A one-time `persona → bot_id` rename + status remap. Forward-only. Before the first v1 boot, your deployment must snapshot the DB:
+A one-time `persona → bot_id` rename + status remap, relevant only to a
+deployment that predates the first public release. Forward-only. Before the
+first v1 boot, your deployment must snapshot the DB:
 
 ```sh
 cp /data/gateway/gateway.db /data/gateway/gateway.db.pre-v1
@@ -240,8 +242,15 @@ fault.
 5. Enable remaining endpoints individually. Keep proactive triggers off.
 6. Rehearse a drain and binary rollback before tagging 2.0.0.
 
-See [`release-readiness.md`](release-readiness.md) for the 24-hour soak and
-real-relay release gates.
+Run the 24-hour mixed-platform soak before a release gate:
+
+```sh
+BUZZ_PLATFORM_SOAK=1 bun test test/soak/buzz-platform.test.ts
+```
+
+Set `BUZZ_PLATFORM_SOAK_DURATION_MS` and `BUZZ_PLATFORM_SOAK_INTERVAL_MS` to
+smoke it in minutes instead, and `BUZZ_PLATFORM_SOAK_ARTIFACT_DIR` to retain the
+JSON summary.
 
 ## Runbook snippets
 
@@ -270,7 +279,7 @@ torana gateway drain --config /data/torana.yaml
 ### Force re-poll from scratch (one bot)
 
 ```
-sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET last_update_id=NULL WHERE bot_id='cato'"
+sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET last_update_id=NULL WHERE bot_id='assistant'"
 ```
 
 (Dedup will still suppress any updates you've already processed.)
@@ -278,7 +287,7 @@ sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET last_update_id=NULL WHERE
 ### Disable a bot temporarily
 
 ```
-sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET disabled=1, disabled_reason='manual' WHERE bot_id='cato'"
+sqlite3 /data/gateway/gateway.db "UPDATE bot_state SET disabled=1, disabled_reason='manual' WHERE bot_id='assistant'"
 ```
 
 (Pollers exit the next loop iteration; webhook endpoints still 200-ack.)
