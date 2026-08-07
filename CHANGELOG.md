@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.13] - 2026-08-07
+
 ### Added
 
 - `torana buzz keygen` and `torana buzz auth-tag`. Obtaining Buzz credentials
