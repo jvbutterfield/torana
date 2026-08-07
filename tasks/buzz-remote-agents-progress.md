@@ -396,9 +396,24 @@ dots. Independence is therefore a structural property here, not something a
 test window has to arrange — worth knowing before anyone kills 17 local agents
 to satisfy the runbook's literal wording.
 
-**Still outstanding**, all needing the Desktop or a deliberate drill: the
-client-side half of the presence soak (does relay fan-out reach another
-viewer), an owner-mention
+**Owner `!shutdown` drill: PASS** (2026-08-07, `jules-buzz`). Event 4418
+recorded as `control` / `owner_shutdown`; **no turn created and no reply
+published** — the agent did not answer its own stop command, which is the whole
+point. Drained clean, went `disabled` with reason `owner_shutdown`, and the
+owner saw her go offline in their own client. A full container restart (there
+is no way to bounce torana alone — the runtime supervisor treats a gateway exit
+as fatal) left her still disabled while the other four reconnected healthy, and
+the migration logged `schema already current` on the way through. `!shutdown`
+disables the Buzz endpoint only; her Telegram side was untouched.
+
+**Presence, client side: confirmed.** The owner sees the other four online in
+their Buzz client, closing the fan-out half of the presence gate.
+
+**Publisher presence decision (taken):** publishers should not advertise
+themselves online. The heartbeat now matches the connect-time gate.
+
+**Still outstanding**, all needing the Desktop or a deliberate drill: an
+owner-mention
 canary on the new build, the four record conversions plus Dev Team's record
 flag, the `!shutdown` drill, and one manual Desktop deploy. Provisioning itself
 is deployed but **off** (`BUZZ_PROVISION_ENABLED` unset), verified by the

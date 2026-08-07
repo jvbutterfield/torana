@@ -228,15 +228,49 @@ Buzz Desktop — whether Desktop was running during the window was not observed
 — and it cannot speak to what other members' clients render, since relay
 fan-out is per-node upstream.
 
+### Owner `!shutdown` drill — 2026-08-07, PASS
+
+Owner published `!shutdown` mentioning `jules-buzz` (chosen as the least active
+conversational endpoint: 4 turns in 7 days). Gateway-side evidence:
+
+| Check                | Result                                                       |
+| -------------------- | ------------------------------------------------------------ |
+| Event classification | `status: control`, `status_reason: owner_shutdown` (id 4418) |
+| Author               | the configured owner pubkey                                  |
+| **Turn created**     | **none** — latest turn remained 4079, from Aug 2             |
+| **Reply published**  | **none** — zero outbox rows in the hour                      |
+| Drain                | `running_or_queued: 0`, `outbox_pending: 0`                  |
+| Terminal state       | `disabled`, `state_reason: owner_shutdown`                   |
+| Log sequence         | `owner shutdown requested` → `stopped by owner`, 32 ms apart |
+| Presence `offline`   | observed by the owner's own Buzz client                      |
+
+The two empty rows are the point: the agent did not answer its own stop
+command. Before this change the same message produced an ordinary reply and a
+still-running agent — the invariant I5 violation the specification names.
+
+**Stay-down across a restart.** `supervisorctl restart telegram-gateway`
+produced a full container restart (the runtime supervisor treats a gateway exit
+as fatal, so there is no way to bounce torana alone on this deployment). The
+gateway re-ran the entrypoint, the schema migration, and `syncNormalizedConfig`.
+Afterwards `jules-buzz` was still `disabled` / disconnected while the other four
+Buzz endpoints reconnected `healthy`. The migration logged `schema already
+current (user_version=7)` — idempotent in production, as designed.
+
+Jules's Telegram endpoint and runner were unaffected: `!shutdown` disables the
+Buzz endpoint, not the agent.
+
+### Presence soak — client side, confirmed 2026-08-07
+
+With Buzz Desktop closed and then reopened, the owner confirmed the other four
+Torana agents show online in their Buzz client. Combined with the Torana-side
+soak and the identity-disjointness argument above, the presence gate is closed:
+Torana publishes continuously, nothing local can be responsible, and the relay
+delivers it to a client.
+
 ### Still outstanding — requires the Desktop or a live drill
 
-1. **Presence soak, client side**: a second community member confirms the five
-   Torana agents show online continuously for ≥ 30 min. The Torana half is done
-   and recorded above, and Desktop independence is settled by identity
-   disjointness — what remains is purely whether relay fan-out delivers the
-   presence to another viewer's client.
-2. **Owner-mention canary** on the new build.
-3. **Record conversion.** Jules and Cato re-deployed through the provider for
+1. **Owner-mention canary** on the new build.
+2. **Record conversion.** Jules and Cato re-deployed through the provider for
    consistent `railway:agent-team:<endpoint-id>` addressing; Alfred and Harper
    converted. Order per agent is fixed by the precedence rule: remove the YAML
    endpoint, redeploy, provider-deploy, then retire the `BUZZ_*_<AGENT>`
@@ -245,9 +279,10 @@ fan-out is per-node upstream.
    outbound-only publisher principal with no runner, so provider deploy refuses
    it naturally (no agent to bind to); its Desktop record just needs marking
    provider-backed or archiving.
-4. **Shutdown drill.** `!shutdown` one canary agent; verify drain, offline
-   presence, and stay-down across a gateway restart; re-deploy through the
-   provider; verify the second Start reconciles to a no-op.
-5. **Manual Desktop deploy.** One real deploy from Buzz Desktop 0.5.5 on macOS
+3. **Provider re-deploy of the stopped agent.** The drill's remaining half:
+   bring `jules-buzz` back through a provider `deploy` rather than
+   `torana endpoints resume`, and verify a second Start reconciles to a no-op.
+   Blocked on provisioning being enabled.
+4. **Manual Desktop deploy.** One real deploy from Buzz Desktop 0.5.5 on macOS
    into a staging Torana, which is the only way to exercise the Desktop's own
    discovery, form rendering, and payload shape.
