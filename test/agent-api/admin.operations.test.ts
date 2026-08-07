@@ -30,7 +30,7 @@ function token(
   name: string,
   secret: string,
   botIds: string[],
-  scopes: ("ask" | "send")[],
+  scopes: ("ask" | "send" | "admin")[],
 ): ResolvedAgentApiToken {
   return {
     name,
@@ -83,12 +83,13 @@ function setup(tokens: ResolvedAgentApiToken[]): {
 }
 
 describe("operator admin API", () => {
+  const adminSecret = "admin-scope-secret-123456";
   const askSecret = "admin-ask-secret-123456";
   const sendSecret = "admin-send-secret-12345";
 
-  test("requires ask scope and filters all listings to permitted agents", async () => {
+  test("requires admin scope and filters all listings to permitted agents", async () => {
     const { base, db } = setup([
-      token("alpha-ops", askSecret, ["alpha"], ["ask"]),
+      token("alpha-ops", adminSecret, ["alpha"], ["admin"]),
       token("send-only", sendSecret, ["alpha"], ["send"]),
     ]);
     db.persistConversationSession({
@@ -115,7 +116,7 @@ describe("operator admin API", () => {
     });
     expect(forbidden.status).toBe(403);
 
-    const headers = { Authorization: `Bearer ${askSecret}` };
+    const headers = { Authorization: `Bearer ${adminSecret}` };
     const endpoints = (await (
       await fetch(`${base}/v1/admin/endpoints`, { headers })
     ).json()) as { endpoints: Array<{ agentId: string }> };
@@ -126,9 +127,58 @@ describe("operator admin API", () => {
     expect(sessions.sessions.map((row) => row.agentId)).toEqual(["alpha"]);
   });
 
+  test("a messaging token cannot reach the admin routes, read or write", async () => {
+    // The property this scope split exists for: `ask` is what agents and
+    // scripts carry, and it must not enumerate operational state or destroy
+    // durable rows. Every admin route is checked, not just a sample.
+    const { base, db } = setup([
+      token("messaging", askSecret, ["alpha"], ["ask", "send"]),
+      token("alpha-ops", adminSecret, ["alpha"], ["admin"]),
+    ]);
+    const endpointId = db.getEndpointId("alpha", "telegram");
+    const headers = {
+      Authorization: `Bearer ${askSecret}`,
+      "Content-Type": "application/json",
+    };
+
+    const reads = [
+      "/v1/admin/endpoints",
+      "/v1/admin/conversations",
+      "/v1/admin/sessions",
+      "/v1/admin/outbox",
+    ];
+    for (const path of reads) {
+      const res = await fetch(`${base}${path}`, { headers });
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe(
+        "scope_not_permitted",
+      );
+    }
+
+    const writes = [
+      "/v1/admin/sessions/alpha-session/rotate",
+      "/v1/admin/outbox/1/replay",
+      "/v1/admin/outbox/1/dead-letter",
+      `/v1/admin/endpoints/${endpointId}/drain`,
+      `/v1/admin/endpoints/${endpointId}/resume`,
+      `/v1/admin/endpoints/${endpointId}/dead-letter`,
+    ];
+    for (const path of writes) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ acknowledge_data_loss: true }),
+      });
+      expect(res.status).toBe(403);
+    }
+
+    // The endpoint the messaging token tried to drain is untouched.
+    expect(db.getEndpointState(endpointId)?.lifecycleState).toBe("active");
+  });
+
   test("rotates sessions and controls outbox without exposing payloads", async () => {
     const { base, db } = setup([
-      token("alpha-ops", askSecret, ["alpha"], ["ask"]),
+      token("alpha-ops", adminSecret, ["alpha"], ["admin"]),
     ]);
     const endpointId = db.getEndpointId("alpha", "telegram");
     const conversation = {
@@ -150,7 +200,7 @@ describe("operator admin API", () => {
       signedPayloadJson: '{"signed":"exact"}',
       signedEventId: "ab".repeat(32),
     });
-    const headers = { Authorization: `Bearer ${askSecret}` };
+    const headers = { Authorization: `Bearer ${adminSecret}` };
 
     const rotated = await fetch(
       `${base}/v1/admin/sessions/${encodeURIComponent(session.sessionKey)}/rotate`,
@@ -184,11 +234,11 @@ describe("operator admin API", () => {
 
   test("requires explicit data-loss acknowledgement for forced endpoint dead-letter", async () => {
     const { base, db } = setup([
-      token("alpha-ops", askSecret, ["alpha"], ["ask"]),
+      token("alpha-ops", adminSecret, ["alpha"], ["admin"]),
     ]);
     const endpointId = db.getEndpointId("alpha", "telegram");
     const headers = {
-      Authorization: `Bearer ${askSecret}`,
+      Authorization: `Bearer ${adminSecret}`,
       "Content-Type": "application/json",
     };
     expect(

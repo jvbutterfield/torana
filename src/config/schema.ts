@@ -303,7 +303,7 @@ export const BotReactionsSchema = z
 // stream-json --include-partial-messages --replay-user-messages --verbose
 // --dangerously-skip-permissions) are always applied by the runner and are
 // NOT user-configurable — they are what makes torana able to parse the
-// CLI's output. The `args` key is for USER extras (e.g. `--agent cato`)
+// CLI's output. The `args` key is for USER extras (e.g. `--agent assistant`)
 // that get appended to the protocol flags.
 //
 // Because `--dangerously-skip-permissions` is always on, every claude-code
@@ -414,11 +414,28 @@ export const BotSchema = z
 
 // ---------- agent API ----------
 
-// `endpoints:admin` is deliberately a separate scope rather than a flag on an
-// existing one. The Buzz provisioning routes are the only `/v1/*` surface
-// exposed through the public edge, so an agent's messaging token must not be
-// able to reach them.
-export const AgentApiScopeSchema = z.enum(["ask", "send", "endpoints:admin"]);
+// Four scopes, split by blast radius rather than by route grouping.
+//
+// `ask` and `send` are the messaging scopes — the ones agents and scripts hand
+// around. `admin` gates the operational routes under `/v1/admin/*`: they
+// enumerate every conversation, session, and outbox row for the token's bots,
+// and they mutate durable state (drain an endpoint, rotate a session,
+// dead-letter a row with acknowledged data loss). That is not something an
+// ordinary conversational token should carry by default, so it is a scope an
+// operator grants deliberately. Unlike `endpoints:admin` it may be combined
+// with `ask`/`send`, because these routes are not reachable from the public
+// edge — an operator token doing both is a legitimate deployment.
+//
+// `endpoints:admin` is stricter still. The Buzz provisioning routes are the
+// only `/v1/*` surface exposed through the public edge, so an agent's messaging
+// token must not be able to reach them, and the exclusivity rule below makes
+// that structural rather than conventional.
+export const AgentApiScopeSchema = z.enum([
+  "ask",
+  "send",
+  "admin",
+  "endpoints:admin",
+]);
 export type AgentApiScope = z.infer<typeof AgentApiScopeSchema>;
 
 export const AgentApiTokenSchema = z

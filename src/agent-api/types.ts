@@ -8,7 +8,7 @@ import type { ResolvedAgentApiToken } from "../config/load.js";
 import type { Metrics } from "../metrics.js";
 import type { BuzzCredentialBroker } from "../broker/buzz-broker.js";
 
-export type Scope = "ask" | "send" | "endpoints:admin";
+export type Scope = "ask" | "send" | "admin" | "endpoints:admin";
 
 export interface AuthSuccess {
   token: ResolvedAgentApiToken;
