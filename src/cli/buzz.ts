@@ -1,25 +1,47 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { generateSecretKey, nip19 } from "nostr-tools";
+
 import type {
   BuzzBrokerRequest,
   BuzzBrokerResponse,
   BuzzCapabilityFile,
 } from "../broker/buzz-broker.js";
+import {
+  createOwnerAuthTag,
+  decodeSecret,
+  publicKey,
+} from "../platform/buzz/protocol.js";
 import { ExitCode } from "./shared/exit.js";
-import { renderText, type Rendered } from "./shared/output.js";
+import { renderJson, renderText, type Rendered } from "./shared/output.js";
 
-const HELP = `Usage: torana buzz call
+const HELP = `Usage: torana buzz <call|keygen|auth-tag>
 
-Read one typed Buzz broker request as JSON from stdin. The current runner
-session's short-lived capability selects the endpoint; callers cannot supply
-relay URLs or signing credentials.
+  call       Send one typed broker request (runner-facing).
+  keygen     Generate a new Buzz identity keypair.
+  auth-tag   Mint a NIP-OA owner auth tag for an endpoint identity.
 
-Request shape:
-  {"group":"messages","command":"send","options":{"channel":"<uuid>","content":"hello"}}
+torana buzz call
+  Read one typed Buzz broker request as JSON from stdin. The current runner
+  session's short-lived capability selects the endpoint; callers cannot supply
+  relay URLs or signing credentials.
 
-Nested commands use "nestedCommand" (for example repos/protect/list).
-Optional fields: "positionals", "stdin".
+  Request shape:
+    {"group":"messages","command":"send","options":{"channel":"<uuid>","content":"hello"}}
+
+  Nested commands use "nestedCommand" (for example repos/protect/list).
+  Optional fields: "positionals", "stdin".
+
+torana buzz keygen [--format text|json]
+  Print a fresh secret key and its public key. The secret is written to stdout
+  once and never stored — capture it into your secret manager.
+
+torana buzz auth-tag --agent-pubkey <64-hex> [--conditions kind=9]
+                     [--format text|json]
+  Sign an owner attestation for an endpoint identity. The owner secret is read
+  from BUZZ_OWNER_PRIVATE_KEY, never from a flag, so it stays out of argv and
+  shell history. Conditions default to "kind=9" (ordinary messages).
 `;
 
 export interface RunBuzzOptions {
@@ -43,9 +65,13 @@ export async function runBuzz(
   ) {
     return renderText(HELP.split("\n").slice(0, -1), ExitCode.success);
   }
+  if (argv[0] === "keygen") return runKeygen(argv.slice(1));
+  if (argv[0] === "auth-tag") {
+    return runAuthTag(argv.slice(1), opts.env ?? process.env);
+  }
   if (argv.length !== 1 || argv[0] !== "call") {
     return renderText([], ExitCode.badUsage, [
-      "usage: torana buzz call < request.json",
+      "usage: torana buzz <call|keygen|auth-tag>; see torana buzz --help",
     ]);
   }
   try {
@@ -171,6 +197,116 @@ async function callUnix(
 
 async function readStdin(): Promise<string> {
   return await new Response(Bun.stdin.stream()).text();
+}
+
+// ── credential helpers ──────────────────────────────────────────────────────
+//
+// These two exist because obtaining Buzz credentials was the one step of the
+// Buzz setup with no documented path: Torana could verify an owner attestation
+// but never mint one, so operators had no first-party way to produce the
+// `auth_tag` every Buzz endpoint requires.
+//
+// Neither touches the gateway, the database, or the network. `keygen` is pure
+// generation; `auth-tag` is a pure signature over inputs the caller supplies.
+
+/** `--format json` → JSON, anything else → text. Defaults to text. */
+function wantsJson(argv: string[]): boolean {
+  const i = argv.indexOf("--format");
+  return (i >= 0 && argv[i + 1] === "json") || argv.includes("--json");
+}
+
+function flagValue(argv: string[], name: string): string | undefined {
+  const i = argv.indexOf(name);
+  if (i >= 0 && argv[i + 1] !== undefined && !argv[i + 1]!.startsWith("--")) {
+    return argv[i + 1];
+  }
+  const inline = argv.find((a) => a.startsWith(`${name}=`));
+  return inline?.slice(name.length + 1);
+}
+
+function runKeygen(argv: string[]): Rendered {
+  const secret = generateSecretKey();
+  const secretHex = Buffer.from(secret).toString("hex");
+  const pubkey = publicKey(secret);
+  if (wantsJson(argv)) {
+    return renderJson(
+      {
+        private_key: secretHex,
+        public_key: pubkey,
+        nsec: nip19.nsecEncode(secret),
+        npub: nip19.npubEncode(pubkey),
+      },
+      ExitCode.success,
+    );
+  }
+  return renderText(
+    [
+      `private_key  ${secretHex}`,
+      `public_key   ${pubkey}`,
+      `nsec         ${nip19.nsecEncode(secret)}`,
+      `npub         ${nip19.npubEncode(pubkey)}`,
+    ],
+    ExitCode.success,
+    [
+      "This secret is not stored anywhere. Copy it into your secret manager now.",
+    ],
+  );
+}
+
+function runAuthTag(argv: string[], env: NodeJS.ProcessEnv): Rendered {
+  const agentPubkeyRaw = flagValue(argv, "--agent-pubkey");
+  if (!agentPubkeyRaw) {
+    return renderText([], ExitCode.badUsage, [
+      "usage: torana buzz auth-tag --agent-pubkey <64-hex> [--conditions kind=9]",
+      "the owner secret is read from BUZZ_OWNER_PRIVATE_KEY, not from a flag",
+    ]);
+  }
+  const ownerRaw = env.BUZZ_OWNER_PRIVATE_KEY;
+  if (!ownerRaw || ownerRaw.trim() === "") {
+    return renderText([], ExitCode.badUsage, [
+      "BUZZ_OWNER_PRIVATE_KEY is not set",
+      "Set it to the owner identity's secret key (hex or nsec). It is read from",
+      "the environment rather than a flag so it stays out of argv and shell history.",
+    ]);
+  }
+  try {
+    const ownerSecret = decodeSecret(ownerRaw.trim());
+    // Accept an npub for the endpoint too — operators copy whichever form the
+    // client showed them.
+    const agentPubkey = agentPubkeyRaw.startsWith("npub1")
+      ? (nip19.decode(agentPubkeyRaw).data as string)
+      : agentPubkeyRaw.toLowerCase();
+    const conditions = flagValue(argv, "--conditions") ?? "kind=9";
+    const tag = createOwnerAuthTag(ownerSecret, agentPubkey, conditions);
+    const serialized = JSON.stringify(tag);
+    if (wantsJson(argv)) {
+      return renderJson(
+        {
+          auth_tag: serialized,
+          owner_pubkey: publicKey(ownerSecret),
+          agent_pubkey: agentPubkey,
+          conditions,
+        },
+        ExitCode.success,
+      );
+    }
+    return renderText(
+      [
+        `auth_tag      ${serialized}`,
+        `owner_pubkey  ${publicKey(ownerSecret)}`,
+        `agent_pubkey  ${agentPubkey}`,
+        `conditions    ${conditions}`,
+      ],
+      ExitCode.success,
+      ["Quote auth_tag when you put it in YAML or an env var — it is JSON."],
+    );
+  } catch (error) {
+    return renderText([], ExitCode.badUsage, [
+      `could not mint an auth tag: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ]);
+  }
 }
 
 export { HELP as BUZZ_HELP };
