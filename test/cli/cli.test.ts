@@ -377,6 +377,61 @@ bots:
     expect(c004?.status).toBe("fail");
   });
 
+  test("C004 skips a Buzz-only agent instead of dialling Telegram", async () => {
+    // A v2 agent with no Telegram endpoint is projected into the legacy bot
+    // shape with a sentinel in place of a token. Building a TelegramClient
+    // from that sentinel reports a spurious failure for an agent that is
+    // configured correctly, so C004 must skip it — and must not make the call.
+    const body = `
+version: 2
+gateway:
+  port: 3000
+  data_dir: ${tmpDir}
+  db_path: ${tmpDir}/gateway.db
+platforms:
+  telegram:
+    enabled: false
+    delivery: { default_mode: polling }
+  buzz:
+    enabled: false
+access_control: { default_policy: deny, allowed_user_ids: [111] }
+sessions: { scope: conversation }
+agents:
+  - id: buzzonly
+    runner:
+      type: command
+      cmd: ["bun", "--version"]
+      protocol: jsonl-text
+      resume_model: stable_session_id
+    endpoints:
+      - id: buzzonly-buzz
+        platform: buzz
+        enabled: false
+        community_id: team
+        relay_url: wss://relay.example.com
+        private_key: "${"1".padStart(64, "0")}"
+        respond_to: anyone
+`;
+    const cfg = writeConfig("torana.yaml", body);
+    applyMigrations(join(tmpDir, "gateway.db"));
+
+    let telegramCalls = 0;
+    const fetchImpl = (async (url: string | URL) => {
+      if (String(url).includes("/bot")) telegramCalls += 1;
+      return new Response(JSON.stringify({ ok: true, result: { id: 1 } }));
+    }) as unknown as typeof fetch;
+
+    const { config } = loadConfigFromFile(cfg);
+    const result = await runDoctor({ config, configPath: cfg, fetchImpl });
+
+    const c004 = result.checks.filter((c) => c.id === "C004");
+    expect(c004).toHaveLength(1);
+    expect(c004[0]?.status).toBe("skip");
+    expect(c004[0]?.detail).toContain("buzzonly");
+    expect(telegramCalls).toBe(0);
+    expect(result.checks.filter((c) => c.status === "fail")).toEqual([]);
+  });
+
   test("C002 fails for non-existent data_dir", async () => {
     const missing = join(tmpDir, "does-not-exist");
     const body = `

@@ -1195,6 +1195,20 @@ export interface NormalizedConfigModel {
   alertsTarget?: { endpointId: string; externalConversationId: string };
 }
 
+/**
+ * Prefix of the placeholder token given to a Buzz-only agent when it is
+ * projected into the legacy `BotConfig` shape. It is not a credential: no
+ * Telegram request may be made with it. Anything that would otherwise build a
+ * TelegramClient from a bot's token must exclude these first — see
+ * {@link isBuzzOnlyBotToken}.
+ */
+export const BUZZ_ONLY_BOT_TOKEN_PREFIX = "disabled-buzz-only:";
+
+/** True when a legacy bot token is the Buzz-only sentinel, not a credential. */
+export function isBuzzOnlyBotToken(token: string): boolean {
+  return token.startsWith(BUZZ_ONLY_BOT_TOKEN_PREFIX);
+}
+
 export function normalizeV2(config: ConfigV2): {
   config: Config;
   model: NormalizedConfigModel;
@@ -1214,7 +1228,7 @@ export function normalizeV2(config: ConfigV2): {
       token:
         endpoint?.platform === "telegram"
           ? endpoint.token
-          : `disabled-buzz-only:${agent.id}`,
+          : `${BUZZ_ONLY_BOT_TOKEN_PREFIX}${agent.id}`,
       transport_override:
         endpoint?.platform === "telegram"
           ? endpoint.transport_override

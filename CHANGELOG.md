@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+
+- `torana doctor` reported `C004 … getMe failed (404)` for a Buzz-only agent.
+  A v2 agent with no Telegram endpoint is projected into the legacy bot shape
+  with a `disabled-buzz-only:<id>` sentinel in place of a token — explicitly
+  not a credential, and the runtime never builds a TelegramClient from it. The
+  check did, so every correctly configured Buzz-only agent produced a standing
+  doctor failure that a deployment gate cannot distinguish from a real one.
+  C004 now reports `skip` for those agents and makes no Telegram request. The
+  sentinel is exported as `isBuzzOnlyBotToken` so the projection and its
+  consumers cannot drift apart again.
+
 ## [2.0.0-rc.11] - 2026-08-07
 
 ### Fixed

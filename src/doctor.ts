@@ -14,6 +14,7 @@ import { Database } from "bun:sqlite";
 
 import type { Config } from "./config/schema.js";
 import type { NormalizedConfigModel } from "./config/v2.js";
+import { isBuzzOnlyBotToken } from "./config/v2.js";
 import { TelegramClient } from "./telegram/client.js";
 import { planMigration } from "./db/migrate.js";
 import { runnerSupportsSideSessions } from "./runner/types.js";
@@ -152,8 +153,19 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     });
   }
 
-  // C004 — per-bot getMe.
+  // C004 — per-bot getMe. A Buzz-only agent has no Telegram identity: the
+  // legacy bot shape carries a sentinel in place of a token, and dialling
+  // Telegram with it reports a spurious failure for a correctly configured
+  // agent. Skip rather than omit, so the agent still appears in the report.
   for (const bot of config.bots) {
+    if (isBuzzOnlyBotToken(bot.token)) {
+      checks.push({
+        id: "C004",
+        status: "skip",
+        detail: `bot '${bot.id}': Buzz-only agent has no Telegram identity; getMe not probed`,
+      });
+      continue;
+    }
     const client = new TelegramClient({
       botId: bot.id,
       token: bot.token,
