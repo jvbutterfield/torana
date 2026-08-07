@@ -149,6 +149,34 @@ per-client rate limiting, the `BUZZ_PROVISION_ENABLED` /
 contract with credential-reuse rejection, and the provider-based conversion
 runbook.
 
+### Released 2026-08-07 — `2.0.0-rc.11`
+
+Published on the `rc` dist-tag by `release.yml` run `31140035625` (tag
+`v2.0.0-rc.11`, integrity
+`sha512-UsxOxoRBlU+Ynpeun4nqplb5EFTEJUo88dpnGI/5fwFOobWtVrDil1WQXgL8ZTTASXDjJyO46HF53HoU8PUyvw==`).
+
+One behavioural change: outbound-only publishers announce presence on connect,
+on every heartbeat, and `offline` on stop. **No schema migration** — v7 from
+rc.10 is current — and the `desktop-v0.5.5` CLI pin is unchanged, so this
+version needs neither a `torana migrate` step nor a Linux `buzz` rebuild. That
+makes it the one deploy in this series that is just a package bump.
+
+Provider binaries built and checksummed by the same run, both verified locally
+with `shasum -a 256 -c SHA256SUMS`:
+
+| Platform     | SHA-256                                                            |
+| ------------ | ------------------------------------------------------------------ |
+| darwin-arm64 | `311d14bb09d6da1da09acaa4f1f8d276fd5ab135994984d065b9b4ef868dea97` |
+| linux-x64    | `51bba8234fd88dda94c8441974fd4b3407eadf1a7dddfef087053fd290971c92` |
+
+**Use these, not rc.10's**, when installing the provider on the operator's Mac:
+
+```
+gh run download 31140035625 -R jvbutterfield/torana -n buzz-backend-torana
+```
+
+Not yet deployed to `agent-team` at the time of writing.
+
 ### Released and deployed, 2026-08-06
 
 1. **`torana@2.0.0-rc.10`** published on the `rc` dist-tag by `release.yml`

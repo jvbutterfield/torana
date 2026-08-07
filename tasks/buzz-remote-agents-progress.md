@@ -61,7 +61,7 @@ Ship it as rc.11 **before or with** the provisioning deploy.
 | ---------------------- | ---------------------------------------------------------------- |
 | `torana` main          | `bcf0611`, clean, pushed                                          |
 | `agent-team` main      | `8b464c1`, clean, pushed (`start_ssh.sh` untracked, pre-existing) |
-| npm `rc` dist-tag      | `2.0.0-rc.10`                                                     |
+| npm `rc` dist-tag      | `2.0.0-rc.11` (production still runs rc.10)                       |
 | Production deployment  | commit `8b464c1`, `RUNNING`, healthy                              |
 | Production schema      | v7 (`gateway.db.pre-v7` is the rollback copy on the volume)       |
 | Buzz CLI in image      | `desktop-v0.5.5`, Linux digest `c83fcfbe…2876`                    |
@@ -92,14 +92,22 @@ Ship it as rc.11 **before or with** the provisioning deploy.
    recovery path. Nothing is provisioned yet, so the window to do this cheaply
    is now.
 
-1. **Cut and deploy rc.11** carrying the publisher-presence fix. It is a
-   prerequisite for step 4, not a batching preference. One container restart
-   (~50 s); there is no way to bounce torana alone.
+1. 🟡 **rc.11 — cut and published 2026-08-07, not yet deployed.**
+   `torana@2.0.0-rc.11` is on the `rc` dist-tag (`release.yml` run
+   `31140035625`). Carries the publisher-presence fix, which is a prerequisite
+   for step 4, not a batching preference.
+
+   **Deploying it is a package bump only** — no schema migration (v7 is
+   current) and no Linux `buzz` rebuild (the `desktop-v0.5.5` pin is
+   unchanged). Move the `torana@` pin in `agent-team` and push; one container
+   restart (~50 s), and there is no way to bounce torana alone. This is the
+   simplest deploy in the series; the migration and CLI-pin hazards that bit
+   rc.10 do not apply.
 2. **Install the provider** on the operator's Mac from the release artifact
    (`gh run download <run-id> -R jvbutterfield/torana -n buzz-backend-torana`),
    verify against `SHA256SUMS`, and write `~/.config/torana/provider.json`
-   mode 0600. Take the checksums from the **rc.11** run — the ones in
-   `release-readiness.md` are rc.10's.
+   mode 0600. Use **run `31140035625`** (rc.11); its two checksums are recorded
+   in `release-readiness.md` and both verify.
 3. **First provider deploy** into production under a **throwaway identity**
    (the staging decision), then the drill's remaining half: bring a stopped
    agent back via provider `deploy` rather than `endpoints resume`, and confirm
