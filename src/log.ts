@@ -37,9 +37,36 @@ export function setSecrets(values: string[]): void {
   // always long. No length filter is applied here so operators cannot
   // accidentally bypass redaction by setting an otherwise-valid short value.
   // Sort by length descending so overlapping secrets replace longest-first.
-  secrets = [...new Set(values.filter((v) => v.length > 0))].sort(
-    (a, b) => b.length - a.length,
-  );
+  secrets = sortByLengthDesc(new Set(values.filter((v) => v.length > 0)));
+}
+
+/**
+ * Register additional secrets after startup, keeping the ones already set.
+ *
+ * `setSecrets()` runs once from the config load, which only knows about secrets
+ * declared in YAML. Buzz endpoints provisioned at runtime carry their own
+ * private key and owner auth tag — arriving on the provisioning request, or
+ * decrypted out of the database at boot — and those would otherwise never enter
+ * the redaction set, silently exempting them from the guarantee in
+ * `docs/security.md`. Callers pass them here instead.
+ *
+ * Idempotent: re-registering a known secret is a no-op, so the restore path and
+ * a subsequent reconciling deploy of the same endpoint don't grow the set.
+ */
+export function addSecrets(values: string[]): void {
+  const merged = new Set(secrets);
+  let changed = false;
+  for (const value of values) {
+    if (value.length > 0 && !merged.has(value)) {
+      merged.add(value);
+      changed = true;
+    }
+  }
+  if (changed) secrets = sortByLengthDesc(merged);
+}
+
+function sortByLengthDesc(values: Set<string>): string[] {
+  return [...values].sort((a, b) => b.length - a.length);
 }
 
 /** Auto-detect format: json when stdout is piped, text when TTY. */

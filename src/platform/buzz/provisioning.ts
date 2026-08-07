@@ -26,7 +26,7 @@ import {
   PROVISIONING_KEY_ENV,
 } from "../../config/provisioning-secrets.js";
 import type { GatewayDB, ProvisionedEndpointRow } from "../../db/gateway-db.js";
-import { logger } from "../../log.js";
+import { addSecrets, logger } from "../../log.js";
 import { decodeSecret, publicKey } from "./protocol.js";
 import type { BuzzTransport } from "./transport.js";
 
@@ -346,6 +346,14 @@ export class BuzzProvisioningService {
       );
     }
 
+    // Register before the row is stored and before the transport is wired, so
+    // every subsequent log line — including anything the endpoint's own
+    // supervisor emits — sees these values as redactable. Deliberately placed
+    // after validation rather than at entry: an unvalidated body would let a
+    // caller grow the redaction set (which `redactString` scans per log line)
+    // with arbitrary strings.
+    addSecrets([request.private_key, request.auth_tag]);
+
     this.deps.db.upsertProvisionedEndpoint({
       endpointId,
       agentId: request.agent_id,
@@ -438,24 +446,25 @@ export class BuzzProvisioningService {
       );
     }
     const stored = JSON.parse(row.configJson) as StoredEndpointBlock;
+    const privateKey = openSecret(
+      this.deps.key,
+      row.endpointId,
+      row.privateKeyCiphertext,
+    );
+    const authTag = row.authTagCiphertext
+      ? openSecret(this.deps.key, row.endpointId, row.authTagCiphertext)
+      : null;
+    // The restore path: these were sealed by an earlier process, so the
+    // config-load `setSecrets()` never saw them. Register at the moment they
+    // are decrypted — this is the only funnel through which a stored secret
+    // re-enters the process.
+    addSecrets(authTag ? [privateKey, authTag] : [privateKey]);
     return {
       ...stored,
       id: row.endpointId,
       agent_id: row.agentId,
-      private_key: openSecret(
-        this.deps.key,
-        row.endpointId,
-        row.privateKeyCiphertext,
-      ),
-      ...(row.authTagCiphertext
-        ? {
-            auth_tag: openSecret(
-              this.deps.key,
-              row.endpointId,
-              row.authTagCiphertext,
-            ),
-          }
-        : {}),
+      private_key: privateKey,
+      ...(authTag ? { auth_tag: authTag } : {}),
     };
   }
 
