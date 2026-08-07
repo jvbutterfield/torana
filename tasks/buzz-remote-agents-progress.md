@@ -60,26 +60,41 @@ Ship it as rc.11 **before or with** the provisioning deploy.
 | Surface                | State                                                            |
 | ---------------------- | ---------------------------------------------------------------- |
 | `torana` main          | `bcf0611`, clean, pushed                                          |
-| `agent-team` main      | `15f3444`, clean, pushed (`start_ssh.sh` untracked, pre-existing) |
+| `agent-team` main      | `8b464c1`, clean, pushed (`start_ssh.sh` untracked, pre-existing) |
 | npm `rc` dist-tag      | `2.0.0-rc.10`                                                     |
-| Production deployment  | `bf55fe88`, commit `194f4de`, healthy                             |
+| Production deployment  | commit `8b464c1`, `RUNNING`, healthy                              |
 | Production schema      | v7 (`gateway.db.pre-v7` is the rollback copy on the volume)       |
 | Buzz CLI in image      | `desktop-v0.5.5`, Linux digest `c83fcfbe…2876`                    |
-| Provisioning           | **deployed but off** — `BUZZ_PROVISION_ENABLED` unset, routes 404 |
-| Buzz endpoints         | all five `active`/`healthy`/`connected`                           |
+| Provisioning           | **ON** as of 2026-08-07 — see below                               |
+| Buzz endpoints         | all five `active`/`healthy`/`connected`, presence fresh           |
 
 ### Next actions, in order
 
-0. **Cut and deploy rc.11** carrying the publisher-presence fix. It is a
+0. ✅ **Provisioning enabled — done 2026-08-07.** Both secrets set on Railway
+   (`TORANA_ADMIN_TOKEN_BUZZ_PROVISION`, 44-char base64;
+   `TORANA_PROVISIONING_SECRETS_KEY`, 64-char hex), the `buzz-provisioner`
+   `endpoints:admin` token block added to the deployment `torana.yaml`
+   (`agent-team` `8b464c1`, `bot_ids: [cato]`), and `BUZZ_PROVISION_ENABLED=1`
+   set. Verified after deploy: all five Buzz endpoints `active`/`healthy`/
+   `connected` with fresh presence; `/v1/admin/buzz/endpoints/:id` returns 401
+   unauthenticated from the public edge on both GET and PUT (reachable, not
+   404); `/v1/bots`, `/v1/health`, `/v1/admin/sessions`, and
+   `/v1/admin/endpoints/:id/resume` all still 404 publicly; and the same path
+   with the real bearer returns 404-unknown-endpoint from inside the container,
+   proving the token authenticates rather than being rejected at the scope gate.
+
+   Done in **one** restart rather than two by setting the Railway variable with
+   `railway variable set … --skip-deploys` and letting the config push trigger
+   the single deploy. Worth reusing.
+
+   ⚠️ **Still to do: back the secrets key up somewhere other than the volume.**
+   A restore without it cannot recover provisioned identities — there is no
+   recovery path. Nothing is provisioned yet, so the window to do this cheaply
+   is now.
+
+1. **Cut and deploy rc.11** carrying the publisher-presence fix. It is a
    prerequisite for step 4, not a batching preference. One container restart
    (~50 s); there is no way to bounce torana alone.
-1. **Enable provisioning.** Set
-   `TORANA_ADMIN_TOKEN_BUZZ_PROVISION` and `TORANA_PROVISIONING_SECRETS_KEY`,
-   then `BUZZ_PROVISION_ENABLED=1` — in that order, the env contract refuses a
-   partial setup. Add the `endpoints:admin` token block to the deployment
-   `torana.yaml`. Full recipe: `agent-team` RUNBOOK §"Deploy a Buzz agent onto
-   Torana with the provider". **Back the secrets key up somewhere other than
-   the volume** — a restore without it cannot recover provisioned identities.
 2. **Install the provider** on the operator's Mac from the release artifact
    (`gh run download <run-id> -R jvbutterfield/torana -n buzz-backend-torana`),
    verify against `SHA256SUMS`, and write `~/.config/torana/provider.json`
@@ -568,6 +583,5 @@ owner-mention canary on the new build, the four record conversions plus Dev
 Team's record flag, the resume half of the shutdown drill (bring a stopped
 agent back via provider `deploy` rather than `endpoints resume`), and one
 manual Desktop deploy. The owner-`!shutdown` drill itself passed on 2026-08-07
-and is recorded above. Provisioning itself is deployed but **off**
-(`BUZZ_PROVISION_ENABLED` unset), verified by the provisioning path 404ing
-publicly under every method.
+and is recorded above. Provisioning is now **enabled** in production — see
+step 0 of "Next actions" for the enable evidence.
