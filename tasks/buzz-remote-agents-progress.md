@@ -4,6 +4,126 @@ Plan: [docs/buzz-remote-agents-plan.md](../docs/buzz-remote-agents-plan.md)
 Branch: `main` (one commit per phase, `US-021` … `US-026`, tracker pin after
 each gate).
 
+---
+
+## How to resume (handoff, 2026-08-07)
+
+All six phases are implemented. `torana@2.0.0-rc.10` is published and running
+in production with schema v7. The presence gate and the owner-`!shutdown` drill
+both passed against production. What remains is the provider rollout, which is
+blocked on one decision, not on code.
+
+### Read this first — `main` is ahead of what is deployed
+
+`dba11f0` ("Keep outbound-only publishers off the presence feed") is on `main`
+but **not in rc.10**, so it is inert. `dev-team-buzz` is still announcing itself
+online every ~30 s in production. The owner decided publishers should stay
+silent; the fix is written and tested but needs a release to take effect.
+
+Everything else on `main` past `v2.0.0-rc.10` is documentation.
+
+### Two decisions waiting on the owner
+
+1. **Staging for the first provider deploy.** The plan assumed a staging Torana
+   and there isn't one — `agent-team` is a single production service. Either
+   deploy the first provider-created agent into production with a throwaway
+   identity, or stand up a second Railway service first. **This gates all
+   remaining provider work.**
+2. **When to ship the publisher-presence fix.** Batch it with the provisioning
+   deploy (one restart instead of two — the recommendation), or cut rc.11 now.
+
+### Current state
+
+| Surface                | State                                                            |
+| ---------------------- | ---------------------------------------------------------------- |
+| `torana` main          | `bcf0611`, clean, pushed                                          |
+| `agent-team` main      | `15f3444`, clean, pushed (`start_ssh.sh` untracked, pre-existing) |
+| npm `rc` dist-tag      | `2.0.0-rc.10`                                                     |
+| Production deployment  | `bf55fe88`, commit `194f4de`, healthy                             |
+| Production schema      | v7 (`gateway.db.pre-v7` is the rollback copy on the volume)       |
+| Buzz CLI in image      | `desktop-v0.5.5`, Linux digest `c83fcfbe…2876`                    |
+| Provisioning           | **deployed but off** — `BUZZ_PROVISION_ENABLED` unset, routes 404 |
+| Buzz endpoints         | all five `active`/`healthy`/`connected`                           |
+
+### Next actions, in order
+
+1. **Enable provisioning** (after the staging decision). Set
+   `TORANA_ADMIN_TOKEN_BUZZ_PROVISION` and `TORANA_PROVISIONING_SECRETS_KEY`,
+   then `BUZZ_PROVISION_ENABLED=1` — in that order, the env contract refuses a
+   partial setup. Add the `endpoints:admin` token block to the deployment
+   `torana.yaml`. Full recipe: `agent-team` RUNBOOK §"Deploy a Buzz agent onto
+   Torana with the provider". **Back the secrets key up somewhere other than
+   the volume** — a restore without it cannot recover provisioned identities.
+2. **Install the provider** on the operator's Mac from the release artifact
+   (`gh run download <run-id> -R jvbutterfield/torana -n buzz-backend-torana`),
+   verify against `SHA256SUMS`, and write `~/.config/torana/provider.json`
+   mode 0600. rc.10 checksums are in `release-readiness.md`.
+3. **First provider deploy**, then the drill's remaining half: bring a stopped
+   agent back via provider `deploy` rather than `endpoints resume`, and confirm
+   a second Start reconciles to `unchanged`.
+4. **Record conversions**, one agent at a time, in the order the precedence rule
+   forces: remove the endpoint from YAML → redeploy → provider-deploy → retire
+   the `BUZZ_*_<AGENT>` variables. Jules and Cato first (re-deploy for
+   consistent addressing), then Alfred and Harper. Dev Team is record-flag only
+   — it is a publisher with no runner, and provider deploy refuses it naturally.
+5. **Owner-mention canary** on the new build.
+
+### Operational facts that cost real time to learn
+
+1. **Pushing `agent-team` `main` deploys to production automatically.** There is
+   no review gap.
+2. **There is no way to restart torana alone.** `supervisorctl restart
+   telegram-gateway` bounces the whole container (~50 s) because the runtime
+   supervisor treats a gateway exit as fatal. The `abnormal termination` line is
+   the expected stop, not a failure.
+3. **Schema migrations must run from `deploy/bin/torana-start`.** `torana
+   migrate --config` loads and validates the whole config, so it needs the
+   secrets `torana-start` exports; and Railway's pre-deploy phase does **not**
+   have the volume attached, confirmed in production logs.
+4. **The gateway proxy forwards request bodies as streams**, which wedges the
+   connection for a following GET. The provisioning route buffers instead. Any
+   new route with a PUT-then-poll pattern needs the same treatment.
+5. **`railway ssh` lacks the runtime environment.** `BUZZ_CLI_SHA256` and the
+   Buzz secrets are materialized by the entrypoint, so any `torana` CLI command
+   that loads the config fails there. Mirror `torana-start`'s loading: export
+   `BUZZ_CLI_SHA256` from `/usr/local/share/torana/buzz-cli.sha256`, then read
+   each name from `/run/torana-secrets/<NAME>`. Never echo the values.
+6. **Never run `ps eww`** on the Mac or in the container — process environments
+   carry Buzz private keys.
+7. **Poll faster than the heartbeat** when measuring presence, or the gap
+   aliases to the poll period. See `spike/buzz-transport/presence-watch.ts`.
+8. **`dev-team` cannot receive `!shutdown`.** Publishers never subscribe to
+   channel messages, so a drill target must be a conversational agent.
+
+### Verification recipes
+
+- **Presence watch** — collector one-liner and analysis:
+  `spike/buzz-transport/presence-watch.ts` (header has the `railway ssh`
+  command).
+- **Endpoint health** —
+  `railway ssh "curl -s http://127.0.0.1:3001/health"`; the `presence` block per
+  endpoint is the US-022 surface.
+- **Public edge** — `/v1/bots`, `/v1/health`, `/v1/admin/sessions` must 404 from
+  the public domain; so must the provisioning path until it is enabled.
+- **Provider E2E, offline** — `BUZZ_PROVIDER_E2E=1 bun test
+  test/provider/provider.e2e.test.ts` compiles the real binary and deploys
+  against a local gateway plus fake relay.
+- **Local presence soak** — `BUZZ_PRESENCE_SOAK=1 bun test
+  test/soak/buzz-presence.test.ts` (10 min).
+
+### Two places the original plan was wrong
+
+Recorded so nobody re-derives them from the plan text:
+
+1. The `!shutdown` matcher needs **exact trimmed content**, no mention-token
+   stripping. Verified against upstream source, not a GUI capture — evidence in
+   `spike/buzz-transport/owner-shutdown-contract.json`.
+2. The presence rate-limit config check the plan specified would have **rejected
+   the shipped defaults**. Implemented the check that actually protects the
+   invariant instead: reject `heartbeat_secs >= 90`.
+
+---
+
 ## Phase table
 
 | Phase                                    | Status         | Story    | Evidence                                                   |
