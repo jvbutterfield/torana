@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.12] - 2026-08-07
+
 ### Fixed
 
 - `torana doctor` reported `C004 … getMe failed (404)` for a Buzz-only agent.
