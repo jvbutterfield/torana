@@ -60,9 +60,9 @@ Ship it as rc.11 **before or with** the provisioning deploy.
 | Surface                | State                                                            |
 | ---------------------- | ---------------------------------------------------------------- |
 | `torana` main          | `bcf0611`, clean, pushed                                          |
-| `agent-team` main      | `8b464c1`, clean, pushed (`start_ssh.sh` untracked, pre-existing) |
-| npm `rc` dist-tag      | `2.0.0-rc.11` (production still runs rc.10)                       |
-| Production deployment  | commit `8b464c1`, `RUNNING`, healthy                              |
+| `agent-team` main      | `5ba35e9`, clean, pushed (`start_ssh.sh` untracked, pre-existing) |
+| npm `rc` dist-tag      | `2.0.0-rc.11` — deployed                                          |
+| Production deployment  | commit `5ba35e9`, `RUNNING`, healthy, `torana 2.0.0-rc.11`        |
 | Production schema      | v7 (`gateway.db.pre-v7` is the rollback copy on the volume)       |
 | Buzz CLI in image      | `desktop-v0.5.5`, Linux digest `c83fcfbe…2876`                    |
 | Provisioning           | **ON** as of 2026-08-07 — see below                               |
@@ -87,22 +87,27 @@ Ship it as rc.11 **before or with** the provisioning deploy.
    `railway variable set … --skip-deploys` and letting the config push trigger
    the single deploy. Worth reusing.
 
-   ⚠️ **Still to do: back the secrets key up somewhere other than the volume.**
-   A restore without it cannot recover provisioned identities — there is no
-   recovery path. Nothing is provisioned yet, so the window to do this cheaply
-   is now.
+   ✅ **Secrets backed up** by the owner on 2026-08-07, before anything was
+   provisioned.
 
-1. 🟡 **rc.11 — cut and published 2026-08-07, not yet deployed.**
-   `torana@2.0.0-rc.11` is on the `rc` dist-tag (`release.yml` run
-   `31140035625`). Carries the publisher-presence fix, which is a prerequisite
-   for step 4, not a batching preference.
+1. ✅ **rc.11 — released and deployed 2026-08-07.** `torana@2.0.0-rc.11` on the
+   `rc` dist-tag (`release.yml` run `31140035625`), deployed via `agent-team`
+   `5ba35e9`. `torana version` in the container reports `2.0.0-rc.11`; all five
+   Buzz endpoints came back `active`/`healthy`/`connected` with fresh presence
+   and zero failures. It was a package-pin bump exactly as predicted — no
+   migration, no CLI rebuild, one clean restart.
 
-   **Deploying it is a package bump only** — no schema migration (v7 is
-   current) and no Linux `buzz` rebuild (the `desktop-v0.5.5` pin is
-   unchanged). Move the `torana@` pin in `agent-team` and push; one container
-   restart (~50 s), and there is no way to bounce torana alone. This is the
-   simplest deploy in the series; the migration and CLI-pin hazards that bit
-   rc.10 do not apply.
+   **What production did *not* verify.** The publisher's connect-time publish
+   is covered by tests, not by this deploy. `last_published_at` is the *latest*
+   publish, so once every endpoint is heartbeating they cluster within a second
+   of each other whether or not the publisher announced at connect — the
+   post-deploy reading showing all five within 0.5 s proves they are all
+   heartbeating, nothing more. Successful presence publishes are not logged, so
+   the startup log cannot settle it either. Confirming it needs a health sample
+   inside the first 30 s after a restart, which the conversions in step 4 will
+   provide for free. The `offline`-on-stop half is what actually matters there
+   and is directly observable: stop an endpoint and watch its dot go out
+   immediately instead of lingering ~3 min.
 2. **Install the provider** on the operator's Mac from the release artifact
    (`gh run download <run-id> -R jvbutterfield/torana -n buzz-backend-torana`),
    verify against `SHA256SUMS`, and write `~/.config/torana/provider.json`
