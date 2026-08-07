@@ -308,14 +308,12 @@ class BuzzEndpointSupervisor {
   async stop(): Promise<void> {
     await this.stopIngress();
     this.running = false;
-    if (!this.outboundOnly) {
-      await this.adapter
-        .signal(this.signalConversation(), {
-          kind: "presence",
-          state: "offline",
-        })
-        .catch(() => false);
-    }
+    await this.adapter
+      .signal(this.signalConversation(), {
+        kind: "presence",
+        state: "offline",
+      })
+      .catch(() => false);
     for (const resolve of [...this.sleepResolvers]) resolve();
     this.client?.close();
     if (this.loopPromise) await this.loopPromise.catch(() => {});
@@ -381,9 +379,15 @@ class BuzzEndpointSupervisor {
         ) {
           throw new Error("publisher destination membership is not active");
         }
-        if (!this.outboundOnly && this.ingressEnabled) {
+        if (this.ingressEnabled) {
+          // Publishers announce presence on the same schedule as conversational
+          // endpoints. The dot reports that this identity's connection is live
+          // and its feed is flowing; it is not a promise that the identity will
+          // answer a message. Announcing here rather than waiting for the first
+          // heartbeat keeps the endpoint from sitting dark for a full interval
+          // after every reconnect.
           await this.publishLifecyclePresence();
-          await this.recoverAcceptedEvents();
+          if (!this.outboundOnly) await this.recoverAcceptedEvents();
         }
         if (this.ingressEnabled) this.subscribeMembership(client);
         this.failureCount = 0;
@@ -869,12 +873,7 @@ class BuzzEndpointSupervisor {
           discoveryFilters(this.adapter.config.pubkey),
           this.subscriptionId(`heartbeat-${++this.heartbeatSequence}`),
         );
-        // Outbound-only publishers stay silent, matching the connect-time
-        // path. A publisher has no runner and cannot answer, so advertising it
-        // as online tells the community it can be talked to when it cannot.
-        // The membership query above still runs: the connection is real and
-        // its health is still worth tracking, we just do not announce it.
-        if (!this.outboundOnly) await this.publishLifecyclePresence();
+        await this.publishLifecyclePresence();
         nextHeartbeatAt = Date.now() + heartbeatMs;
       }
       if (now >= nextFeedAt) {
@@ -1003,14 +1002,12 @@ class BuzzEndpointSupervisor {
         });
       }
 
-      if (!this.outboundOnly) {
-        await this.adapter
-          .signal(this.signalConversation(), {
-            kind: "presence",
-            state: "offline",
-          })
-          .catch(() => false);
-      }
+      await this.adapter
+        .signal(this.signalConversation(), {
+          kind: "presence",
+          state: "offline",
+        })
+        .catch(() => false);
     } finally {
       this.ownerShutdownInProgress = false;
     }

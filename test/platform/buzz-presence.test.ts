@@ -652,12 +652,15 @@ describe("presence configuration", () => {
 
 describe("outbound-only publishers", () => {
   test(
-    "a publisher connects and stays healthy without announcing presence",
+    "a publisher announces presence on connect, on every heartbeat, and offline on stop",
     async () => {
-      // A publisher has no runner and cannot answer, so showing it online tells
-      // the community it can be talked to when it cannot. The connect-time path
-      // already stayed silent; the heartbeat used to announce anyway, which the
-      // rate limiter had been masking intermittently.
+      // Publishers are on the presence feed on the same terms as conversational
+      // endpoints: the dot reports that the identity's connection is live and
+      // its feed is flowing, not that it will answer a message. The three
+      // publish sites have to agree — announcing only on the heartbeat would
+      // leave the endpoint dark for a full interval after every reconnect, and
+      // skipping the stop announcement would leave a stopped publisher showing
+      // online until the relay's 180 s TTL lapsed.
       const relay = createPresenceRelay();
       const loaded = makeLoaded(relay.url, { heartbeatSecs: 5 });
       const db = openDb(loaded);
@@ -696,19 +699,42 @@ describe("outbound-only publishers", () => {
         "publisher connected",
       );
 
-      // Long enough for several heartbeats at a 5 s interval.
-      await Bun.sleep(12_000);
+      // Online before the first heartbeat can have fired, not one interval
+      // later. The 5 s heartbeat gives this assertion real room.
+      await waitFor(
+        () => relay.presence().length >= 1,
+        "publisher announced presence on connect",
+      );
+      expect(relay.presence()[0]!.content).toBe("online");
+      expect(transport.snapshots()[0]!.presence.lastPublishedAt).not.toBeNull();
 
-      expect(relay.presence()).toHaveLength(0);
+      // Long enough for several heartbeats at a 5 s interval.
+      await waitFor(
+        () => relay.presence().length >= 3,
+        "publisher refreshed presence on the heartbeat",
+        20_000,
+      );
+      const online = relay.presence();
+      expect(online.every((e) => e.content === "online")).toBe(true);
+      // Refreshes are heartbeat-paced, not rate-limiter-suppressed: lifecycle
+      // presence is exempt from `presence_min_interval_ms` for publishers on
+      // exactly the same terms as for conversational endpoints.
       const snapshot = transport.snapshots()[0]!;
-      expect(snapshot.presence.attempted).toBe(0);
-      expect(snapshot.presence.lastPublishedAt).toBeNull();
-      // Silence is not a health problem: the connection is real and fine.
+      expect(snapshot.presence.attempted).toBeGreaterThanOrEqual(3);
+      expect(snapshot.presence.suppressed).toBe(0);
+      expect(snapshot.presence.failed).toBe(0);
       expect(snapshot.state).toBe("healthy");
       expect(snapshot.presence.stale).toBe(false);
       expect(snapshot.connected).toBe(true);
+
+      await transport.stop();
+      transports.length = 0;
+      await waitFor(
+        () => relay.presence().some((e) => e.content === "offline"),
+        "publisher announced offline on stop",
+      );
       db.close();
     },
-    { timeout: 40_000 },
+    { timeout: 60_000 },
   );
 });
