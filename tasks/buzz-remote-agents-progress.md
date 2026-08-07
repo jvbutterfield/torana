@@ -10,27 +10,50 @@ each gate).
 
 All six phases are implemented. `torana@2.0.0-rc.10` is published and running
 in production with schema v7. The presence gate and the owner-`!shutdown` drill
-both passed against production. What remains is the provider rollout, which is
-blocked on one decision, not on code.
+both passed against production. Both owner decisions that were blocking the
+rollout have now been taken; what remains is execution.
 
 ### Read this first — `main` is ahead of what is deployed
 
-`dba11f0` ("Keep outbound-only publishers off the presence feed") is on `main`
-but **not in rc.10**, so it is inert. `dev-team-buzz` is still announcing itself
-online every ~30 s in production. The owner decided publishers should stay
-silent; the fix is written and tested but needs a release to take effect.
+Everything on `main` past `v2.0.0-rc.10` is documentation, **except** the
+publisher-presence change described below. It is written, tested, and inert
+until a release ships it.
 
-Everything else on `main` past `v2.0.0-rc.10` is documentation.
+### Both decisions are taken (2026-08-07)
 
-### Two decisions waiting on the owner
+1. **Staging: production, with a throwaway identity.** There is no staging
+   Torana and one will not be stood up — `agent-team` stays a single production
+   service. The first provider-created agent goes into production under a
+   disposable identity that can be `DELETE`d; blast radius is one endpoint.
+   This unblocks all remaining provider work.
+2. **Publishers stay online.** This **reverses** the decision recorded on
+   2026-08-06. Publishers are on the presence feed on the same terms as
+   conversational endpoints. See "Publisher presence" below — the reversal was
+   not a plain revert, because the original state was inconsistent.
 
-1. **Staging for the first provider deploy.** The plan assumed a staging Torana
-   and there isn't one — `agent-team` is a single production service. Either
-   deploy the first provider-created agent into production with a throwaway
-   identity, or stand up a second Railway service first. **This gates all
-   remaining provider work.**
-2. **When to ship the publisher-presence fix.** Batch it with the provisioning
-   deploy (one restart instead of two — the recommendation), or cut rc.11 now.
+### Publisher presence — reversed, and why it was not a revert
+
+`dba11f0` ("Keep outbound-only publishers off the presence feed") silenced
+publishers. That decision was reversed before it ever shipped, so **production
+has never run it**. Reverting it alone would have restored a half-online
+publisher, because presence has three publish sites and only one of them ever
+announced a publisher:
+
+| Site        | rc.10 (deployed) | `dba11f0` | Now       |
+| ----------- | ---------------- | --------- | --------- |
+| Connect     | silent           | silent    | `online`  |
+| Heartbeat   | `online`         | silent    | `online`  |
+| Stop /drain | silent           | silent    | `offline` |
+
+So under rc.10 a publisher sits dark for a full heartbeat interval after every
+connect and reconnect, and — the worse half — a **stopped publisher keeps
+showing online until the relay's 180 s TTL lapses**, because nothing publishes
+its `offline`. All three sites now agree.
+
+This makes the change a rollout prerequisite rather than a nice-to-have: the
+record conversions in step 4 stop and redeploy endpoints, and under rc.10 a
+converted publisher would linger online for three minutes after each stop.
+Ship it as rc.11 **before or with** the provisioning deploy.
 
 ### Current state
 
@@ -47,7 +70,10 @@ Everything else on `main` past `v2.0.0-rc.10` is documentation.
 
 ### Next actions, in order
 
-1. **Enable provisioning** (after the staging decision). Set
+0. **Cut and deploy rc.11** carrying the publisher-presence fix. It is a
+   prerequisite for step 4, not a batching preference. One container restart
+   (~50 s); there is no way to bounce torana alone.
+1. **Enable provisioning.** Set
    `TORANA_ADMIN_TOKEN_BUZZ_PROVISION` and `TORANA_PROVISIONING_SECRETS_KEY`,
    then `BUZZ_PROVISION_ENABLED=1` — in that order, the env contract refuses a
    partial setup. Add the `endpoints:admin` token block to the deployment
@@ -57,8 +83,10 @@ Everything else on `main` past `v2.0.0-rc.10` is documentation.
 2. **Install the provider** on the operator's Mac from the release artifact
    (`gh run download <run-id> -R jvbutterfield/torana -n buzz-backend-torana`),
    verify against `SHA256SUMS`, and write `~/.config/torana/provider.json`
-   mode 0600. rc.10 checksums are in `release-readiness.md`.
-3. **First provider deploy**, then the drill's remaining half: bring a stopped
+   mode 0600. Take the checksums from the **rc.11** run — the ones in
+   `release-readiness.md` are rc.10's.
+3. **First provider deploy** into production under a **throwaway identity**
+   (the staging decision), then the drill's remaining half: bring a stopped
    agent back via provider `deploy` rather than `endpoints resume`, and confirm
    a second Start reconciles to `unchanged`.
 4. **Record conversions**, one agent at a time, in the order the precedence rule
@@ -529,12 +557,17 @@ disables the Buzz endpoint only; her Telegram side was untouched.
 **Presence, client side: confirmed.** The owner sees the other four online in
 their Buzz client, closing the fan-out half of the presence gate.
 
-**Publisher presence decision (taken):** publishers should not advertise
-themselves online. The heartbeat now matches the connect-time gate.
+**Publisher presence decision (taken 2026-08-06, reversed 2026-08-07):**
+publishers **do** advertise themselves online, on the same terms as
+conversational endpoints. All three publish sites — connect, heartbeat, and
+stop/drain — now agree; see "Publisher presence" in the handoff above for the
+site-by-site table and why this was not a plain revert of `dba11f0`.
 
 **Still outstanding**, all needing the Desktop or a deliberate drill: an
-owner-mention
-canary on the new build, the four record conversions plus Dev Team's record
-flag, the `!shutdown` drill, and one manual Desktop deploy. Provisioning itself
-is deployed but **off** (`BUZZ_PROVISION_ENABLED` unset), verified by the
-provisioning path 404ing publicly under every method.
+owner-mention canary on the new build, the four record conversions plus Dev
+Team's record flag, the resume half of the shutdown drill (bring a stopped
+agent back via provider `deploy` rather than `endpoints resume`), and one
+manual Desktop deploy. The owner-`!shutdown` drill itself passed on 2026-08-07
+and is recorded above. Provisioning itself is deployed but **off**
+(`BUZZ_PROVISION_ENABLED` unset), verified by the provisioning path 404ing
+publicly under every method.
