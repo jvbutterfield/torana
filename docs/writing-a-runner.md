@@ -1,6 +1,10 @@
 # Writing a runner
 
-> v1 does not load third-party runners from separate npm packages — runner plugins are §10 future work. This doc describes the `AgentRunner` contract for contributors and for users writing subprocess runners via the `command` type.
+> Torana does not load third-party runners from separate npm packages; runner
+> plugins remain future work. This doc describes the `AgentRunner` contract for
+> contributors, and the three subprocess protocols for users writing their own
+> runner via `runner.type: command` — which is the supported extension point
+> and needs no changes to Torana.
 
 ## The interface
 
@@ -129,7 +133,81 @@ Send one `{"type":"ready"}` on startup. On receipt of `{"type":"reset"}` (only i
 
 ## Subprocess runners: `claude-ndjson` protocol
 
-Identical to what the Claude Code CLI emits with `--output-format stream-json`. Use this if you have a Claude-compatible agent.
+The wire format the Claude Code CLI itself speaks with
+`--input-format stream-json --output-format stream-json`. Use it when your agent
+already emits Claude-compatible NDJSON, or when you want side-session support
+without implementing your own envelope.
+
+**On stdin**, one JSON object per line — a user message, not a turn envelope.
+There is no `turn_id`; the subprocess handles one turn at a time and Torana
+correlates by ordering. `content` is a plain string:
+
+```json
+{ "type": "user", "message": { "role": "user", "content": "hello" } }
+```
+
+Attachments are appended to that string, one per line, as
+`[Attached file: /abs/path.jpg]` — the absolute path, not the bytes.
+
+**On stdout**, the CLI's own event stream. Torana reads exactly these:
+
+```json
+{"type":"system","subtype":"init"}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"chunk"}}}
+{"type":"result","result":"the whole response","stop_reason":"end_turn","duration_ms":1234}
+```
+
+`system` with `subtype: "init"` is the readiness signal — it becomes `ready`.
+`stream_event` carrying a `content_block_delta` with a `text_delta` becomes
+`text_delta`; mid-turn `assistant` events are ignored because `stream_event` is
+authoritative. `result` terminates the turn: `is_error: true` produces `error`
+(with `result` as the message), otherwise `done` carrying `stop_reason`,
+`usage`, `duration_ms`, and `result` as the final text. Unrecognized event
+types are ignored, so a newer CLI emitting extra events stays compatible.
+
+Side-sessions are supported: each runs as its own subprocess with
+`TORANA_SESSION_ID` set.
+
+## Subprocess runners: `codex-jsonl` protocol
+
+For wrappers around the OpenAI Codex CLI (`codex exec --json`). Torana sends
+the same envelope as `jsonl-text` on stdin — Codex itself does not accept
+stdin envelopes, so the wrapper is responsible for multiplexing turns:
+
+```json
+{ "type": "turn", "turn_id": "1", "text": "hello", "attachments": [] }
+```
+
+On stdout, Torana parses the Codex JSONL event stream:
+
+```json
+{"type":"thread.started","thread_id":"…"}
+{"type":"item.completed","item":{"type":"agent_message","text":"the whole response"}}
+{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":200}}
+```
+
+**Codex emits state changes, not token-level deltas.** The assistant reply
+arrives whole in `item.completed` with `item.type == "agent_message"`, which
+becomes a single `text_delta`, and `turn.completed` then produces `done` with
+`stop_reason: "end_turn"`. Streaming edits still work, but as one large edit per
+turn rather than incremental ones — worth knowing before you tune
+`streaming.edit_interval_ms` for a Codex-backed bot. `turn.failed` becomes
+`error`. `thread.started` carries the resume id, validated before use. Unknown
+event shapes are dropped at debug level for forward compatibility.
+
+Side-sessions are supported. Use this protocol — or `claude-ndjson` — rather
+than `jsonl-text` if your runner needs to serve Agent API `ask` requests;
+`jsonl-text` has no session semantics in its envelope and throws
+`RunnerDoesNotSupportSideSessions`.
+
+## Choosing a protocol
+
+|                                 | `jsonl-text`                  | `claude-ndjson`                | `codex-jsonl`          |
+| ------------------------------- | ----------------------------- | ------------------------------ | ---------------------- |
+| Simplest to implement           | **yes**                       | no                             | no                     |
+| Side-sessions (Agent API `ask`) | no                            | **yes**                        | **yes**                |
+| `on_reset: signal`              | **yes**                       | no (use `restart`)             | no (use `restart`)     |
+| Best when                       | writing a runner from scratch | you already emit Claude NDJSON | wrapping the Codex CLI |
 
 ## See also
 

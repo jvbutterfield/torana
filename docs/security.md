@@ -68,6 +68,7 @@ torana's v1 threat surface covers:
 
 - **URL-path redactor.** `/bot<TOKEN>/<method>` URLs in log fields, error messages, and stack traces are rewritten to `/bot<redacted>/<method>`. Enforced centrally — callers cannot opt out.
 - **Value redactor.** At startup, the logger is seeded with every secret value pulled from the resolved config (bot tokens, webhook secret). Any occurrence of those exact strings in log payloads is masked with `<redacted>`.
+- **Runtime-provisioned secrets are registered too.** Buzz endpoints created through the provisioning API never appear in the config the logger is seeded from. Their private key and owner auth tag are added to the redaction set at the two points they enter the process — when a deploy is accepted, and when a stored row is decrypted at startup — so a provisioned identity carries the same guarantee as a YAML one.
 - **Empty secrets rejected.** `bots[].token` and `transport.webhook.secret` must be non-empty after env interpolation. `${VAR:-}` with a missing var is a fatal config-load error.
 - **Doctor C007.** `torana doctor` warns if your config file is world-readable (mode with world-read bit set). Does not refuse to start.
 - **Buzz broker isolation.** Private keys and owner tags remain in Torana by
@@ -91,8 +92,11 @@ torana's v1 threat surface covers:
   ownership, paths, sizes, and timeouts are validated before a pinned Buzz CLI
   is spawned. One installation remains one trust domain.
 
-The complete Phase 11 threat matrix and residual risks are recorded in
-[`release-readiness.md`](release-readiness.md).
+The threat model above is the published one. The per-release review record —
+the full control/residual-risk matrix, fault-injection map, and soak evidence —
+is kept with the maintainers' engineering records rather than in the
+repository, because it describes a specific deployment rather than the
+software.
 
 ## Attachments
 
@@ -140,6 +144,11 @@ of the main ACL / secret story above. Full protocol in
   "token invalid" — callers can't probe for bot existence.
 - **Per-scope gating.** `ask` and `send` are distinct scopes; a token
   scoped `["send"]` cannot call `/v1/bots/:id/ask` (403).
+- **Operator routes need their own scope.** `/v1/admin/*` requires `admin`,
+  not `ask` — those routes enumerate operational state and can drain an
+  endpoint or dead-letter rows with acknowledged data loss, so a messaging
+  token does not reach them. `endpoints:admin` is stricter still and cannot
+  be combined with any other scope.
 - **Send ACL re-check.** Agent-API tokens authorize _bots_, not _users_.
   The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.

@@ -9,7 +9,7 @@ Connect Telegram and authenticated Buzz communities to Claude Code, Codex, or an
 [![CI](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml/badge.svg)](https://github.com/jvbutterfield/torana/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Bun ≥ 1.3](https://img.shields.io/badge/bun-%E2%89%A5%201.3-black)](https://bun.sh)
-[![Tests: 1370+](https://img.shields.io/badge/tests-1370%2B%20passing-brightgreen)](#testing)
+[![Tests: 1500+](https://img.shields.io/badge/tests-1500%2B%20passing-brightgreen)](#testing)
 
 **torana** (Sanskrit: तोरण, _ceremonial gateway_) — the doorway between your platforms and agents.
 
@@ -193,7 +193,7 @@ without sharing context unless an explicit same-agent alias says they should.
 **Crash recovery.**
 
 - Runner state is a durable state machine in SQLite. A hard crash mid-turn resumes correctly on next start — no orphan "thinking..." messages, no double-sends.
-- `torana doctor` runs pre-flight checks (C001–C008) so you find configuration problems before starting, not during your first real message.
+- `torana doctor` runs pre-flight checks (C001–C029) so you find configuration problems before starting, not during your first real message.
 
 **Streaming.**
 
@@ -264,14 +264,20 @@ The dispatcher routes each update to its bot's runner independently. No special 
 | Command                                                                | What it does                                                                                                                                                                            |
 | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `torana start`                                                         | Run the gateway                                                                                                                                                                         |
-| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C014); with `--server/--token`, probes a remote gateway (R001..R003)                                                 |
+| `torana doctor`                                                        | Validate config + check Telegram + runner binary + DB state (C001..C029); with `--server/--token`, probes a remote gateway (R001..R003)                                                 |
 | `torana validate`                                                      | Offline schema check — no Telegram, no DB                                                                                                                                               |
 | `torana migrate`                                                       | Apply pending DB migrations (`--dry-run` to preview; `--to 6` for explicit bridge activation)                                                                                           |
 | `torana version`                                                       | Print package version + Bun runtime                                                                                                                                                     |
 | `torana ask` / `torana send` / `torana turns get` / `torana bots list` | Agent-API client commands (require `--server` + `--token`, or `TORANA_SERVER`/`TORANA_TOKEN`, or `--profile NAME`). See [`docs/cli.md`](docs/cli.md)                                    |
 | `torana publish` / `torana publish status`                             | Outbound-only publisher commands; content comes from stdin/file and bearer credentials come from the environment or a secret file. See [`docs/publisher-api.md`](docs/publisher-api.md) |
 | `torana config`                                                        | Manage CLI profiles or render a v1 gateway config as v2 with `config upgrade --from v1 --to v2 --input PATH`                                                                            |
-| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` skills into a Claude Code or Codex installation                                                                                           |
+| `torana skills install --host=claude\|codex`                           | Copy the shipped `torana-ask` / `torana-send` / `torana-buzz` skills into a Claude Code or Codex installation. Codex users can also add the bundled `codex-plugin/` marketplace         |
+| `torana endpoints`                                                     | Local operator: `status`, `drain`, `disable`, `resume` an endpoint. See [`docs/cli.md`](docs/cli.md#local-operator-commands)                                                            |
+| `torana conversations` / `torana sessions`                             | Local operator: list conversations, list/reset durable sessions (`sessions reset` needs `--confirm-shared` for aliased sessions)                                                        |
+| `torana outbox`                                                        | Local operator: `list`, `replay`, `dead-letter` durable outbox rows. Listings omit payload bodies                                                                                       |
+| `torana gateway drain`                                                 | Local operator: validate the data-dir lock PID and `SIGTERM` the gateway through the ordered no-loss shutdown path                                                                      |
+| `torana buzz call`                                                     | Runner-facing typed Buzz broker client. Requires the short-lived capability Torana mints for an active session — not an operator escape hatch                                           |
+| `torana buzz auth-tag`                                                 | Mint a NIP-OA owner auth tag for a Buzz endpoint. See [`docs/platforms/buzz.md`](docs/platforms/buzz.md#getting-buzz-credentials)                                                       |
 
 ---
 
@@ -304,23 +310,27 @@ If you need any of those, torana is the wrong tool and that's fine.
 
 ## Status
 
-**v1.0.0-rc.10 is the compatibility bridge.** Config v1 remains accepted.
-The 2.0 implementation adds config v2, schema v6, Buzz, durable conversation
-sessions, platform-neutral operations, and the endpoint credential broker.
-Production 2.0 release still requires the canary and 24-hour gates in
-[`docs/release-readiness.md`](docs/release-readiness.md).
+**Current: `2.0.0-rc.12`.** Config v1 remains accepted — v1 configs load
+unchanged through the compatibility bridge, and `torana config upgrade` renders
+one as v2. The 2.0 line adds config v2, SQLite schema v7, Buzz, durable
+conversation sessions, platform-neutral operations, the endpoint credential
+broker, outbound-only publishers, and runtime endpoint provisioning. A final
+2.0.0 is gated on a canary rollout and a 24-hour soak.
 
 Recent:
 
-- **2.0.0-rc.6** — two-phase transport shutdown and certainty-aware recovery
-  for conversational Buzz events rejected with stale timestamps.
-- **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client + profile store + Claude Code skills + Codex plugin + Prometheus metrics + doctor C009..C014 + R001..R003). SQLite schema v2 migration — run `torana migrate` before first start.
-- **2.0.0-rc.2** — outbound-only publishers, scoped API/CLI, atomic idempotent
-  Buzz outbox enqueue, bounded retention and schema v6.
-- **rc.4** — Codex runner (`runner.type: codex`), `codex-jsonl` protocol for `command` runners, README rewrite
-- **rc.3** — ACL warnings, PaaS port docs, docker-install smoke in CI
-- **rc.2** — fixed published tarball missing migration SQL
-- **rc.1** — initial v1 candidate
+- **rc.12** — `doctor` C004 no longer fails Buzz-only agents.
+- **rc.11** — publishers announce presence on the same terms as agents.
+- **rc.10** — `buzz-backend-torana` remote-agent provider; runtime Buzz endpoint
+  provisioning (`PUT|GET|DELETE /v1/admin/buzz/endpoints/<id>`, schema v7,
+  secrets sealed with AES-256-GCM).
+- **rc.9** — SQLite `busy_timeout` before journal-mode switch; turnless Buzz
+  `send` fix.
+- **rc.7** — Agent API `ask` turns can be granted a scoped Buzz capability.
+- **rc.5** — Agent API (`/v1/*` ask + send + side-session pool + CLI client +
+  profile store + skills + Prometheus metrics).
+- **rc.2** — outbound-only publishers, scoped API/CLI, atomic idempotent Buzz
+  outbox enqueue, bounded retention.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 
@@ -345,21 +355,39 @@ The E2E and soak tests require authenticated `claude` / `codex` binaries and bur
 
 ## Docs
 
-- [`docs/configuration.md`](docs/configuration.md) — full config reference
-- [`docs/platforms.md`](docs/platforms.md) — platform contract and capability matrix
-- [`docs/platforms/buzz.md`](docs/platforms/buzz.md) — Buzz identity, relay, events, and media
-- [`docs/sessions.md`](docs/sessions.md) — conversation keys, isolation, aliases, and retention
+Start at [`docs/README.md`](docs/README.md) — it indexes everything below and
+suggests a reading order.
+
+**Getting things running**
+
+- [`docs/configuration.md`](docs/configuration.md) — full config reference, every key
+- [`docs/cli.md`](docs/cli.md) — CLI reference, flag-by-flag
 - [`docs/runners.md`](docs/runners.md) — built-in runners, including Claude Code and Codex setup
 - [`docs/transports.md`](docs/transports.md) — webhook vs polling
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — symptoms, causes, and fixes
+
+**Platforms and sessions**
+
+- [`docs/platforms.md`](docs/platforms.md) — platform contract and capability matrix
+- [`docs/platforms/telegram.md`](docs/platforms/telegram.md) — Telegram endpoints, chats, and limits
+- [`docs/platforms/buzz.md`](docs/platforms/buzz.md) — Buzz identity, relay, events, media, and credential setup
+- [`docs/sessions.md`](docs/sessions.md) — conversation keys, isolation, aliases, and retention
+
+**Extending and integrating**
+
 - [`docs/writing-a-runner.md`](docs/writing-a-runner.md) — build your own runner
-- [`docs/security.md`](docs/security.md) — threat model, ACL, secrets
-- [`docs/buzz-cli-upgrades.md`](docs/buzz-cli-upgrades.md) — pinned Buzz CLI
-  provenance, policy review, coordinated release, deployment, and rollback
-- [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
-- [`docs/agent-api.md`](docs/agent-api.md) — Agent API overview (ask, send, side-sessions, tokens)
+- [`docs/agent-api.md`](docs/agent-api.md) — Agent API (ask, send, side-sessions, tokens)
 - [`docs/publisher-api.md`](docs/publisher-api.md) — outbound-only publisher configuration, API, and CLI
-- [`docs/cli.md`](docs/cli.md) — CLI reference, flag-by-flag
-- [`docs/release-readiness.md`](docs/release-readiness.md) — security review, fault matrix, soak, and rollout gates
+
+**Running it in production**
+
+- [`docs/operations.md`](docs/operations.md) — logs, metrics, crash recovery, data dir layout
+- [`docs/security.md`](docs/security.md) — threat model, ACL, secrets, runner isolation
+- [`docs/buzz-cli-upgrades.md`](docs/buzz-cli-upgrades.md) — pinned Buzz CLI provenance, review, release, and rollback
+
+Everything under `docs/` is reference material and is kept current. Design
+history and rollout evidence are not published — they describe a particular
+deployment rather than the software.
 
 ---
 
