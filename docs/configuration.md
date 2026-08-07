@@ -46,9 +46,9 @@ limits:
   owner_shutdown_drain_ms: 30000
 
 agents:
-  - id: cato
+  - id: assistant
     endpoints:
-      - id: cato-buzz
+      - id: assistant-buzz
         platform: buzz
         enabled: true
         community_id: primary
@@ -66,8 +66,8 @@ agents:
     tools:
       buzz:
         policy: collaborate
-        default_endpoint_id: cato-buzz
-        allowed_endpoint_ids: [cato-buzz]
+        default_endpoint_id: assistant-buzz
+        allowed_endpoint_ids: [assistant-buzz]
 ```
 
 #### Presence, heartbeats, and the relay's TTL
@@ -186,7 +186,7 @@ Any string value supports `${VAR}` and `${VAR:-default}` substitution:
 
 ```yaml
 bots:
-  - id: cato
+  - id: assistant
     token: ${TELEGRAM_BOT_TOKEN_CATO} # required env var
     reactions:
       received_emoji: ${ACK_EMOJI:-👀} # with default
@@ -210,6 +210,19 @@ To inherit a specific var, reference it via `${VAR}`. To disable PATH inheritanc
 4. `./torana.config.yaml` in cwd
 
 ## Full reference
+
+Both config versions are supported. The blocks below are grouped by which
+version uses them:
+
+- **[Common](#version)** — `version`, `gateway`, `access_control`, `alerts`,
+  `worker_tuning`, `streaming`, `outbox`, `shutdown`, `dashboard`, `metrics`,
+  `attachments`, `agent_api`
+- **[v2 only](#v2-only-blocks)** — `platforms`, `sessions`, `retention`,
+  `agents[]`, `agents[].endpoints[]`, `publishers[]`, `publisher_api`
+- **[v1 only](#v1-only-blocks)** — `telegram`, `transport`, `bots[]`
+
+A v1 config keeps working unchanged. `torana config upgrade --from v1 --to v2
+--input torana.yaml` renders the v2 equivalent without overwriting the original.
 
 ### `version`
 
@@ -237,13 +250,13 @@ To inherit a specific var, reference it via `${VAR}`. To disable PATH inheritanc
 > port and finding nothing listening. The gateway's own logs stay quiet: the
 > requests never reach it.
 
-### `telegram`
+### `telegram` (v1 only — see `platforms.telegram`)
 
 | Key            | Type | Default                    | Notes                                        |
 | -------------- | ---- | -------------------------- | -------------------------------------------- |
 | `api_base_url` | URL  | `https://api.telegram.org` | Used for tests / self-hosted Bot API servers |
 
-### `transport`
+### `transport` (v1 only — see `platforms.telegram.delivery`)
 
 | Key                             | Type                | Default       | Notes                                                                                                          |
 | ------------------------------- | ------------------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
@@ -345,9 +358,13 @@ agent_api:
       bot_ids: ["reviewer"]
       scopes: ["ask", "send"]
       buzz_tools: false # opt-in Buzz CLI access for this token's ask turns
+    - name: operator # `admin` opens /v1/admin/*; may accompany ask/send
+      secret_ref: ${TORANA_OPERATOR_TOKEN}
+      bot_ids: ["reviewer"]
+      scopes: ["admin"]
     - name: buzz-provisioner # dedicated: endpoints:admin cannot be combined
       secret_ref: ${TORANA_ADMIN_TOKEN_BUZZ_PROVISION}
-      bot_ids: ["cato"] # which agents it may attach endpoints to
+      bot_ids: ["assistant"] # which agents it may attach endpoints to
       scopes: ["endpoints:admin"]
   side_sessions:
     idle_ttl_ms: 3600000 # 1h
@@ -385,6 +402,203 @@ Pre-flight: `torana doctor` runs `C009..C014` against this block. See
 [`security.md`](security.md#agent-api-auth) for the auth model and
 [`agent-api.md`](agent-api.md) for endpoint-level details.
 
+## v2-only blocks
+
+These replace v1's `telegram`, `transport`, and `bots[]`. A v2 config separates
+a **logical agent** (one id, one runner policy) from the **endpoints** where
+people reach it, so one agent can own a Telegram identity and any number of
+Buzz identities without duplicating its runner.
+
+### `platforms`
+
+Master switches and per-platform transport settings. Both a platform's switch
+and an individual endpoint's `enabled` must be true before that endpoint
+connects.
+
+| Key                                     | Type               | Default                    | Notes                                                            |
+| --------------------------------------- | ------------------ | -------------------------- | ---------------------------------------------------------------- |
+| `telegram.enabled`                      | bool               | `true`                     | Master switch for every Telegram endpoint                        |
+| `telegram.api_base_url`                 | url                | `https://api.telegram.org` | Override for a proxy or test double                              |
+| `telegram.delivery.default_mode`        | `webhook\|polling` | —                          | Replaces v1 `transport.default_mode`                             |
+| `telegram.delivery.allowed_updates`     | string[]           | `["message"]`              | Telegram update types to subscribe to                            |
+| `telegram.delivery.webhook.base_url`    | url                | —                          | Required for webhook mode                                        |
+| `telegram.delivery.webhook.secret`      | string ≥ 32        | —                          | Compared constant-time against Telegram's header                 |
+| `telegram.delivery.polling.*`           | —                  | —                          | Same keys as v1 `transport.polling`                              |
+| `buzz.enabled`                          | bool               | `false`                    | Master switch for every Buzz endpoint                            |
+| `buzz.cli_path`                         | string             | `buzz`                     | Path to the pinned Buzz CLI                                      |
+| `buzz.cli_sha256`                       | 64 hex             | pinned build's checksum    | Refuses to spawn a binary that doesn't match                     |
+| `buzz.message_max_bytes`                | int                | `65536`                    | Outbound message ceiling                                         |
+| `buzz.max_frame_bytes`                  | int                | `524288`                   | Relay frame ceiling                                              |
+| `buzz.reconnect.base_ms` / `.cap_ms`    | int                | `1000` / `30000`           | Backoff bounds                                                   |
+| `buzz.subscription.historical_limit`    | int 1..5000        | `500`                      | Events replayed per subscription on connect                      |
+| `buzz.subscription.replay_overlap_secs` | int 0..86400       | `300`                      | Cursor overlap, so a gap can't silently drop events              |
+| `buzz.subscription.heartbeat_secs`      | int 5..300         | `30`                       | Presence refresh cadence; the relay expires presence after 180 s |
+
+See [`platforms/buzz.md`](platforms/buzz.md) for the Buzz endpoint controls
+covered in prose earlier in this document.
+
+### `sessions`
+
+Which conversations share a runner context, and the caps that bound them. This
+is authoritative in v2 — the deprecated `agent_api.side_sessions` block is
+accepted during the bridge window but `sessions.*` wins.
+
+| Key                                | Type               | Default            | Notes                                                      |
+| ---------------------------------- | ------------------ | ------------------ | ---------------------------------------------------------- |
+| `scope`                            | see below          | `conversation`     | Default isolation policy                                   |
+| `idle_process_ttl_ms`              | int ≥ 60000        | `3600000` (1h)     | Unused this long → the subprocess is reaped                |
+| `hard_process_ttl_ms`              | int ≥ 60000        | `86400000` (24h)   | Absolute subprocess lifetime                               |
+| `context_retention_ms`             | int ≥ 60000        | `7776000000` (90d) | How long resume state is kept; independent of process TTLs |
+| `max_per_agent`                    | int 1..64          | `8`                | Live sessions per agent                                    |
+| `max_global`                       | int 1..512         | `32`               | Live sessions across all agents                            |
+| `max_per_token_default`            | int 1..512         | `8`                | Default per-token cap; a token may override it             |
+| `max_concurrent_turns_per_agent`   | int 1..64          | `2`                | Turns running at once for one agent                        |
+| `max_concurrent_turns_global`      | int 1..512         | `12`               | Turns running at once overall                              |
+| `max_queue_depth_per_conversation` | int ≥ 1            | `50`               | Queued turns per conversation                              |
+| `max_queue_depth_per_agent`        | int ≥ 1            | `500`              | Queued turns per agent                                     |
+| `overflow`                         | `queue\|reject`    | `queue`            | What happens when a depth cap is hit                       |
+| `aliases[]`                        | `{name, agent_id}` | `[]`               | Declares deliberate same-agent context sharing             |
+
+`scope` accepts `conversation` (alias `channel`), `thread`, `ephemeral`,
+`legacy_agent` (v1 behaviour: one context per agent), or `alias:<name>`
+referencing an entry in `aliases[]`. A conversation mailbox is serial
+regardless. See [`sessions.md`](sessions.md).
+
+### `retention`
+
+Sweeper windows and the database ceiling. All durations are whole days unless
+noted.
+
+| Key                         | Type    | Default              | Notes                                               |
+| --------------------------- | ------- | -------------------- | --------------------------------------------------- |
+| `database_size_cap_bytes`   | int ≥ 1 | `4294967296` (4 GiB) | Logical ceiling; enqueue fails before it grows past |
+| `inbound_payload_days`      | int ≥ 0 | `30`                 | `0` drops raw payloads immediately after processing |
+| `inbound_event_days`        | int ≥ 1 | `90`                 | Dedup records                                       |
+| `terminal_turn_days`        | int ≥ 1 | `90`                 | Completed and failed turns                          |
+| `sent_outbox_days`          | int ≥ 1 | `14`                 | Delivered outbox rows                               |
+| `dead_outbox_days`          | int ≥ 1 | `90`                 | Dead-lettered rows, kept for inspection             |
+| `signed_sent_payload_hours` | int ≥ 1 | `24`                 | Signed Buzz payload bytes after successful delivery |
+| `pending_mutation_days`     | int ≥ 1 | `30`                 | Unresolved edit/delete/reaction mutations           |
+
+### `agents[]`
+
+At least one required.
+
+| Key           | Type             | Required | Notes                                                                                  |
+| ------------- | ---------------- | -------- | -------------------------------------------------------------------------------------- |
+| `id`          | string           | yes      | Regex `^[a-z][a-z0-9_-]{0,31}$`. Reserved: `health`, `metrics`, `dashboard`, `webhook` |
+| `runner`      | runner block     | yes      | Identical shape to [`bots[].runner`](#botsrunner)                                      |
+| `endpoints[]` | array, min 1     | yes      | Telegram and/or Buzz endpoints, discriminated on `platform`                            |
+| `tools.buzz`  | Buzz tools block | no       | Grants this agent's turns a brokered Buzz capability                                   |
+
+Endpoint ids must be globally unique, must not equal any agent id, and must not
+collide with the reserved `<agent>-agent-api` endpoint Torana synthesizes for
+every agent. An agent may own at most one Telegram endpoint and any number of
+Buzz endpoints; a Buzz-only agent is valid and gets no Telegram identity.
+
+### `agents[].endpoints[]` — `platform: telegram`
+
+| Key                       | Type               | Default | Notes                                                |
+| ------------------------- | ------------------ | ------- | ---------------------------------------------------- |
+| `id`                      | string             | —       | Regex `^[a-z][a-z0-9_-]{0,47}$`                      |
+| `platform`                | `telegram`         | —       | Discriminator                                        |
+| `enabled`                 | bool               | `true`  | Per-endpoint switch                                  |
+| `token`                   | string             | —       | Bot token from @BotFather                            |
+| `transport_override.mode` | `webhook\|polling` | —       | Overrides `platforms.telegram.delivery.default_mode` |
+| `allowed_user_ids`        | int[]              | —       | **Replaces** the global ACL for this endpoint        |
+| `reactions`               | block              | —       | e.g. `received_emoji: "👀"`                          |
+| `commands[]`              | array              | `[]`    | `{trigger, action}`; same shape as v1                |
+| `chat_overrides`          | map                | `{}`    | Per-chat `session_scope`, keyed by chat id           |
+
+### `agents[].endpoints[]` — `platform: buzz`
+
+| Key                            | Type                                    | Default            | Notes                                                  |
+| ------------------------------ | --------------------------------------- | ------------------ | ------------------------------------------------------ |
+| `id`                           | string                                  | —                  | Regex `^[a-z][a-z0-9_-]{0,47}$`                        |
+| `platform`                     | `buzz`                                  | —                  | Discriminator                                          |
+| `enabled`                      | bool                                    | `false`            | Per-endpoint switch                                    |
+| `community_id`                 | string                                  | —                  | Regex `^[a-z][a-z0-9_-]{0,47}$`                        |
+| `relay_url`                    | ws/wss url                              | —                  | Community relay                                        |
+| `private_key`                  | string                                  | —                  | 64-hex or `nsec1…`. Quote it in YAML                   |
+| `auth_tag`                     | string                                  | —                  | Owner-signed NIP-OA tag, serialized JSON. **Quote it** |
+| `owner_pubkey`                 | string                                  | —                  | The signing owner                                      |
+| `respond_to`                   | `owner_only\|allowlist\|anyone\|nobody` | `owner_only`       | Who this endpoint answers                              |
+| `allowed_pubkeys`              | string[]                                | `[]`               | Used when `respond_to: allowlist`                      |
+| `subscribe`                    | `mentions_and_dms\|all_channels`        | `mentions_and_dms` | Intake breadth                                         |
+| `owner_shutdown`               | `enabled\|disabled`                     | `enabled`          | Honour the owner's `!shutdown`                         |
+| `triggers`                     | block                                   | all off            | Feed, workflow, and heartbeat triggers; off by default |
+| `channel_overrides`            | map                                     | `{}`               | Per-channel session scope and kinds                    |
+| `allow_shared_identity`        | bool                                    | `false`            | Permit two endpoints on one identity                   |
+| `reactions`                    | block                                   | —                  | Received-emoji and related signals                     |
+| `rerun_on_edit`                | bool                                    | `false`            | Re-run a turn when its source event is edited          |
+| `include_reactions_in_context` | bool                                    | `false`            | Surface reactions to the runner                        |
+| `custom_emoji_palette`         | map                                     | `{}`               | Named custom emoji                                     |
+
+Torana derives the public key from `private_key` and refuses to start if it
+doesn't match what the auth tag attests. See
+[`platforms/buzz.md`](platforms/buzz.md) for how to obtain these values.
+
+### `agents[].tools.buzz`
+
+Grants this agent's runner a brokered Buzz capability. The runner receives a
+short-lived, endpoint-scoped token — not the private key.
+
+| Key                            | Type                                         | Default | Notes                                                        |
+| ------------------------------ | -------------------------------------------- | ------- | ------------------------------------------------------------ |
+| `policy`                       | `read_only\|collaborate\|maintainer\|custom` | —       | Command tier                                                 |
+| `allowed_commands[]`           | string[]                                     | —       | Required for `custom`; each must be a known command path     |
+| `acknowledge_dangerous`        | bool                                         | `false` | Required to allow a destructive command in `custom`          |
+| `default_endpoint_id`          | string                                       | —       | Which identity the runner publishes as                       |
+| `allowed_endpoint_ids[]`       | string[]                                     | —       | Bounds identity selection                                    |
+| `expose_private_key_to_runner` | bool                                         | `false` | Removes broker enforcement. See [`security.md`](security.md) |
+
+### `publishers[]`
+
+Outbound-only service principals: no runner, no inbound subscription, no
+commands, no session. Use these for notifications rather than conversation.
+
+| Key                                    | Type       | Default | Notes                                         |
+| -------------------------------------- | ---------- | ------- | --------------------------------------------- |
+| `id`                                   | string     | —       | Same id rules as an agent; globally unique    |
+| `enabled`                              | bool       | `false` | Separate from `publisher_api.enabled`         |
+| `endpoint.id`                          | string     | —       | Endpoint id rules                             |
+| `endpoint.platform`                    | `buzz`     | —       | Buzz only                                     |
+| `endpoint.community_id`                | string     | —       | Regex `^[a-z][a-z0-9_-]{0,47}$`               |
+| `endpoint.relay_url`                   | ws/wss url | —       | Community relay                               |
+| `endpoint.private_key`                 | string     | —       | Quote in YAML                                 |
+| `endpoint.auth_tag`                    | string     | —       | Owner-signed NIP-OA tag. Quote in YAML        |
+| `endpoint.owner_pubkey`                | string     | —       | The signing owner                             |
+| `endpoint.expected_pubkey`             | 64 hex     | —       | Must equal the key derived from `private_key` |
+| `destination.external_conversation_id` | uuid       | —       | The one channel this publisher may post to    |
+
+The destination is fixed in config on purpose: a publish request cannot select
+an endpoint, identity, relay, or channel.
+
+### `publisher_api`
+
+The HTTP surface publishers are driven through.
+
+| Key                                | Type              | Default               | Notes                                           |
+| ---------------------------------- | ----------------- | --------------------- | ----------------------------------------------- |
+| `enabled`                          | bool              | `false`               | Separate from each publisher's own switch       |
+| `max_body_bytes`                   | int 4096..1048576 | `73728`               | Request ceiling                                 |
+| `max_content_bytes`                | int 1..1048576    | `65536`               | Message content ceiling                         |
+| `idempotency_retention_ms`         | int ≥ 60000       | `1209600000` (14d)    | Keep longer than any caller's retry budget      |
+| `max_pending_per_publisher`        | int ≥ 1           | `500`                 | New requests get a retriable 503 past this      |
+| `max_retained_per_publisher`       | int ≥ 1           | `2000`                | Rows retained across all statuses               |
+| `max_retained_bytes_per_publisher` | int ≥ 4096        | `268435456` (256 MiB) | Payload + signed-payload bytes                  |
+| `rate_per_minute_per_publisher`    | int 1..100000     | `60`                  | Sustained rate                                  |
+| `burst_per_publisher`              | int 1..10000      | `10`                  | Burst allowance                                 |
+| `tokens[]`                         | array             | `[]`                  | `{name, secret_ref, publisher_ids[], scopes[]}` |
+
+Token scopes are `publish` and `status`. See
+[`publisher-api.md`](publisher-api.md).
+
+## v1-only blocks
+
+Still fully supported. `telegram` and `transport` (documented above) belong to
+this group as well; in v2 their settings live under `platforms.telegram`.
+
 ### `bots[]`
 
 | Key                               | Type                                            | Required | Notes                                                                                  |
@@ -413,7 +627,7 @@ Type is one of `claude-code`, `codex`, or `command`. See [`runners.md`](runners.
 | `pass_continue_flag`    | `true`                                                                    |
 | `acknowledge_dangerous` | `false` — **must be set to `true`** (schema rejects the config otherwise) |
 
-The runner always passes these protocol-required flags to the CLI, in this order, before your `args`: `--print --output-format stream-json --input-format stream-json --include-partial-messages --replay-user-messages --verbose --dangerously-skip-permissions`. Your `args` are appended. `--continue` is then appended when `pass_continue_flag: true` and the session isn't fresh. Typical user `args`: `["--agent", "cato"]`.
+The runner always passes these protocol-required flags to the CLI, in this order, before your `args`: `--print --output-format stream-json --input-format stream-json --include-partial-messages --replay-user-messages --verbose --dangerously-skip-permissions`. Your `args` are appended. `--continue` is then appended when `pass_continue_flag: true` and the session isn't fresh. Typical user `args`: `["--agent", "assistant"]`.
 
 > **Why `acknowledge_dangerous` is required.** The claude-code runner always
 > passes `--dangerously-skip-permissions` (the CLI's interactive permission

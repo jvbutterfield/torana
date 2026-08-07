@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  addSecrets,
   logger,
   resetLoggerState,
   setSecrets,
@@ -51,6 +52,44 @@ describe("log", () => {
     logger("test").info("inbound", { auth: "Bearer SECRETTOKEN123 trailing" });
     const parsed = JSON.parse(captured[0]);
     expect(parsed.auth).toBe("Bearer <redacted> trailing");
+  });
+
+  test("addSecrets redacts late arrivals without dropping the startup set", () => {
+    installCapture();
+    setLogFormat("json");
+    setLogLevel("info");
+    setSecrets(["STARTUP_SECRET_VALUE"]);
+    addSecrets(["PROVISIONED_KEY_VALUE"]);
+    logger("test").info("both", {
+      a: "sees STARTUP_SECRET_VALUE here",
+      b: "and PROVISIONED_KEY_VALUE here",
+    });
+    const parsed = JSON.parse(captured[0]);
+    expect(parsed.a).toBe("sees <redacted> here");
+    expect(parsed.b).toBe("and <redacted> here");
+  });
+
+  test("addSecrets keeps longest-first ordering across both sets", () => {
+    installCapture();
+    setLogFormat("json");
+    setLogLevel("info");
+    // The shorter value is a prefix of the longer one. Replacing shortest-first
+    // would leave the remainder of the longer secret in the output.
+    setSecrets(["PREFIX"]);
+    addSecrets(["PREFIX_AND_MORE"]);
+    logger("test").info("m", { v: "PREFIX_AND_MORE" });
+    expect(JSON.parse(captured[0]).v).toBe("<redacted>");
+  });
+
+  test("addSecrets is idempotent and ignores empty values", () => {
+    installCapture();
+    setLogFormat("json");
+    setLogLevel("info");
+    setSecrets(["KNOWN_SECRET"]);
+    addSecrets(["KNOWN_SECRET", "", "KNOWN_SECRET"]);
+    logger("test").info("m", { v: "KNOWN_SECRET and a b" });
+    // A duplicated registration must not double-replace or corrupt the output.
+    expect(JSON.parse(captured[0]).v).toBe("<redacted> and a b");
   });
 
   test("redacts /bot<TOKEN>/ URL segments regardless of known secrets", () => {

@@ -183,7 +183,7 @@ export interface ResolvedAgentApiToken {
   /** SHA-256 of the UTF-8 bytes of `secret`. 32 bytes. */
   hash: Uint8Array;
   bot_ids: readonly string[];
-  scopes: readonly ("ask" | "send" | "endpoints:admin")[];
+  scopes: readonly ("ask" | "send" | "admin" | "endpoints:admin")[];
   /**
    * Resolved per-token cap on concurrent inflight side-sessions: explicit
    * `max_concurrent_side_sessions` from the token block when set, otherwise

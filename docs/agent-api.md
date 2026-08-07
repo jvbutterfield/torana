@@ -80,7 +80,7 @@ agent_api:
   tokens:
     - name: digest-cron
       secret_ref: ${TORANA_DIGEST_TOKEN}
-      bot_ids: ["cato"]
+      bot_ids: ["assistant"]
       scopes: ["ask"]
       buzz_tools: true
 ```
@@ -458,7 +458,8 @@ Bucket sequence for both histograms (ms): `50, 100, 250, 500, 1000, 2500, 5000, 
   `bot_ids` array. Other bots return the same error shape as
   "token invalid" so callers can't probe for bot existence.
 - **Per-scope gating.** `ask` and `send` are independent; a token scoped
-  `["send"]` cannot call `/v1/bots/:id/ask`.
+  `["send"]` cannot call `/v1/bots/:id/ask`. The operator routes under
+  `/v1/admin/*` need `admin`, and Buzz provisioning needs `endpoints:admin`.
 - **Send ACL re-check.** Agent-API tokens grant access to _bots_, not
   _users_. The resolved `user_id` is re-validated against the bot's
   `access_control.allowed_user_ids` before the turn is enqueued.
@@ -505,8 +506,13 @@ found, `5` server error, `6` timeout / 202 handoff, `7` capacity).
 
 ### Operator routes
 
-When the Agent API is enabled, tokens carrying `ask` scope can inspect and
-operate only the agents in their `bot_ids` allowlist:
+These require the dedicated **`admin`** scope and operate only on the agents in
+the token's `bot_ids` allowlist. `ask` does not open them: the routes enumerate
+every conversation, session, and outbox row for those agents, and three of them
+destroy durable state, which is not something a conversational token should
+carry by default. Unlike `endpoints:admin`, `admin` may be combined with
+`ask`/`send` — these routes are not reachable from the public edge, so a single
+operator token doing both is a legitimate deployment.
 
 | Method | Route                                 | Purpose                                 |
 | ------ | ------------------------------------- | --------------------------------------- |
@@ -553,11 +559,11 @@ is rejected. This mirrors the Desktop's own deploy loop, where "Start" is an
 unconditional deploy rather than a conditional one.
 
 ```sh
-curl -X PUT "$TORANA_URL/v1/admin/buzz/endpoints/cato-buzz" \
+curl -X PUT "$TORANA_URL/v1/admin/buzz/endpoints/assistant-buzz" \
   -H "Authorization: Bearer $TORANA_ADMIN_TOKEN_BUZZ_PROVISION" \
-  -d '{"agent_id":"cato","relay_url":"wss://relay.example",
+  -d '{"agent_id":"assistant","relay_url":"wss://relay.example",
        "private_key":"nsec1…","auth_tag":"{…}","owner_pubkey":"…"}'
-# {"endpoint_id":"cato-buzz","agent_id":"cato","pubkey":"…","result":"created"}
+# {"endpoint_id":"assistant-buzz","agent_id":"assistant","pubkey":"…","result":"created"}
 ```
 
 Secrets are sealed at rest and never appear in a response; see

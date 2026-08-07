@@ -12,7 +12,7 @@ import {
   setLogLevel,
   setSecrets,
 } from "../../src/log.js";
-import { upgradeV1Object } from "../../src/config/v2.js";
+import { ConfigV2Schema, upgradeV1Object } from "../../src/config/v2.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
 
 const MINIMAL = `
@@ -96,6 +96,84 @@ describe("config/load", () => {
     expect(() =>
       loadConfigFromString(yaml.dump(upgraded), { skipInterpolation: true }),
     ).toThrow(/globally unique|private key/);
+  });
+
+  test("v2 rejects an endpoint id reserved by another agent's Agent API", () => {
+    const v1 = makeTestConfig([
+      makeTestBotConfig("alpha"),
+      makeTestBotConfig("beta"),
+    ]);
+    const upgraded = upgradeV1Object(v1) as any;
+    // alpha claims the id normalizeV2 synthesizes for *beta*. Without the
+    // cross-agent check this validates, then silently overwrites beta's row.
+    upgraded.agents[0].endpoints[0].id = "beta-agent-api";
+    expect(() =>
+      loadConfigFromString(yaml.dump(upgraded), { skipInterpolation: true }),
+    ).toThrow(/reserved Agent API endpoint/);
+  });
+
+  test("v2 rejects an endpoint id equal to another agent's id", () => {
+    const v1 = makeTestConfig([
+      makeTestBotConfig("alpha"),
+      makeTestBotConfig("beta"),
+    ]);
+    const upgraded = upgradeV1Object(v1) as any;
+    upgraded.agents[0].endpoints[0].id = "beta";
+    expect(() =>
+      loadConfigFromString(yaml.dump(upgraded), { skipInterpolation: true }),
+    ).toThrow(/must not equal an agent id/);
+  });
+
+  test("v2 rejects a publisher endpoint id reserved by an agent's Agent API", () => {
+    const v1 = makeTestConfig([makeTestBotConfig("alpha")]);
+    const upgraded = upgradeV1Object(v1) as any;
+    // Publisher endpoint ids are checked against agent and endpoint ids, but
+    // the synthesized `<agent>-agent-api` names are in neither set.
+    upgraded.publishers = [
+      {
+        id: "notifier",
+        enabled: false,
+        endpoint: {
+          id: "alpha-agent-api",
+          platform: "buzz",
+          community_id: "team",
+          relay_url: "wss://relay.example.com",
+          private_key: "0a".repeat(32),
+          auth_tag: "{}",
+          owner_pubkey: "00".repeat(32),
+          expected_pubkey: "00".repeat(32),
+        },
+        destination: {
+          external_conversation_id: "11111111-2222-4333-8444-555555555555",
+        },
+      },
+    ];
+    const parsed = ConfigV2Schema.safeParse(upgraded);
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    // Other issues (the placeholder key material) are expected to coexist;
+    // what matters is that the collision is reported, at the right path.
+    const collision = parsed.error.issues.find(
+      (issue) =>
+        issue.path.join(".") === "publishers.0.endpoint.id" &&
+        /reserved Agent API endpoint/.test(issue.message),
+    );
+    expect(collision).toBeDefined();
+  });
+
+  test("v2 still accepts an agent's endpoints alongside its own reserved id", () => {
+    const v1 = makeTestConfig([
+      makeTestBotConfig("alpha"),
+      makeTestBotConfig("beta"),
+    ]);
+    const upgraded = upgradeV1Object(v1) as any;
+    const loaded = loadConfigFromString(yaml.dump(upgraded), {
+      skipInterpolation: true,
+    });
+    const ids = loaded.normalized.endpoints.map((e) => e.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain("alpha-agent-api");
+    expect(ids).toContain("beta-agent-api");
   });
 
   test("accepts a minimal polling config", () => {

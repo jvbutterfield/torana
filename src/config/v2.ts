@@ -437,6 +437,16 @@ export const ConfigV2Schema = z
     const aliases = new Map(
       config.sessions.aliases.map((a) => [a.name, a.agent_id]),
     );
+    // Precomputed over *every* agent, not just the ones seen so far. The
+    // reserved `<agent>-agent-api` endpoints are synthesized unconditionally by
+    // normalizeV2, so an endpoint declared under agent A that collides with
+    // agent B's reserved id would otherwise validate, then silently overwrite
+    // B's row in the endpoints table — dropping A's endpoint and handing
+    // ownership of the id to B.
+    const allAgentIds = new Set(config.agents.map((a) => a.id));
+    const reservedAgentApiIds = new Set(
+      config.agents.map((a) => `${a.id}-agent-api`),
+    );
     for (const [agentIndex, agent] of config.agents.entries()) {
       if (agentIds.has(agent.id)) {
         ctx.addIssue({
@@ -448,14 +458,14 @@ export const ConfigV2Schema = z
       agentIds.add(agent.id);
       let telegramEndpointCount = 0;
       for (const [endpointIndex, endpoint] of agent.endpoints.entries()) {
-        if (endpointIds.has(endpoint.id) || endpoint.id === agent.id) {
+        if (endpointIds.has(endpoint.id) || allAgentIds.has(endpoint.id)) {
           ctx.addIssue({
             code: "custom",
             path: ["agents", agentIndex, "endpoints", endpointIndex, "id"],
             message: `endpoint id '${endpoint.id}' must be globally unique and must not equal an agent id`,
           });
         }
-        if (endpoint.id === `${agent.id}-agent-api`) {
+        if (reservedAgentApiIds.has(endpoint.id)) {
           ctx.addIssue({
             code: "custom",
             path: ["agents", agentIndex, "endpoints", endpointIndex, "id"],
@@ -925,6 +935,16 @@ export const ConfigV2Schema = z
           code: "custom",
           path: [...basePath, "endpoint", "id"],
           message: `endpoint id '${publisher.endpoint.id}' must be globally unique and must not equal a principal id`,
+        });
+      }
+      // Same collision as an agent endpoint claiming a reserved name: the
+      // synthesized `<agent>-agent-api` ids are never added to `endpointIds`,
+      // so the uniqueness check above cannot see them.
+      if (reservedAgentApiIds.has(publisher.endpoint.id)) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...basePath, "endpoint", "id"],
+          message: "endpoint id collides with the reserved Agent API endpoint",
         });
       }
       endpointIds.add(publisher.endpoint.id);

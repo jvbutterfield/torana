@@ -25,7 +25,7 @@ const PUBLISHER_KEY = "71".padStart(64, "0");
 const OWNER_SECRET = decodeSecret("72".padStart(64, "0"));
 const PUBLISHER_PUBKEY = publicKey(decodeSecret(PUBLISHER_KEY));
 const OWNER_PUBKEY = publicKey(OWNER_SECRET);
-const CHANNEL = "4109b9b8-c553-4d29-98f5-403d8419ac18";
+const CHANNEL = "11111111-2222-4333-8444-555555555555";
 const TOKEN = "publisher-test-token-00000000000000000000";
 
 function fixture() {

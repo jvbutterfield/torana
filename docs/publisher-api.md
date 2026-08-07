@@ -16,9 +16,12 @@ publishers:
       private_key: ${BUZZ_PRIVATE_KEY_DEV_TEAM}
       auth_tag: ${BUZZ_AUTH_TAG_DEV_TEAM}
       owner_pubkey: ${BUZZ_OWNER_PUBKEY}
-      expected_pubkey: 4d66facf35826891790efa742e0e915a906fed1d39e860e8c8ff9c8001ef6911
+      # Placeholder values. `expected_pubkey` is the 32-byte hex Nostr public
+      # key derived from this publisher's own `private_key`; the destination is
+      # the target channel's id. Substitute your own.
+      expected_pubkey: 0000000000000000000000000000000000000000000000000000000000000000
     destination:
-      external_conversation_id: 4109b9b8-c553-4d29-98f5-403d8419ac18
+      external_conversation_id: 00000000-0000-0000-0000-000000000000
 
 publisher_api:
   enabled: true

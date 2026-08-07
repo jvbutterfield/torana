@@ -6,6 +6,84 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+
+- `torana buzz keygen` and `torana buzz auth-tag`. Obtaining Buzz credentials
+  was the one step of Buzz setup with no first-party path: Torana could verify
+  an owner attestation but never mint one, so the `auth_tag` every Buzz
+  endpoint requires had to come from somewhere the docs didn't name. `keygen`
+  prints a fresh identity keypair; `auth-tag` signs a NIP-OA owner attestation
+  for an endpoint public key. Neither reads a config, opens the database, or
+  touches the network. The owner secret is read from `BUZZ_OWNER_PRIVATE_KEY`
+  rather than a flag so it stays out of `argv` and shell history, and no error
+  path echoes key material. See
+  [`docs/platforms/buzz.md`](docs/platforms/buzz.md#getting-buzz-credentials).
+
+### Documentation
+
+- `docs/configuration.md` documented v1's shape as its "Full reference" while
+  the project had moved to v2: `platforms`, `sessions`, `retention`,
+  `agents[]`, `agents[].endpoints[]`, `publishers[]`, and `publisher_api` had
+  no reference entry at all. The doc even stated that `sessions.*` is
+  authoritative and then never listed its fields. All seven are now documented
+  key by key, and the v1-only blocks are labelled as such.
+- Added `docs/README.md` (documentation index and reading order) and
+  `docs/troubleshooting.md` (symptoms → causes → fixes, anchored on the real
+  doctor checks and API error codes).
+- Removed the design plans, phase findings, and release-readiness records from
+  the repository. They were engineering history rather than reference material
+  — three of the four were unlinked while making up the bulk of `docs/` — and
+  they described a specific deployment: memory ceilings and baselines for a
+  named single-replica service, the production edge's exposed-path inventory,
+  fleet composition and traffic counts. Everything under `docs/` is now
+  reference material that describes the software.
+- Corrected stale README claims: the status section advertised
+  `v1.0.0-rc.10` and schema v6, and the doctor range stopped at `C014`.
+  Added the six operator commands missing from the command table, and
+  documented `torana publish` in `docs/cli.md`.
+
+### Security
+
+- **Breaking:** the operator routes under `/v1/admin/*` now require a new
+  `admin` scope instead of `ask`. They enumerate every conversation, session,
+  and outbox row for the token's agents, and three of them destroy durable
+  state — draining an endpoint, rotating a session, and dead-lettering rows
+  with acknowledged data loss. `ask` is the scope handed to agents and scripts
+  for ordinary conversation, so gating those operations behind it made every
+  messaging token an operator token by default.
+
+  **Migration:** add `admin` to the `scopes` array of any `agent_api.tokens`
+  entry that calls `/v1/admin/*`. It may be combined with `ask`/`send` (these
+  routes are not reachable from the public edge), so `scopes: ["ask", "send"]`
+  becomes `scopes: ["ask", "send", "admin"]` for a token that does both.
+  Without it those routes return `403 scope_not_permitted`. The separate
+  `endpoints:admin` scope for Buzz provisioning is unchanged and still cannot
+  be combined with any other scope.
+
+- Buzz endpoints provisioned at runtime never entered the log redaction set.
+  `setSecrets()` runs once from the config load, which only knows about
+  secrets declared in YAML, so a provisioned endpoint's private key and owner
+  auth tag were exempt from the guarantee `docs/security.md` makes for every
+  other secret. Both are now registered at the two points they enter the
+  process — when a deploy is accepted, and when a stored row is decrypted at
+  startup. No leak path was identified; this closes the gap rather than
+  fixing a known disclosure.
+
+### Fixed
+
+- Config validation accepted an endpoint id reserved by a _different_ agent.
+  The reserved-name check compared each endpoint id only against its own
+  agent's `<agent>-agent-api`, and the duplicate check compared only against
+  its own agent's id, so an endpoint declared under agent A could claim agent
+  B's reserved name. `normalizeV2` then synthesized B's Agent API endpoint
+  anyway, producing two entries with one id; `syncNormalizedConfig` resolved
+  the collision silently, dropping A's endpoint and handing the id to B with
+  no error or warning. Both checks now run against every agent in the config.
+  Reachable from YAML, and through the provisioning API by a token scoped only
+  to A. A `publishers[].endpoint.id` could claim a reserved name the same way —
+  its uniqueness check compares against agent and endpoint ids, and the
+  synthesized Agent API ids are in neither set — so it is now checked too.
+
 ## [2.0.0-rc.12] - 2026-08-07
 
 ### Fixed

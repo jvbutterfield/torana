@@ -188,13 +188,28 @@ describe("config/load — agent_api superRefine error paths", () => {
     - name: cos
       secret_ref: \${T}
       bot_ids: [alpha]
-      scopes: [admin]
+      scopes: [superuser]
 `);
     expect(() =>
       loadConfigFromString(raw, {
         env: { T: "abcdef-padded-for-min-32-chars-ok" },
       }),
     ).toThrow(ConfigLoadError);
+  });
+
+  test("admin is a recognised scope and may accompany ask/send", () => {
+    const raw = withAgentApi(`
+  enabled: true
+  tokens:
+    - name: ops
+      secret_ref: \${T}
+      bot_ids: [alpha]
+      scopes: [ask, send, admin]
+`);
+    const { agentApiTokens } = loadConfigFromString(raw, {
+      env: { T: "abcdef-padded-for-min-32-chars-ok" },
+    });
+    expect(agentApiTokens[0]!.scopes).toEqual(["ask", "send", "admin"]);
   });
 
   test("bot_ids empty → fails", () => {

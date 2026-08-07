@@ -28,7 +28,7 @@ import {
 } from "../../src/config/provisioning-secrets.js";
 import { applyMigrations } from "../../src/db/migrate.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
-import { resetLoggerState } from "../../src/log.js";
+import { redactString, resetLoggerState, setSecrets } from "../../src/log.js";
 import {
   BuzzProvisioningService,
   ProvisioningError,
@@ -673,6 +673,52 @@ describe("provisioning persistence", () => {
     } finally {
       raw.close();
     }
+  });
+
+  test("a deploy registers its secrets with the log redactor", async () => {
+    const loaded = makeLoaded();
+    const db = openDb(loaded);
+    const service = makeService(loaded, db, {
+      transport: makeTransport(loaded, db, []),
+    });
+    // The config-load `setSecrets()` only ever sees YAML. Start from a set that
+    // deliberately excludes the provisioned identity.
+    setSecrets(["some-unrelated-yaml-secret"]);
+    expect(redactString(PROVISIONED_KEY)).toContain(PROVISIONED_KEY);
+
+    // The auth tag is a fresh signature per call, so assert against the exact
+    // one this deploy carried rather than a regenerated equivalent.
+    const deployed = request("ws://127.0.0.1:1");
+    await service.upsert("alpha-provisioned", deployed, "t");
+
+    expect(redactString(`key=${PROVISIONED_KEY}`)).toBe("key=<redacted>");
+    expect(redactString(`tag=${deployed.auth_tag}`)).toBe("tag=<redacted>");
+    // The startup set survives the late registration.
+    expect(redactString("some-unrelated-yaml-secret")).toBe("<redacted>");
+  });
+
+  test("a restore registers the secrets it decrypts out of the database", async () => {
+    const loaded = makeLoaded();
+    const db = openDb(loaded);
+    const service = makeService(loaded, db, {
+      transport: makeTransport(loaded, db, []),
+    });
+    await service.upsert("alpha-provisioned", request("ws://127.0.0.1:1"), "t");
+    db.close();
+    dbs.length = 0;
+
+    // A fresh process: the redaction set is whatever config load produced, and
+    // the sealed row is the only place these secrets exist.
+    const restarted = new GatewayDB(loaded.config.gateway.db_path!);
+    dbs.push(restarted);
+    restarted.syncNormalizedConfig(loaded.normalized);
+    resetLoggerState();
+    setSecrets([]);
+    expect(redactString(PROVISIONED_KEY)).toContain(PROVISIONED_KEY);
+
+    const persisted = makeService(loaded, restarted).loadPersisted();
+    expect(persisted.errors).toEqual([]);
+    expect(redactString(`key=${PROVISIONED_KEY}`)).toBe("key=<redacted>");
   });
 
   test("a restart restores provisioned endpoints", async () => {

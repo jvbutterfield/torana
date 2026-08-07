@@ -100,7 +100,7 @@ transport:
 Solution: create a separate bot via `@BotFather` for dev:
 
 1. `/newbot` in a chat with `@BotFather`.
-2. Give it a dev name (e.g. `cato-dev-bot`).
+2. Give it a dev name (e.g. `assistant-dev-bot`).
 3. Copy the token into your local `.env`.
 
 Your prod YAML references `${TELEGRAM_BOT_TOKEN_CATO}`; your dev YAML references `${TELEGRAM_BOT_TOKEN_CATO_DEV}`. Same config shape, different token.

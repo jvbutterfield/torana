@@ -99,29 +99,16 @@
       "peakFdCountPerInvocation": 78.3
     }
   ],
-  "railway": {
-    "project": "agent-team",
-    "environment": "production",
-    "service": "agent-team",
-    "replicas": 1,
-    "region": "us-west2",
-    "memoryLimitMb": 32768,
-    "gatewayAverageMb": 417.20229031843587,
-    "gatewayMaxMb": 808.51501056,
-    "metricsWindowStart": "2026-08-01T00:08:53.835149+00:00",
-    "metricsWindowEnd": "2026-08-02T00:08:54.854502+00:00"
-  },
+  "deploymentNote": "Sizing inputs for the maintainers' own deployment (host, memory ceiling, observed gateway baseline) are recorded outside this repository. Recompute them for your own deployment with the formula below.",
   "approvedDefaults": {
     "maxPerAgent": 8,
     "maxGlobal": 32,
     "maxConcurrentTurnsPerAgent": 2,
     "maxConcurrentTurnsGlobal": 12,
     "calculation": {
+      "formula": "maxGlobal * conservativeClaudePeakMiB * platformSafetyMultiplier + gatewayBaselineMb <= memoryCeilingMb * (1 - requiredHeadroomPercent/100)",
       "conservativeClaudePeakMiB": 445.53125,
       "platformSafetyMultiplier": 1.25,
-      "gatewayBaselineMb": 808.51501056,
-      "plannedMaxMemoryMb": 18629.76501056,
-      "memoryHeadroomPercent": 43.1,
       "requiredHeadroomPercent": 30
     }
   }

@@ -144,7 +144,7 @@ process.stdout.write(
         codex: (await Bun.$`codex --version`.quiet().text()).trim(),
       },
       caveat:
-        "Idle CLI baselines only. Provider-authenticated in-turn peaks and the Railway deployment ceiling remain required for the production capacity gate.",
+        "Idle CLI baselines only. Sizing a deployment additionally requires provider-authenticated in-turn peaks (capacity-authenticated.json) and your own deployment's memory ceiling.",
       measurements,
     },
     null,

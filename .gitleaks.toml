@@ -15,11 +15,7 @@
 useDefault = true
 
 [allowlist]
-description = "Test fixtures are fake; the Dev Team value is a pinned public key"
+description = "Test fixtures are fake"
 paths = [
   '''test/.*\.test\.ts$''',
-]
-regexes = [
-  # Nostr public key documented as a deployment identity pin, not a credential.
-  '''4d66facf35826891790efa742e0e915a906fed1d39e860e8c8ff9c8001ef6911''',
 ]

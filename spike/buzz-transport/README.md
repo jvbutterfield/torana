@@ -73,10 +73,11 @@ bun run capacity:authenticated
 ```
 
 Use `CAPACITY_COUNTS=1,2` or `CAPACITY_RUNNERS=claude` for a smaller validation
-run. The captured Phase 0 result is in `capacity-authenticated.json`; it combines
-these peaks with the production deployment's measured gateway baseline and
-authoritative memory ceiling. The exact installed CLI-to-release mapping is in
-`artifact-provenance.json`.
+run. The captured Phase 0 result is in `capacity-authenticated.json`, along with
+the formula for turning these peaks into session caps. Combine it with your own
+deployment's memory ceiling and observed gateway baseline — the shipped defaults
+were sized for a specific deployment and are not a universal recommendation. The
+exact installed CLI-to-release mapping is in `artifact-provenance.json`.
 
 `provenance:check` downloads the pinned official release asset, verifies its
 published archive checksum and bundled CLI checksum, and also compares the local

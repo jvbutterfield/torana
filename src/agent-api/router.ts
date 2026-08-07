@@ -516,6 +516,21 @@ type AdminHandler = (
   token: ResolvedAgentApiToken,
 ) => Promise<Response>;
 
+/**
+ * The operational admin routes under `/v1/admin/*`.
+ *
+ * These require the dedicated `admin` scope, not `ask`. They read every
+ * conversation, session, and outbox row belonging to the token's bots, and
+ * three of them mutate durable state — draining an endpoint, rotating a
+ * session, and dead-lettering rows with acknowledged data loss. `ask` is the
+ * scope handed to agents and scripts for ordinary conversation, so gating
+ * destructive operations behind it made every messaging token an operator
+ * token by default.
+ *
+ * `bot_ids` still bounds which resources are visible, and each handler
+ * re-checks ownership before acting, so `admin` widens the verb set rather
+ * than the resource set.
+ */
 function adminAuthed(
   deps: AgentApiDeps,
   handler: AdminHandler,
@@ -523,8 +538,8 @@ function adminAuthed(
   return async (req, params) => {
     const a = authenticate(deps.tokens, req.headers.get("Authorization"));
     if ("kind" in a) return mapAuthFailure(a);
-    if (!a.token.scopes.includes("ask")) {
-      return mapAuthFailure({ kind: "scope_not_permitted", scope: "ask" });
+    if (!a.token.scopes.includes("admin")) {
+      return mapAuthFailure({ kind: "scope_not_permitted", scope: "admin" });
     }
     return handler(req, params, a.token);
   };

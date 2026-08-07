@@ -171,6 +171,53 @@ during an active session. It is not a general operator escape hatch: endpoint
 selection, command manifest, membership, event ownership, file bounds, and
 timeouts are enforced server-side, and raw credentials are never printed.
 
+### Buzz credential commands
+
+Offline helpers for setting up a Buzz endpoint. Neither reads a config, opens
+the database, or touches the network.
+
+```sh
+torana buzz keygen [--format text|json]
+torana buzz auth-tag --agent-pubkey <64-hex|npub> [--conditions kind=9] [--format text|json]
+```
+
+`keygen` prints a fresh secret key with its derived public key and the
+`nsec`/`npub` encodings. Nothing is persisted — capture the secret immediately.
+
+`auth-tag` signs a NIP-OA owner attestation for an endpoint identity. The owner
+secret comes from `BUZZ_OWNER_PRIVATE_KEY` (hex or `nsec`) and is deliberately
+not a flag, so it stays out of `argv` and shell history. `--agent-pubkey`
+accepts hex or `npub`. Conditions default to `kind=9`; the full walkthrough is
+in [platforms/buzz.md](platforms/buzz.md#getting-buzz-credentials).
+
+### `torana publish`
+
+Outbound-only publishing for a configured publisher. Content comes from stdin
+or `--file`, never from argv, and the bearer token comes from the environment
+or a secret file rather than a flag.
+
+```sh
+torana publish <publisher-id> --source <label> --idempotency-key <key>
+                              [--severity info|warning|error] [--file PATH]
+                              [--server URL] [--json]
+torana publish status <publisher-id> --idempotency-key <key> [--server URL] [--json]
+```
+
+| Flag / variable             | Purpose                                                                                    |
+| --------------------------- | ------------------------------------------------------------------------------------------ |
+| `--idempotency-key`         | Required. 16–128 chars of `[A-Za-z0-9_-]`. Same key + same content never double-publishes. |
+| `--source`                  | Bounded producer label recorded with the publication.                                      |
+| `--severity`                | `info` (default), `warning`, or `error`.                                                   |
+| `--file PATH`               | Read content from a file. Default is stdin — content is never taken from argv.             |
+| `--server URL`              | Torana base URL; falls back to `TORANA_SERVER`.                                            |
+| `--json`                    | Emit JSON instead of text.                                                                 |
+| `TORANA_PUBLISH_TOKEN`      | Bearer token for the publisher API.                                                        |
+| `TORANA_PUBLISH_TOKEN_FILE` | Read the token from a file instead. Raw token flags are not supported.                     |
+
+Reusing a key with different content returns `409 idempotency_conflict` and
+changes nothing. Full protocol and configuration:
+[publisher-api.md](publisher-api.md).
+
 ### `torana config upgrade`
 
 Render a v1 gateway configuration as v2 YAML without overwriting it:
