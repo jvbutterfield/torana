@@ -66,7 +66,13 @@ export type ProvisionOutcome =
   /** Live, healthy, and already matching the request. Nothing was touched. */
   | { kind: "unchanged"; endpointId: string; pubkey: string }
   | { kind: "created"; endpointId: string; pubkey: string }
-  | { kind: "replaced"; endpointId: string; pubkey: string };
+  | { kind: "replaced"; endpointId: string; pubkey: string }
+  /**
+   * The endpoint was durably disabled by an owner `!shutdown` and this deploy
+   * brought it back. Distinct from `replaced` because it reverses an explicit
+   * owner decision — see the note at the revive site in `upsert`.
+   */
+  | { kind: "revived"; endpointId: string; pubkey: string };
 
 export class ProvisioningError extends Error {
   constructor(
@@ -303,11 +309,10 @@ export class BuzzProvisioningService {
     // Strict no-op: same identity, same configuration, already live and
     // healthy. The Desktop's "Start" is an unconditional deploy, so this is
     // the common case, not an edge case.
+    const priorState = this.deps.db.getEndpointState(endpointId);
     if (existingById && this.sameConfig(existingById, block, pubkey)) {
       const health = this.deps.transport.snapshot(endpointId);
-      const lifecycle =
-        this.deps.db.getEndpointState(endpointId)?.lifecycleState;
-      if (health?.connected && lifecycle === "active") {
+      if (health?.connected && priorState?.lifecycleState === "active") {
         return { kind: "unchanged", endpointId, pubkey };
       }
     }
@@ -373,8 +378,31 @@ export class BuzzProvisioningService {
       deployNonce: request.deploy_nonce ?? null,
     });
     this.deps.db.syncNormalizedConfig(merged.model);
-    // A previous owner `!shutdown` left this endpoint durably disabled. A
-    // deploy is fresh owner intent, so it is the sanctioned way back up.
+
+    // A previous owner `!shutdown` left this endpoint durably disabled, and a
+    // deploy clears it. That was owner intent at `desktop-v0.5.5`, where a
+    // deploy only happened when the owner pressed Start. It is no longer: from
+    // `desktop-v0.5.6` the Desktop's `reconcile_on_workspace_apply` redeploys
+    // every provider-backed agent before each community UI load, and the two
+    // are indistinguishable here — same op, same payload, a fresh `request_id`
+    // on both paths, no intent field in the protocol.
+    //
+    // We honour the revive rather than break the Start button, which is the
+    // operator's normal way back up. The invariant that survives is the one I5
+    // was written for: no process restart, supervisor flap, or reconnect brings
+    // a shut-down endpoint back. A deploy can, and when it does it is recorded
+    // rather than silent — this branch exists so the behaviour is a decision on
+    // the record, not a side effect of the no-op guard above failing to match.
+    const revived =
+      priorState?.lifecycleState === "disabled" &&
+      priorState.stateReason === "owner_shutdown";
+    if (revived) {
+      log.warn("Buzz endpoint revived by deploy after an owner shutdown", {
+        endpoint_id: endpointId,
+        agent_id: request.agent_id,
+        actor,
+      });
+    }
     this.deps.db.setEndpointLifecycle(endpointId, "active", null);
     await this.deps.transport.upsertEndpoint(normalizedEndpoint);
 
@@ -383,9 +411,10 @@ export class BuzzProvisioningService {
       agent_id: request.agent_id,
       actor,
       replaced: Boolean(existingById),
+      revived,
     });
     return {
-      kind: existingById ? "replaced" : "created",
+      kind: revived ? "revived" : existingById ? "replaced" : "created",
       endpointId,
       pubkey,
     };

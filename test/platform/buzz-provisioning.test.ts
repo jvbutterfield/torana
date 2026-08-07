@@ -529,7 +529,7 @@ describe("provisioning lifecycle", () => {
   );
 
   test(
-    "a disabled endpoint is replaced and restarted by a fresh deploy",
+    "a deploy after an owner shutdown revives the endpoint, and says so",
     async () => {
       const relay = createRelay();
       const loaded = makeLoaded();
@@ -559,7 +559,12 @@ describe("provisioning lifecycle", () => {
         request(relay.url),
         "t",
       );
-      expect(outcome.kind).toBe("replaced");
+      // Reported distinctly from `replaced`: this reverses an explicit owner
+      // decision, and from desktop-v0.5.6 the deploy that does it may be an
+      // automatic reconcile rather than the owner pressing Start. The two are
+      // indistinguishable at this boundary, so the revive is honoured — but it
+      // must never be silent.
+      expect(outcome.kind).toBe("revived");
       expect(db.getEndpointState("alpha-provisioned")!.lifecycleState).toBe(
         "active",
       );
@@ -567,6 +572,79 @@ describe("provisioning lifecycle", () => {
         () => transport.snapshot("alpha-provisioned")?.connected === true,
         "reconnected after redeploy",
       );
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "an endpoint disabled for any other reason is an ordinary replace",
+    async () => {
+      const relay = createRelay();
+      const loaded = makeLoaded();
+      const db = openDb(loaded);
+      const transport = makeTransport(loaded, db, []);
+      await transport.start(async () => {});
+      const service = makeService(loaded, db, { transport });
+      await service.upsert("alpha-provisioned", request(relay.url), "t");
+      await waitFor(
+        () => transport.snapshot("alpha-provisioned")?.connected === true,
+        "connected",
+      );
+
+      // Only an owner `!shutdown` earns the distinct outcome. An operator
+      // drain is already an explicit human act with its own audit trail, so
+      // reporting it as a revive would dilute the signal.
+      db.setEndpointLifecycle(
+        "alpha-provisioned",
+        "disabled",
+        "operator_drain",
+      );
+      await waitFor(
+        () => transport.snapshot("alpha-provisioned")?.state === "disabled",
+        "endpoint went down",
+      );
+
+      const outcome = await service.upsert(
+        "alpha-provisioned",
+        request(relay.url),
+        "t",
+      );
+      expect(outcome.kind).toBe("replaced");
+      expect(db.getEndpointState("alpha-provisioned")!.lifecycleState).toBe(
+        "active",
+      );
+    },
+    { timeout: 30_000 },
+  );
+
+  test(
+    "a healthy endpoint is never reported as revived, however often it is redeployed",
+    async () => {
+      // The reconcile loop redeploys before every community UI load. If that
+      // cadence churned a live endpoint, or reported a revive, the signal would
+      // be worthless and the relay would see a reconnect storm.
+      const relay = createRelay();
+      const loaded = makeLoaded();
+      const db = openDb(loaded);
+      const transport = makeTransport(loaded, db, []);
+      await transport.start(async () => {});
+      const service = makeService(loaded, db, { transport });
+      await service.upsert("alpha-provisioned", request(relay.url), "t");
+      await waitFor(
+        () => transport.snapshot("alpha-provisioned")?.connected === true,
+        "connected",
+      );
+
+      for (let i = 0; i < 3; i += 1) {
+        const outcome = await service.upsert(
+          "alpha-provisioned",
+          request(relay.url),
+          "t",
+        );
+        expect(outcome.kind).toBe("unchanged");
+      }
+      expect(transport.snapshot("alpha-provisioned")?.connected).toBe(true);
+      expect(transport.snapshots()).toHaveLength(1);
     },
     { timeout: 30_000 },
   );

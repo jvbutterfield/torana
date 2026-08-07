@@ -104,8 +104,12 @@ trimmed content is exactly `!shutdown` and which mentions the endpoint, signed
 by `owner_pubkey`, drains in-flight turns, publishes presence `offline`, and
 disables the endpoint durably. Nobody else can, on any `respond_to` setting,
 and a message that merely contains `!shutdown` is an ordinary prompt. Opt out
-with `owner_shutdown: disabled`. See
-[operations](../operations.md#owner-shutdown-remote-agent-stop).
+with `owner_shutdown: disabled`.
+
+The endpoint stays down across restarts, but a provider deploy revives it —
+including the automatic redeploy Buzz Desktop 0.5.6 performs when it loads
+community UI, which Torana cannot distinguish from an owner pressing "Start".
+See [operations](../operations.md#owner-shutdown-remote-agent-stop).
 
 The supervisor's own presence heartbeat is not best-effort in the same sense:
 it is the only thing a Buzz client reads to decide whether the agent is online,

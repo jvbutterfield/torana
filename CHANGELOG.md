@@ -21,6 +21,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   (harness-capped) parallelism, does not reach Torana, which never maps
   `launch.policy_env` and treats `parallelism` as Torana-managed.
 
+- Reviving an endpoint after an owner `!shutdown` is now an explicit,
+  reported outcome. A deploy has always cleared the durable `disabled` state,
+  but only as a side effect of the no-op guard failing to match, and it was
+  silent. Buzz Desktop 0.5.6 makes that matter: `reconcile_on_workspace_apply`
+  redeploys every provider-backed agent before each community UI load, so a
+  deploy is no longer proof that the owner asked for one — and the protocol
+  carries no field distinguishing the two, so Torana cannot tell them apart.
+  The revive is still honoured, because refusing it would break Buzz Desktop's
+  "Start" for every stopped agent. It now logs
+  `Buzz endpoint revived by deploy after an owner shutdown` and the
+  provisioning API returns `result: "revived"` instead of `"replaced"`.
+  `docs/operations.md` no longer describes the way back up as necessarily
+  explicit, and states plainly that opening the Buzz community UI can restart
+  an agent stopped with `!shutdown`. What the invariant still guarantees is
+  unchanged: no restart, supervisor flap, or reconnect revives a stopped
+  endpoint.
+
 ### Fixed
 
 - The Buzz Desktop provider sent Torana an access mode Torana rejects. The
