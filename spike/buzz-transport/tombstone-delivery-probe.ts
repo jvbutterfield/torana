@@ -217,23 +217,49 @@ const outPath = arg("out", "");
 const publishRecord = process.argv.includes("--publish-record");
 const readOnly = process.argv.includes("--read-only");
 
-// The publisher and the watcher must be two identities the relay will admit;
-// the tombstoned agent is always synthetic so nothing real can be destroyed.
+// The tombstoned agent is always synthetic, so nothing real can be destroyed.
 const ownerSecret = process.env.BUZZ_PRIVATE_KEY
   ? decodeSecret(process.env.BUZZ_PRIVATE_KEY)
   : generateSecretKey();
 const ownerAuthTag = parseOwnerAuthTag(process.env.BUZZ_AUTH_TAG);
+
+/**
+ * Single-identity mode.
+ *
+ * Two admitted identities give the complete answer. One still gives most of
+ * it, split into two halves that compose:
+ *
+ *   a. the relay *accepts* a cross-author `{kinds:[5], authors:[other]}`
+ *      subscription (the gate that could kill the watcher design); and
+ *   b. an `a`-tag-only `kind:5` is accepted, stored, fanned out live, and
+ *      returned by a `since` backfill.
+ *
+ * What one identity cannot show directly is (a) and (b) *together* — an event
+ * authored by A arriving at a subscriber authenticated as B. The relay source
+ * says nothing gates that: `event_visible_to_reader` withholds only
+ * author-only, unshared-gated, and DM/metric kinds, and kind 5 is none of
+ * them. So the join is source-backed rather than observed, and the verdict
+ * says so instead of overclaiming.
+ */
+const singleIdentity =
+  Boolean(process.env.BUZZ_PRIVATE_KEY) &&
+  !process.env.BUZZ_WATCHER_PRIVATE_KEY;
+
 const memberSecret = process.env.BUZZ_WATCHER_PRIVATE_KEY
   ? decodeSecret(process.env.BUZZ_WATCHER_PRIVATE_KEY)
-  : generateSecretKey();
-const memberAuthTag = parseOwnerAuthTag(process.env.BUZZ_WATCHER_AUTH_TAG);
+  : singleIdentity
+    ? ownerSecret
+    : generateSecretKey();
+const memberAuthTag = singleIdentity
+  ? ownerAuthTag
+  : parseOwnerAuthTag(process.env.BUZZ_WATCHER_AUTH_TAG);
 const agentSecret = generateSecretKey();
 const ownerPubkey = getPublicKey(ownerSecret);
 const agentPubkey = getPublicKey(agentSecret);
 const memberPubkey = getPublicKey(memberSecret);
 const coordinate = `${KIND_MANAGED_AGENT}:${ownerPubkey}:${agentPubkey}`;
 
-if (ownerPubkey === memberPubkey) {
+if (!singleIdentity && ownerPubkey === memberPubkey) {
   throw new Error(
     "publisher and watcher must be different keys — the whole point is cross-author delivery",
   );
@@ -249,6 +275,7 @@ const findings: Record<string, unknown> = {
     publisherAuthTag: Boolean(ownerAuthTag),
     watcherFromEnv: Boolean(process.env.BUZZ_WATCHER_PRIVATE_KEY),
     watcherAuthTag: Boolean(memberAuthTag),
+    mode: singleIdentity ? "single-identity" : "two-identity",
   },
 };
 
@@ -265,11 +292,16 @@ const backfill = new Conn(relayUrl, memberSecret, memberAuthTag);
 // CLOSED) rules that out. It does not prove an event traverses the wire, so it
 // is strong-but-partial evidence — the full probe remains the complete answer.
 if (readOnly) {
+  // A pubkey belonging to nobody. Deliberately *not* `ownerPubkey`: in
+  // single-identity mode the publisher and the subscriber are the same key, so
+  // filtering on the owner would make this a self-author subscription and
+  // prove nothing about the gate it exists to test.
+  const strangerPubkey = getPublicKey(generateSecretKey());
   const result: Record<string, unknown> = {
     probe: "cross-author kind:5 subscription filter gate (read-only)",
     relayUrl,
     ranAt: new Date().toISOString(),
-    filter: { kinds: [KIND_DELETE], authors: [ownerPubkey] },
+    filter: { kinds: [KIND_DELETE], authors: [strangerPubkey] },
     subscribedAs: memberPubkey,
     wroteAnything: false,
   };
@@ -278,7 +310,7 @@ if (readOnly) {
     const authed = await watcher.authenticate();
     result.authenticated = authed !== null;
     const events = await watcher.querySync("probe-filter-gate", [
-      { kinds: [KIND_DELETE], authors: [ownerPubkey] } as Filter,
+      { kinds: [KIND_DELETE], authors: [strangerPubkey] } as Filter,
     ]);
     result.filterAccepted = true;
     result.storedEventsReturned = events.length;
@@ -309,11 +341,43 @@ try {
     relayChallenged: ownerAuth !== null,
     ownerAuthenticated: ownerAuth !== null,
     watcherAuthenticatedAsDifferentKey: watcherAuth !== null,
+    distinctKeys: ownerPubkey !== memberPubkey,
     note:
       ownerAuth === null
         ? "relay issued no AUTH challenge; NIP-42 not exercised"
-        : "both connections completed NIP-42 with distinct keys",
+        : singleIdentity
+          ? "both connections completed NIP-42 as the SAME key (single-identity mode)"
+          : "both connections completed NIP-42 with distinct keys",
   };
+
+  // 0. The gate that could kill the design, checked on its own so a failure
+  //    here is unambiguous: will the relay even accept a subscription for
+  //    somebody else's kind:5? `author_only_filters_authorized` closes a
+  //    global subscription that targets exclusively author-only kinds with
+  //    `authors` other than self — so if kind 5 were in AUTHOR_ONLY_KINDS the
+  //    watcher could never subscribe on an owner's behalf.
+  const strangerPubkey = getPublicKey(generateSecretKey());
+  try {
+    const preexisting = await watcher.querySync("probe-cross-author", [
+      { kinds: [KIND_DELETE], authors: [strangerPubkey] } as Filter,
+    ]);
+    findings.crossAuthorFilterGate = {
+      accepted: true,
+      subscribedAs: memberPubkey,
+      authorsFilter: strangerPubkey,
+      storedEventsReturned: preexisting.length,
+      note: "the relay accepts a cross-author kind:5 subscription",
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    findings.crossAuthorFilterGate = {
+      accepted: false,
+      error: message,
+      note: /restricted: author-only/i.test(message)
+        ? "the relay refuses cross-author kind:5 subscriptions — the Q2 watcher design needs amendment"
+        : "did not reach the filter gate",
+    };
+  }
 
   // 1. Optionally publish the kind:30177 managed-agent record the tombstone
   //    will target. Off by default: a kind:30177 under the publisher's identity
@@ -417,10 +481,25 @@ try {
 
   const liveOk = findings.liveDelivery as { delivered: boolean };
   const backfillOk = findings.backfill as { containsTombstone: boolean };
-  findings.verdict =
-    liveOk.delivered && backfillOk.containsTombstone
-      ? "POSITIVE — the planned TombstoneWatcher design is viable as written"
-      : "NEGATIVE — watcher design needs amendment before Phase 5";
+  const gateOk = (findings.crossAuthorFilterGate as { accepted?: boolean })
+    ?.accepted;
+  const deliveryOk = liveOk.delivered && backfillOk.containsTombstone;
+
+  if (!deliveryOk || !gateOk) {
+    findings.verdict =
+      "NEGATIVE — watcher design needs amendment before Phase 5";
+  } else if (singleIdentity) {
+    findings.verdict =
+      "POSITIVE (single-identity) — the relay accepts a cross-author kind:5 " +
+      "subscription, and an a-tag-only kind:5 is stored, fanned out live, and " +
+      "returned by a `since` backfill. The two were observed separately: " +
+      "delivery was self-authored, so the join rests on the relay source, " +
+      "where no per-event author gate applies to kind 5. Re-run with " +
+      "BUZZ_WATCHER_PRIVATE_KEY for the complete answer.";
+  } else {
+    findings.verdict =
+      "POSITIVE — the planned TombstoneWatcher design is viable as written";
+  }
 } catch (error) {
   findings.error = error instanceof Error ? error.message : String(error);
   findings.verdict = "INCONCLUSIVE — probe failed to complete";
