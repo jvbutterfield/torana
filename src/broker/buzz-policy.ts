@@ -175,9 +175,9 @@ export function buzzCommandPath(input: {
 }
 
 export const BUZZ_CLI_PIN = Object.freeze({
-  applicationVersion: "0.5.7",
-  tag: "desktop-v0.5.7",
-  commit: "f167818d25dd9f03115ab907a16f07daee2ece5c",
+  applicationVersion: "0.5.8",
+  tag: "desktop-v0.5.8",
+  commit: "f3de860574bb3119018b4592353e9761635aeb07",
   sha256: manifest.sha256,
   manifestSchemaVersion: manifest.schemaVersion,
 });

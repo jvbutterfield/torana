@@ -32,8 +32,8 @@ platforms:
   buzz:
     enabled: true
     cli_path: buzz
-    # Exact checksum of the pinned Buzz 0.5.7 binary in this image/host.
-    cli_sha256: 3c0d8264d8b994c3a19e4d769802e184b74caa8e5688ad432fc5722acc7eb545
+    # Exact checksum of the pinned Buzz 0.5.8 binary in this image/host.
+    cli_sha256: 1854298e0a9f7ac8b8a6395b2b7411cb7fbd937a8643cd9c49584f1d9da5351d
     message_max_bytes: 65536
     max_frame_bytes: 524288
 
@@ -150,10 +150,10 @@ separately isolated Torana installation.
 
 ### Pinned Buzz CLI installation
 
-The supported command manifest comes from Block Buzz tag `desktop-v0.5.7`,
-commit `f167818d25dd9f03115ab907a16f07daee2ece5c`. On Apple Silicon, the verified
-release archive is `Buzz_0.5.7_aarch64.app.tar.gz` with SHA-256
-`7a3db77fdb658637b1316b5aa09b2c8a82090ff380c8bf0961fd0273f4c472d2`;
+The supported command manifest comes from Block Buzz tag `desktop-v0.5.8`,
+commit `f3de860574bb3119018b4592353e9761635aeb07`. On Apple Silicon, the verified
+release archive is `Buzz_0.5.8_aarch64.app.tar.gz` with SHA-256
+`67464b0ccd8a0b0cb305348f56f374354c60df50b9cbfb12b013549ea72601e3`;
 the bundled `buzz` executable has the default checksum shown above.
 
 For Linux images, build `buzz-cli` from that exact tag with the committed

@@ -6,6 +6,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.16] - 2026-08-08
+
+### Changed
+
+- The pinned Buzz CLI moved from `desktop-v0.5.7` to `desktop-v0.5.8`
+  (commit `f3de860574bb3119018b4592353e9761635aeb07`, Apple-silicon release
+  asset `506568023`). The default `platforms.buzz.cli_sha256` is now
+  `1854298e0a9f7ac8b8a6395b2b7411cb7fbd937a8643cd9c49584f1d9da5351d` and
+  doctor C024 names Buzz 0.5.8.
+
+  **Nothing in 0.5.8 reaches Torana's contract surface.** The evidence is
+  structural rather than a diff summary: `desktop/src-tauri/src/` has **zero**
+  changed files between the two tags. The only `src-tauri` changes are
+  `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`, and the first and third
+  are the version string alone. Every source behind the provider-deploy,
+  reconcile, access-policy, tombstone, and owner-`!shutdown` paths is therefore
+  byte-identical, confirmed by comparing each file's blob SHA at both tags. The
+  CLI command surface is unchanged, so no command changed tier.
+
+  0.5.8 is four changes: a React-only "unify add agent flows" reshuffle of the
+  agent dialogs, summarizer-reasoning budgeting in the `buzz-agent` harness
+  (which Torana does not use — it drives its own runners), binding development
+  compose services to loopback, and a revert of the ACP unattended-permission
+  rejection.
+
+  That revert is worth naming because it is a security-posture change inside
+  the pinned bundle that an unchanged command manifest would not reveal:
+  `crates/buzz-acp` re-adds the `bypassPermissions` mode 0.5.6 removed, moves
+  the `BUZZ_ACP_PERMISSION_MODE` default from `dont-ask` to
+  `bypass-permissions`, and auto-approves `session/request_permission` with
+  `allow_once` instead of rejecting it. It does not reach Torana: `buzz-acp` is
+  the Desktop-local ACP adapter, and Torana spawns its own harnesses. Torana's
+  exposure to the bundle is the `buzz` CLI verb surface, which is unchanged and
+  still gated by the broker manifest and policy classification.
+
+  One of the four files cited by
+  `spike/buzz-transport/owner-shutdown-contract.json` — `buzz-acp/src/lib.rs` —
+  did change, so its assertion was re-read at the new tag rather than carried
+  over: the whole delta is two test-module fixture lines, and
+  `is_owner_control_command` is byte-identical. Invariant I5 is unaffected.
+
 ## [2.0.0-rc.15] - 2026-08-08
 
 ### Changed
