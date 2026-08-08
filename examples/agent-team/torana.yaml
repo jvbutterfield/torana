@@ -14,7 +14,7 @@ platforms:
     # operator endpoint below is the only endpoint preselected as the canary.
     enabled: false
     cli_path: buzz
-    cli_sha256: eadcf47ac7ea04f811d8122375fbe2a0b90e121a3e82a529ebca30dee2b784d2
+    cli_sha256: 3c0d8264d8b994c3a19e4d769802e184b74caa8e5688ad432fc5722acc7eb545
 
 access_control:
   default_policy: deny

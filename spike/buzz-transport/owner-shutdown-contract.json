@@ -1,13 +1,13 @@
 {
   "capturedAt": "2026-08-06",
-  "reverifiedAt": "2026-08-07",
+  "reverifiedAt": "2026-08-08",
   "purpose": "Pin the exact wire shape of Buzz Desktop's remote-agent Stop so Torana's matcher is written against the implementation rather than an assumption.",
   "source": {
     "repository": "https://github.com/block/buzz",
-    "tag": "desktop-v0.5.6",
-    "commit": "277d98a5cfb6d3b9af8b75122988f7a7df33ed5d",
+    "tag": "desktop-v0.5.7",
+    "commit": "f167818d25dd9f03115ab907a16f07daee2ece5c",
     "method": "read from the pinned source tree; not a live GUI capture",
-    "reverification": "Re-pointed from desktop-v0.5.5 during the 0.5.6 upgrade. Three of the four cited files have different blobs at 0.5.6, so each assertion below was re-read at the new commit rather than carried over: all three still hold verbatim, and the files moved for unrelated reasons. tauriManagedAgentMessages.ts is byte-identical.",
+    "reverification": "0.5.5 -> 0.5.6: three of the four cited files had different blobs, so every assertion was re-read at the new commit rather than carried over. All three held verbatim; the files had moved for unrelated reasons. 0.5.6 -> 0.5.7: all four cited files are byte-identical (blob SHA compared at each tag), so this re-point carries no assertion risk. Verify by blob SHA, never by a compare file list — GitHub caps that list at 300 entries and a truncated list silently reads as 'unchanged'.",
     "citations": [
       {
         "path": "desktop/src/features/agents/lib/managedAgentControlActions.ts",

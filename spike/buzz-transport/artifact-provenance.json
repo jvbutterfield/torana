@@ -1,30 +1,30 @@
 {
-  "verifiedAt": "2026-08-07T21:43:55Z",
+  "verifiedAt": "2026-08-08T02:52:51Z",
   "application": {
-    "version": "0.5.6",
+    "version": "0.5.7",
     "bundleIdentifier": "xyz.block.buzz.app",
     "architecture": "aarch64"
   },
   "source": {
     "repository": "https://github.com/block/buzz",
-    "tag": "desktop-v0.5.6",
-    "commit": "277d98a5cfb6d3b9af8b75122988f7a7df33ed5d",
-    "release": "https://github.com/block/buzz/releases/tag/desktop-v0.5.6"
+    "tag": "desktop-v0.5.7",
+    "commit": "f167818d25dd9f03115ab907a16f07daee2ece5c",
+    "release": "https://github.com/block/buzz/releases/tag/desktop-v0.5.7"
   },
   "releaseArtifact": {
-    "assetId": 505571273,
-    "name": "Buzz_0.5.6_aarch64.app.tar.gz",
-    "downloadUrl": "https://github.com/block/buzz/releases/download/desktop-v0.5.6/Buzz_0.5.6_aarch64.app.tar.gz",
-    "sizeBytes": 97790776,
-    "sha256": "d54a18d936163e7b47cdd028b78ee3c140817394090d7a2e03bc6b6f37bbc743",
+    "assetId": 505779314,
+    "name": "Buzz_0.5.7_aarch64.app.tar.gz",
+    "downloadUrl": "https://github.com/block/buzz/releases/download/desktop-v0.5.7/Buzz_0.5.7_aarch64.app.tar.gz",
+    "sizeBytes": 97789625,
+    "sha256": "7a3db77fdb658637b1316b5aa09b2c8a82090ff380c8bf0961fd0273f4c472d2",
     "downloadedSha256Matched": true
   },
   "buzzExecutable": {
     "installedPath": "/Applications/Buzz.app/Contents/MacOS/buzz",
     "releaseArchivePath": "Buzz.app/Contents/MacOS/buzz",
-    "sha256": "eadcf47ac7ea04f811d8122375fbe2a0b90e121a3e82a529ebca30dee2b784d2",
+    "sha256": "3c0d8264d8b994c3a19e4d769802e184b74caa8e5688ad432fc5722acc7eb545",
     "byteForByteMatch": true,
-    "codeSigningCdHash": "75ae558da1dd9d29b4487d75f8e7c838979d0b71",
+    "codeSigningCdHash": "901af66ebe076cbf5dd50febc2d067776ea22836",
     "teamIdentifier": "EYF346PHUG"
   }
 }
