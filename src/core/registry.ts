@@ -4,7 +4,7 @@
 
 import { logger } from "../log.js";
 import type { AlertManager } from "../alerts.js";
-import type { BotId, Config } from "../config/schema.js";
+import type { BotConfig, BotId, Config } from "../config/schema.js";
 import type { GatewayDB } from "../db/gateway-db.js";
 import type { Metrics } from "../metrics.js";
 import { Bot } from "./bot.js";
@@ -25,6 +25,7 @@ import type { ConversationRef, InboundEvent } from "../platform/types.js";
 import { BuzzAdapter } from "../platform/buzz/adapter.js";
 import type { ConversationScheduler } from "../conversation/scheduler.js";
 import { sweepAttachmentsForTurns } from "./attachments.js";
+import type { BuzzCredentialBroker } from "../broker/buzz-broker.js";
 
 const log = logger("registry");
 
@@ -37,6 +38,8 @@ export interface BotRegistryOptions {
   outbox: OutboxProcessor;
   metrics: Metrics;
   alerts: AlertManager;
+  /** Needed to build Desktop-managed agents after startup. */
+  buzzBroker?: BuzzCredentialBroker;
 }
 
 export class BotRegistry {
@@ -44,20 +47,100 @@ export class BotRegistry {
   private db: GatewayDB;
   private bots: Map<BotId, Bot>;
   private adapters: Map<BotId, PlatformAdapter>;
+  private streaming: StreamManager;
   private outbox: OutboxProcessor;
   private metrics: Metrics;
   private alerts: AlertManager;
+  private buzzBroker?: BuzzCredentialBroker;
   private dispatchTimer: ReturnType<typeof setInterval> | null = null;
   private conversationScheduler: ConversationScheduler | null = null;
+  /** Ids added at runtime rather than built from YAML at startup. */
+  private readonly provisioned = new Set<BotId>();
 
   constructor(opts: BotRegistryOptions) {
     this.config = opts.config;
     this.db = opts.db;
     this.bots = new Map(opts.bots.map((b) => [b.id, b]));
     this.adapters = opts.adapters;
+    this.streaming = opts.streaming;
     this.outbox = opts.outbox;
     this.metrics = opts.metrics;
     this.alerts = opts.alerts;
+    this.buzzBroker = opts.buzzBroker;
+  }
+
+  /** True when this id was registered at runtime, not declared in YAML. */
+  isProvisioned(id: BotId): boolean {
+    return this.provisioned.has(id);
+  }
+
+  /**
+   * Add or replace a Desktop-managed agent without restarting the process.
+   *
+   * The agent-level analog of `BuzzTransport.upsertEndpoint`. Re-upserting an
+   * existing provisioned agent replaces its Bot, which is how an instruction
+   * change takes effect: the new Bot instantiates a runner from the updated
+   * projection, and the caller recycles live sessions separately.
+   *
+   * Refuses to shadow a YAML-declared agent. That rule is enforced server-side
+   * at the provisioning boundary too, but a second gate here is cheap and this
+   * is the one that would actually swap a running YAML agent's runner (R1.4).
+   */
+  upsertProvisionedAgent(input: {
+    botConfig: BotConfig;
+    endpoint: PlatformAdapter;
+  }): Bot {
+    const id = input.botConfig.id;
+    if (this.bots.has(id) && !this.provisioned.has(id)) {
+      throw new Error(
+        `agent '${id}' is declared in configuration and cannot be replaced by a provisioned agent`,
+      );
+    }
+    const bot = new Bot({
+      config: this.config,
+      botConfig: input.botConfig,
+      db: this.db,
+      endpoint: input.endpoint,
+      streaming: this.streaming,
+      outbox: this.outbox,
+      metrics: this.metrics,
+      alerts: this.alerts,
+      buzzBroker: this.buzzBroker,
+    });
+    this.bots.set(id, bot);
+    this.adapters.set(id, input.endpoint);
+    this.adapters.set(input.endpoint.endpoint.id, input.endpoint);
+    this.provisioned.add(id);
+    log.info("provisioned agent registered", {
+      bot_id: id,
+      endpoint_id: input.endpoint.endpoint.id,
+    });
+    return bot;
+  }
+
+  /**
+   * Deregister a provisioned agent. Used by purge and by failed-create unwind.
+   *
+   * Returns false for an unknown id and for a YAML agent — removing one of
+   * those is never correct, and a silent success would make a purge look like
+   * it had done something it had not.
+   */
+  removeProvisionedAgent(id: BotId): boolean {
+    if (!this.provisioned.has(id)) return false;
+    const bot = this.bots.get(id);
+    const endpointId = this.adapters.get(id)?.endpoint.id;
+    this.bots.delete(id);
+    this.adapters.delete(id);
+    if (endpointId) this.adapters.delete(endpointId);
+    this.provisioned.delete(id);
+    // Teardown is deferred to the caller's drain path: stopping a runner with
+    // a turn in flight is exactly what the delete pipeline's staging exists to
+    // avoid, so this method never kills a process itself.
+    log.info("provisioned agent deregistered", {
+      bot_id: id,
+      had_bot: bot !== undefined,
+    });
+    return true;
   }
 
   bot(id: BotId): Bot | undefined {

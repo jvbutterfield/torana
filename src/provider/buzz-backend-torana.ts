@@ -398,6 +398,10 @@ export async function deploy(
       ? { allowed_pubkeys: agent.respond_to_allowlist }
       : {}),
     ...(request.request_id ? { deploy_nonce: request.request_id } : {}),
+    ...(() => {
+      const block = buildAgentBlock(agent, config);
+      return block ? { agent: block } : {};
+    })(),
   };
 
   const base = toranaUrl.replace(/\/+$/, "");
@@ -476,6 +480,68 @@ export async function deploy(
  */
 export function backendAgentId(endpointId: string): string {
   return `railway:agent-team:${endpointId}`;
+}
+
+/**
+ * Which harness on Torana's allowlist this agent wants.
+ *
+ * `torana_harness` in the per-agent provider config wins. Otherwise the name is
+ * *derived* from `launch.command` — basename, extension stripped — which is
+ * read as a hint and never as a path to execute (R7.3). Torana resolves the
+ * binary itself from its own allowlist; a payload naming `/usr/local/bin/goose`
+ * asks for the harness called `goose`, and gets a refusal if the operator has
+ * not allowlisted one.
+ *
+ * Windows `.exe` is stripped because upstream leaves it in the derived provider
+ * id, so a Windows Desktop would otherwise ask for a harness named `goose.exe`
+ * that no operator would ever have written.
+ */
+export function deriveHarnessName(
+  config: Record<string, unknown> | undefined,
+  launchCommand: unknown,
+): string | undefined {
+  const explicit = config ? requireString(config, "torana_harness") : null;
+  if (explicit) return explicit;
+  if (typeof launchCommand !== "string" || launchCommand.trim() === "") {
+    return undefined;
+  }
+  const base = launchCommand.trim().split(/[/\\]/).pop() ?? "";
+  const stripped = base.replace(/\.(exe|cmd|bat|sh)$/i, "");
+  return stripped === "" ? undefined : stripped;
+}
+
+/**
+ * The `agent` block, or undefined when this deploy is an endpoint attach.
+ *
+ * Sent whenever a harness can be named. Torana decides what it means: for a
+ * YAML-declared id these fields are refused and reported not-applied, and for
+ * an unknown id they create the agent. One wire shape serves both, which is
+ * what keeps the provider from having to know which kind of agent it is
+ * talking about.
+ */
+export function buildAgentBlock(
+  agent: DeployRequestAgent,
+  config: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const harness = deriveHarnessName(config, agent.launch?.command);
+  if (!harness) return undefined;
+  return {
+    harness,
+    system_prompt:
+      typeof agent.system_prompt === "string" ? agent.system_prompt : "",
+    ...(typeof agent.model === "string" && agent.model !== ""
+      ? { model: agent.model }
+      : {}),
+    ...(typeof agent.turn_timeout_seconds === "number"
+      ? { turn_timeout_seconds: agent.turn_timeout_seconds }
+      : {}),
+    ...(typeof agent.idle_timeout_seconds === "number"
+      ? { idle_timeout_seconds: agent.idle_timeout_seconds }
+      : {}),
+    ...(typeof agent.max_turn_duration_seconds === "number"
+      ? { max_turn_duration_seconds: agent.max_turn_duration_seconds }
+      : {}),
+  };
 }
 
 /**

@@ -19,6 +19,7 @@ const MATRIX_FILES = [
   "ask-codex.test.ts",
   "send-claude.test.ts",
   "cli-remote.test.ts",
+  "injection-fidelity.test.ts",
 ] as const;
 
 describe("§12.4 E2E matrix — manifest drift guard", () => {
@@ -44,11 +45,13 @@ describe("§12.4 E2E matrix — manifest drift guard", () => {
     expect(unknown).toEqual([]);
   });
 
-  test("manifest covers all four §12.4 tests (sanity)", () => {
-    expect(MATRIX_FILES.length).toBe(4);
+  test("manifest covers every E2E row (sanity)", () => {
+    // Four §12.4 rows plus the US-031 injection-fidelity row.
+    expect(MATRIX_FILES.length).toBe(5);
     // Same subsection prefixes the matrix uses.
     expect(MATRIX_FILES.some((f) => f.startsWith("ask-"))).toBe(true);
     expect(MATRIX_FILES.some((f) => f.startsWith("send-"))).toBe(true);
     expect(MATRIX_FILES.some((f) => f.startsWith("cli-"))).toBe(true);
+    expect(MATRIX_FILES.some((f) => f.startsWith("injection-"))).toBe(true);
   });
 });

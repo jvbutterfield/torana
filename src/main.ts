@@ -13,8 +13,10 @@ import {
   normalizedV1Model,
   type ConfigV2,
   type NormalizedConfigModel,
+  type NormalizedEndpointConfig,
 } from "./config/v2.js";
 import { BuzzProvisioningService } from "./platform/buzz/provisioning.js";
+import { AgentTimeoutRegistry } from "./platform/buzz/agent-timeouts.js";
 import { provisioningKeyFromEnv } from "./config/provisioning-secrets.js";
 import {
   logger,
@@ -205,7 +207,13 @@ export async function startGateway(
     outbox,
     metrics,
     alerts,
+    buzzBroker,
   });
+
+  // Written by the provisioning service on create and restore, read by the
+  // scheduler on every dispatch. Constructed here because the scheduler is
+  // built before provisioning is.
+  const agentTimeouts = new AgentTimeoutRegistry();
 
   // The promoted session manager is shared by normalized platform traffic
   // and the Agent API. V1 configurations keep the legacy one-runner path.
@@ -226,6 +234,7 @@ export async function startGateway(
         normalized,
         workerTuning: config.worker_tuning,
         alerts,
+        agentTimeouts,
       }),
     );
   }
@@ -267,6 +276,23 @@ export async function startGateway(
     key: provisioningKey,
     transport: null,
     maxEndpoints: normalized.sessions?.max_global,
+    provisioning: normalized.provisioning ?? null,
+    dataDir: config.gateway.data_dir,
+    agentTimeouts,
+    // Desktop-managed agents are Bots, and Bots are built here rather than in
+    // the provisioning service. The service calls back through this so that a
+    // create registers a running agent, and a failed create can deregister it.
+    agentRuntime: {
+      upsert: ({ botConfig, endpoint }) => {
+        registry.upsertProvisionedAgent({
+          botConfig,
+          endpoint: adapterForProvisionedEndpoint(adapters, endpoint),
+        });
+      },
+      remove: (agentId) => {
+        registry.removeProvisionedAgent(agentId);
+      },
+    },
   });
   const persisted = provisioning.loadPersisted();
   for (const error of persisted.errors) {
@@ -282,6 +308,44 @@ export async function startGateway(
   if (persisted.endpoints.length > 0) {
     log.info("restored provisioned Buzz endpoints", {
       count: persisted.endpoints.length,
+    });
+  }
+
+  // Provisioned endpoints need adapters in the shared map, exactly as YAML
+  // endpoints get above. The transport would otherwise build a private adapter
+  // of its own (`transport.ts` reuses a configured one when it finds it), and
+  // everything else that resolves an endpoint through this map — alerts, the
+  // outbox, a provisioned agent's Bot — would come up empty.
+  for (const endpoint of persisted.endpoints) {
+    if (endpoint.platform !== "buzz" || !endpoint.buzz) continue;
+    adapterForProvisionedEndpoint(adapters, endpoint);
+  }
+
+  // Desktop-managed agents are registered here, before the Buzz transport is
+  // built and started below. An agent whose endpoint came up with no Bot
+  // behind it would authenticate, announce presence, and then drop every
+  // message it received.
+  //
+  // Each is registered independently: one agent whose harness has been removed
+  // from the allowlist must not stop the others from starting. The failures
+  // land in the same operator-visible list as endpoint restore errors, and
+  // doctor C031 reports the same condition from the row side.
+  for (const agent of persisted.agents) {
+    try {
+      registry.upsertProvisionedAgent({
+        botConfig: agent.botConfig,
+        endpoint: adapterForProvisionedEndpoint(adapters, agent.endpoint),
+      });
+    } catch (error) {
+      log.error("provisioned agent could not be restored", {
+        agent_id: agent.agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (persisted.agents.length > 0) {
+    log.info("restored Desktop-managed agents", {
+      count: persisted.agents.length,
     });
   }
 
@@ -1010,4 +1074,25 @@ export function runCrashRecovery(
     orphaned_turns: running.length,
     pending_outbox: pending.length,
   });
+}
+
+/**
+ * The adapter for a provisioned Buzz endpoint, created on first use.
+ *
+ * A provisioned endpoint may not exist when the process starts — a create adds
+ * one at runtime — so the shared adapter map cannot be fully built up front the
+ * way it is for YAML endpoints. Everything that resolves an endpoint through
+ * that map (alerts, the outbox, a provisioned agent's Bot) needs the entry, and
+ * the Buzz transport reuses a configured adapter when it finds one, so
+ * registering here keeps a single adapter per endpoint rather than two.
+ */
+function adapterForProvisionedEndpoint(
+  adapters: Map<string, PlatformAdapter>,
+  endpoint: NormalizedEndpointConfig,
+): PlatformAdapter {
+  const existing = adapters.get(endpoint.id);
+  if (existing) return existing;
+  const adapter = new BuzzAdapter(endpoint);
+  adapters.set(endpoint.id, adapter);
+  return adapter;
 }
