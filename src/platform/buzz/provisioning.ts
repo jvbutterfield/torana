@@ -147,6 +147,12 @@ export interface ProvisioningDeps {
   /** Populated on create and restore; read by the scheduler per dispatch. */
   agentTimeouts?: AgentTimeoutRegistry | null;
   /**
+   * Drain-safe session recycle, injected so the service does not depend on the
+   * pool. Returns how many sessions were retired. Absent in tests that do not
+   * exercise the apply path, and on a gateway with no session pool at all.
+   */
+  recycleSessions?: ((agentId: string, reason: string) => number) | null;
+  /**
    * Runtime hooks for Desktop-managed agents. Injected rather than imported so
    * the service can be tested without a live registry, and so the create
    * arm's unwind has an explicit deregister to call.
@@ -483,6 +489,42 @@ export class BuzzProvisioningService {
       return { kind: "created", endpointId, pubkey };
     }
 
+    let instructionChange: { changed: boolean; sessionsRecycled: number } = {
+      changed: false,
+      sessionsRecycled: 0,
+    };
+    // An existing Desktop-managed agent. Instruction changes are applied here
+    // (R3.2/R3.3); the endpoint half continues down the shared path below.
+    if (
+      classification.kind === "reconcile_provisioned" ||
+      classification.kind === "unstage_provisioned"
+    ) {
+      if (classification.kind === "unstage_provisioned") {
+        // Row 7. The Desktop record was deleted, so only a deliberate
+        // re-create with the same identity reaches this — fresh owner intent,
+        // by the same principle as the 0.5.6 revive decision. Loud, because it
+        // reverses a pending destruction.
+        log.warn("deploy un-staged a pending agent deletion", {
+          agent_id: request.agent_id,
+          purge_deadline: classification.existing.purgeDeadline,
+          actor,
+        });
+        this.deps.db.restoreProvisionedAgent(request.agent_id);
+        this.deps.db.appendProvisioningAudit({
+          agentId: request.agent_id,
+          signal: "restore",
+          actor,
+          outcome: "unstaged_by_deploy",
+          detail: { purge_deadline: classification.existing.purgeDeadline },
+        });
+      }
+      instructionChange = this.applyInstructionChange({
+        existing: classification.existing,
+        agent: request.agent,
+        actor,
+      });
+    }
+
     // A YAML-declared endpoint always wins. torana.yaml is baked into the
     // deploy image and re-validated on every deploy, so letting a provider
     // create a row that shadows one would mean the next redeploy silently
@@ -525,7 +567,13 @@ export class BuzzProvisioningService {
     // healthy. The Desktop's "Start" is an unconditional deploy, so this is
     // the common case, not an edge case.
     const priorState = this.deps.db.getEndpointState(endpointId);
-    if (existingById && this.sameConfig(existingById, block, pubkey)) {
+    if (
+      existingById &&
+      this.sameConfig(existingById, block, pubkey) &&
+      // Strict: an instruction change is a real diff even when every endpoint
+      // field matches, so `unchanged` must not swallow it (R3.2).
+      !instructionChange.changed
+    ) {
       const health = this.deps.transport.snapshot(endpointId);
       if (health?.connected && priorState?.lifecycleState === "active") {
         return { kind: "unchanged", endpointId, pubkey };
@@ -618,6 +666,24 @@ export class BuzzProvisioningService {
         actor,
       });
     }
+    if (instructionChange.changed) {
+      // The row moved, so `merge` above rebuilt this agent from it. Re-register
+      // so the next spawn reads the new projection: sessions were already
+      // marked for recycle, and their replacements must not come up on the
+      // configuration we just replaced.
+      const botConfig = merged.config.agents.find(
+        (item) => item.id === request.agent_id,
+      );
+      if (botConfig) {
+        this.deps.agentRuntime?.upsert({
+          agentId: request.agent_id,
+          botConfig: botConfig as unknown as BotConfig,
+          endpointId,
+          endpoint: normalizedEndpoint,
+        });
+      }
+    }
+
     this.deps.db.setEndpointLifecycle(endpointId, "active", null);
     await this.deps.transport.upsertEndpoint(normalizedEndpoint);
 
@@ -708,6 +774,99 @@ export class BuzzProvisioningService {
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
+
+  /**
+   * Apply an instruction change to an existing Desktop-managed agent (R3.2).
+   *
+   * The comparison is on the **instruction version**, not on the raw payload.
+   * That is what makes the reconcile cadence survivable: the Desktop redeploys
+   * every provider-backed agent on each community UI load, so a diff computed
+   * from request fields would fire constantly on values that clamp to the same
+   * applied result. Two deploys that produce the same applied instructions are
+   * the same instructions, and nothing is touched (R2.2).
+   *
+   * When it *has* changed, the order is: persist the row, refresh the applied
+   * timeouts, rebuild the runtime from the new projection, then recycle
+   * sessions. Recycling last means the next spawn reads a projection that has
+   * already moved; recycling first would race a fresh process against the old
+   * configuration.
+   */
+  private applyInstructionChange(input: {
+    existing: ProvisionedAgentRow;
+    agent: ProvisionRequest["agent"];
+    actor: string;
+  }): { changed: boolean; sessionsRecycled: number } {
+    const { existing, agent, actor } = input;
+    // No agent block: an older provider, or a deploy that carries only
+    // endpoint fields. Nothing to compare against, so nothing to apply.
+    if (!agent) return { changed: false, sessionsRecycled: 0 };
+
+    const provisioning = this.requireProvisioning();
+    const candidate: ProvisionedAgentRow = {
+      ...existing,
+      harness: agent.harness ?? existing.harness,
+      systemPrompt: agent.system_prompt ?? existing.systemPrompt,
+      model: agent.model ?? null,
+      timeoutsJson: JSON.stringify({
+        turn_timeout_seconds: agent.turn_timeout_seconds ?? null,
+        idle_timeout_seconds: agent.idle_timeout_seconds ?? null,
+        max_turn_duration_seconds: agent.max_turn_duration_seconds ?? null,
+      }),
+    };
+
+    let projected: ProjectedInstructions;
+    try {
+      projected = projectInstructions(candidate, provisioning);
+    } catch (error) {
+      if (error instanceof ProjectionError) {
+        throw new ProvisioningError("invalid_request", error.message);
+      }
+      throw error;
+    }
+
+    if (projected.instructionVersion === existing.instructionVersion) {
+      return { changed: false, sessionsRecycled: 0 };
+    }
+
+    this.deps.db.upsertProvisionedAgent({
+      agentId: existing.agentId,
+      derivedPubkey: existing.derivedPubkey,
+      harness: candidate.harness,
+      systemPrompt: candidate.systemPrompt,
+      model: candidate.model,
+      timeoutsJson: candidate.timeoutsJson,
+      instructionVersion: projected.instructionVersion,
+      provisionedBy: actor,
+    });
+    this.deps.agentTimeouts?.set(existing.agentId, projected.applied);
+
+    const sessionsRecycled =
+      this.deps.recycleSessions?.(
+        existing.agentId,
+        `instructions ${existing.instructionVersion} → ${projected.instructionVersion}`,
+      ) ?? 0;
+
+    log.info("provisioned agent instructions applied", {
+      agent_id: existing.agentId,
+      old_version: existing.instructionVersion,
+      new_version: projected.instructionVersion,
+      sessions_recycled: sessionsRecycled,
+      actor,
+    });
+    this.deps.db.appendProvisioningAudit({
+      agentId: existing.agentId,
+      signal: "update",
+      actor,
+      outcome: "instructions_applied",
+      detail: {
+        old_version: existing.instructionVersion,
+        new_version: projected.instructionVersion,
+        sessions_recycled: sessionsRecycled,
+        clamped: projected.clamped,
+      },
+    });
+    return { changed: true, sessionsRecycled };
+  }
 
   private requireProvisioning(): ProvisioningConfig {
     const provisioning = this.deps.provisioning;

@@ -1450,6 +1450,26 @@ export class GatewayDB {
     }));
   }
 
+  /**
+   * Return a staged agent to `active`, clearing both staging columns together.
+   *
+   * They move as a pair because the schema CHECK requires it — a lifecycle
+   * cleared without its deadline would leave a live agent scheduled for purge.
+   */
+  restoreProvisionedAgent(agentId: string): boolean {
+    if (!this.provisionedAgentSchema()) return false;
+    return (
+      this._db
+        .prepare(
+          `UPDATE provisioned_agents
+              SET lifecycle='active', staged_at=NULL, purge_deadline=NULL,
+                  updated_at=datetime('now')
+            WHERE agent_id=? AND lifecycle='staged_delete'`,
+        )
+        .run(agentId).changes === 1
+    );
+  }
+
   deleteProvisionedAgent(agentId: string): boolean {
     if (!this.provisionedAgentSchema()) return false;
     return (

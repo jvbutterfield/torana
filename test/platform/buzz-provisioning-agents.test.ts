@@ -450,11 +450,12 @@ describe("a second deploy of an existing provisioned agent", () => {
     expect(h.db.getProvisionedAgent("canary")?.lifecycle).toBe("active");
   });
 
-  test("a changed prompt does not yet apply, and does not corrupt the row", async () => {
-    // Documents the Phase 4 gap explicitly rather than leaving it implied: the
-    // stored instructions stay as created until the update arm exists.
+  test("a changed prompt is applied to the record (US-033)", async () => {
+    // This test previously asserted the Phase 4 *gap*. It now asserts the
+    // behaviour, which is the point of having written it down.
     const h = makeHarness();
     await h.service.upsert("canary-buzz", createRequest(), "provisioner");
+    const before = h.db.getProvisionedAgent("canary")!;
     await h.service.upsert(
       "canary-buzz",
       createRequest({
@@ -462,8 +463,8 @@ describe("a second deploy of an existing provisioned agent", () => {
       }),
       "provisioner",
     );
-    const row = h.db.getProvisionedAgent("canary");
-    expect(row?.systemPrompt).toBe("be terse");
-    expect(row?.instructionVersion).toMatch(/^[0-9a-f]{12}$/);
+    const after = h.db.getProvisionedAgent("canary")!;
+    expect(after.systemPrompt).toBe("completely different");
+    expect(after.instructionVersion).not.toBe(before.instructionVersion);
   });
 });

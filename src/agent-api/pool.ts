@@ -426,6 +426,53 @@ export class ConversationSessionManager {
     await entry.stopPromise;
   }
 
+  /**
+   * Retire every resident session of one agent without interrupting a turn.
+   *
+   * The apply mechanism for a Desktop-managed agent's instruction change (Q1).
+   * Instructions reach a runner at spawn, so the way to apply new ones is to
+   * make the next spawn use them — not to signal a running process.
+   *
+   * Idle entries stop now. Busy ones are marked `stopping`, which blocks new
+   * acquisitions (they get a fresh process built from the updated projection)
+   * while leaving the in-flight turn alone; `release` completes the teardown
+   * when inflight reaches zero. So a turn always finishes under the
+   * instructions it started with, and every turn started after this returns
+   * runs under the new ones.
+   *
+   * Per-turn runners are skipped rather than counted: they hold no resident
+   * process, so the next turn already spawns fresh and there is nothing to
+   * recycle. Counting them would make the audit log claim work that never
+   * happened.
+   *
+   * Returns the number of sessions actually recycled.
+   */
+  recycleForBot(botId: string, reason: string): number {
+    const grace = this.config.shutdown.runner_grace_secs * 1000;
+    let recycled = 0;
+    for (const entry of [...this.entries.values()]) {
+      if (entry.botId !== botId) continue;
+      if (entry.state === "stopping") continue;
+      if (entry.capabilities.processModel === "per_turn") continue;
+      if (entry.inflight === 0) {
+        this.scheduleStop(entry, grace);
+      } else {
+        entry.state = "stopping";
+        this.db.markSideSessionState(entry.botId, entry.sessionId, "stopping");
+        this.publishLiveGauge(entry.botId);
+      }
+      recycled += 1;
+    }
+    if (recycled > 0) {
+      this.log.info("recycled sessions for instruction change", {
+        bot_id: botId,
+        reason,
+        sessions_recycled: recycled,
+      });
+    }
+    return recycled;
+  }
+
   listForBot(botId: string): PoolEntrySnapshot[] {
     const out: PoolEntrySnapshot[] = [];
     for (const entry of this.entries.values()) {
