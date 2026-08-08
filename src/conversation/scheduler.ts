@@ -5,6 +5,7 @@ import type { BotRegistry } from "../core/registry.js";
 import type { ConversationSessionManager } from "./manager.js";
 import type { ConversationRef } from "../platform/types.js";
 import type { Config } from "../config/schema.js";
+import type { AgentTimeoutRegistry } from "../platform/buzz/agent-timeouts.js";
 import type { AlertManager } from "../alerts.js";
 import type { ManagedTurnOutcome } from "../core/bot.js";
 
@@ -18,6 +19,8 @@ export interface ConversationSchedulerOptions {
   tickMs?: number;
   workerTuning?: Config["worker_tuning"];
   alerts?: AlertManager;
+  /** Per-agent turn timeouts for Desktop-managed agents (R11.3). */
+  agentTimeouts?: AgentTimeoutRegistry | null;
 }
 
 /**
@@ -39,6 +42,8 @@ export class ConversationScheduler {
   private activeCancels = new Map<string, () => void>();
   private activeGlobal = 0;
   private turnTimeoutMs: number;
+  /** Per-agent overrides for Desktop-managed agents; null for YAML-only. */
+  private agentTimeouts: AgentTimeoutRegistry | null;
   private maxConsecutiveFailures: number;
   private alerts?: AlertManager;
   private failuresBySession = new Map<string, number>();
@@ -52,6 +57,7 @@ export class ConversationScheduler {
     this.limits = opts.normalized.sessions;
     this.tickMs = opts.tickMs ?? 1000;
     this.turnTimeoutMs = (opts.workerTuning?.turn_timeout_secs ?? 60) * 1000;
+    this.agentTimeouts = opts.agentTimeouts ?? null;
     this.maxConsecutiveFailures =
       opts.workerTuning?.max_consecutive_failures ?? 10;
     this.alerts = opts.alerts;
@@ -317,11 +323,19 @@ export class ConversationScheduler {
             session_key: sessionKey,
             turn_id: row.id,
           });
-          timeout = setTimeout(() => {
-            const stopping = this.manager.cancelConversation(sessionKey);
-            bot.cancelManagedTurn(row.id, "turn timeout");
-            void stopping;
-          }, this.turnTimeoutMs);
+          timeout = setTimeout(
+            () => {
+              const stopping = this.manager.cancelConversation(sessionKey);
+              bot.cancelManagedTurn(row.id, "turn timeout");
+              void stopping;
+              // A Desktop-managed agent runs on its own clamped turn timeout;
+              // everything else uses the gateway-wide value.
+            },
+            this.agentTimeouts?.turnTimeoutMsFor(
+              row.bot_id,
+              this.turnTimeoutMs,
+            ) ?? this.turnTimeoutMs,
+          );
           (timeout as unknown as { unref?: () => void }).unref?.();
           this.cursor = conversationId;
           dispatched = true;

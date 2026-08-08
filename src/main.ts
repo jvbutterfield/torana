@@ -15,6 +15,7 @@ import {
   type NormalizedConfigModel,
 } from "./config/v2.js";
 import { BuzzProvisioningService } from "./platform/buzz/provisioning.js";
+import { AgentTimeoutRegistry } from "./platform/buzz/agent-timeouts.js";
 import { provisioningKeyFromEnv } from "./config/provisioning-secrets.js";
 import {
   logger,
@@ -208,6 +209,11 @@ export async function startGateway(
     buzzBroker,
   });
 
+  // Written by the provisioning service on create and restore, read by the
+  // scheduler on every dispatch. Constructed here because the scheduler is
+  // built before provisioning is.
+  const agentTimeouts = new AgentTimeoutRegistry();
+
   // The promoted session manager is shared by normalized platform traffic
   // and the Agent API. V1 configurations keep the legacy one-runner path.
   const sessionManager = new SideSessionPool({
@@ -227,6 +233,7 @@ export async function startGateway(
         normalized,
         workerTuning: config.worker_tuning,
         alerts,
+        agentTimeouts,
       }),
     );
   }
@@ -270,6 +277,7 @@ export async function startGateway(
     maxEndpoints: normalized.sessions?.max_global,
     provisioning: normalized.provisioning ?? null,
     dataDir: config.gateway.data_dir,
+    agentTimeouts,
     // Desktop-managed agents are Bots, and Bots are built here rather than in
     // the provisioning service. The service calls back through this so that a
     // create registers a running agent, and a failed create can deregister it.

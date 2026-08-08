@@ -51,6 +51,7 @@ import {
 } from "./provisioned-workspaces.js";
 import { addSecrets, logger } from "../../log.js";
 import { decodeSecret, publicKey } from "./protocol.js";
+import type { AgentTimeoutRegistry } from "./agent-timeouts.js";
 import type { BuzzTransport } from "./transport.js";
 
 const log = logger("buzz.provisioning");
@@ -143,6 +144,8 @@ export interface ProvisioningDeps {
   provisioning?: ProvisioningConfig | null;
   /** Root the per-agent workspaces hang off. */
   dataDir?: string;
+  /** Populated on create and restore; read by the scheduler per dispatch. */
+  agentTimeouts?: AgentTimeoutRegistry | null;
   /**
    * Runtime hooks for Desktop-managed agents. Injected rather than imported so
    * the service can be tested without a live registry, and so the create
@@ -862,6 +865,7 @@ export class BuzzProvisioningService {
       rowsCommitted = true;
 
       this.deps.db.syncNormalizedConfig(merged.model);
+      this.deps.agentTimeouts?.set(agentId, instructions.applied);
       this.deps.agentRuntime?.upsert({
         agentId,
         botConfig: botConfig as unknown as BotConfig,
@@ -874,6 +878,7 @@ export class BuzzProvisioningService {
     } catch (error) {
       // Reverse order, best-effort, and loud. A failure inside the unwind must
       // not mask the error that caused it.
+      this.deps.agentTimeouts?.delete(agentId);
       if (runtimeRegistered) {
         try {
           this.deps.agentRuntime?.remove(agentId);
