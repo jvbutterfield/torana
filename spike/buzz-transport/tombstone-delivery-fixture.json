@@ -1,0 +1,90 @@
+{
+  "probe": "managed-agent tombstone delivery",
+  "relayUrl": "wss://truscape.communities.buzz.xyz",
+  "ranAt": "2026-08-08T23:37:43.750Z",
+  "identities": {
+    "ownerPubkey": "a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f",
+    "agentPubkey": "a7d7b5d8317b46cc7b1641bd1c2f5121ce78ac58fcc70a893cbfcc963186ce09",
+    "memberPubkey": "a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f",
+    "coordinate": "30177:a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f:a7d7b5d8317b46cc7b1641bd1c2f5121ce78ac58fcc70a893cbfcc963186ce09"
+  },
+  "credentials": {
+    "publisherFromEnv": true,
+    "publisherAuthTag": false,
+    "watcherFromEnv": false,
+    "watcherAuthTag": false,
+    "mode": "single-identity"
+  },
+  "auth": {
+    "relayChallenged": true,
+    "ownerAuthenticated": true,
+    "watcherAuthenticatedAsDifferentKey": true,
+    "distinctKeys": false,
+    "note": "both connections completed NIP-42 as the SAME key (single-identity mode)"
+  },
+  "crossAuthorFilterGate": {
+    "accepted": true,
+    "subscribedAs": "a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f",
+    "authorsFilter": "13691aad2ea92276c2e372dbeca4c161ab224dbf68f04b7e2142588f4e940571",
+    "storedEventsReturned": 0,
+    "note": "the relay accepts a cross-author kind:5 subscription"
+  },
+  "recordPublish": {
+    "skipped": true,
+    "why": "pass --publish-record to also create and delete a real kind:30177 record"
+  },
+  "liveSubscription": {
+    "openedBeforePublish": true,
+    "filter": {
+      "kinds": [5],
+      "authors": [
+        "a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f"
+      ]
+    },
+    "storedEventsAtEose": 1
+  },
+  "tombstone": {
+    "id": "b29a28b3d74f2feb9a0aef26811d472efe39c1ef1c6175fa66681373ced3bdef",
+    "kind": 5,
+    "tags": [
+      [
+        "a",
+        "30177:a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f:a7d7b5d8317b46cc7b1641bd1c2f5121ce78ac58fcc70a893cbfcc963186ce09"
+      ]
+    ],
+    "hasSingleATag": true,
+    "hasNoETag": true
+  },
+  "tombstonePublish": {
+    "accepted": true,
+    "message": ""
+  },
+  "liveDelivery": {
+    "delivered": true,
+    "matchedId": true,
+    "event": {
+      "id": "b29a28b3d74f2feb9a0aef26811d472efe39c1ef1c6175fa66681373ced3bdef",
+      "kind": 5,
+      "tags": [
+        [
+          "a",
+          "30177:a476f40baf6b9e975c0545c482b32ad1dce66e4c005da9234cce92db32f98c7f:a7d7b5d8317b46cc7b1641bd1c2f5121ce78ac58fcc70a893cbfcc963186ce09"
+        ]
+      ]
+    }
+  },
+  "backfill": {
+    "since": 1786231964,
+    "returnedCount": 2,
+    "containsTombstone": true,
+    "ids": [
+      "b29a28b3d74f2feb9a0aef26811d472efe39c1ef1c6175fa66681373ced3bdef",
+      "f9672f3a1df67d288145cc5a1065725515af07e2d717426708f80756a72a122e"
+    ]
+  },
+  "recordAfterTombstone": {
+    "skipped": true,
+    "why": "no record was published"
+  },
+  "verdict": "POSITIVE (single-identity) — the relay accepts a cross-author kind:5 subscription, and an a-tag-only kind:5 is stored, fanned out live, and returned by a `since` backfill. The two were observed separately: delivery was self-authored, so the join rests on the relay source, where no per-event author gate applies to kind 5. Re-run with BUZZ_WATCHER_PRIVATE_KEY for the complete answer."
+}

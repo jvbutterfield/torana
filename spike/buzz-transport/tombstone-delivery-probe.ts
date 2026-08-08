@@ -292,11 +292,16 @@ const backfill = new Conn(relayUrl, memberSecret, memberAuthTag);
 // CLOSED) rules that out. It does not prove an event traverses the wire, so it
 // is strong-but-partial evidence — the full probe remains the complete answer.
 if (readOnly) {
+  // A pubkey belonging to nobody. Deliberately *not* `ownerPubkey`: in
+  // single-identity mode the publisher and the subscriber are the same key, so
+  // filtering on the owner would make this a self-author subscription and
+  // prove nothing about the gate it exists to test.
+  const strangerPubkey = getPublicKey(generateSecretKey());
   const result: Record<string, unknown> = {
     probe: "cross-author kind:5 subscription filter gate (read-only)",
     relayUrl,
     ranAt: new Date().toISOString(),
-    filter: { kinds: [KIND_DELETE], authors: [ownerPubkey] },
+    filter: { kinds: [KIND_DELETE], authors: [strangerPubkey] },
     subscribedAs: memberPubkey,
     wroteAnything: false,
   };
@@ -305,7 +310,7 @@ if (readOnly) {
     const authed = await watcher.authenticate();
     result.authenticated = authed !== null;
     const events = await watcher.querySync("probe-filter-gate", [
-      { kinds: [KIND_DELETE], authors: [ownerPubkey] } as Filter,
+      { kinds: [KIND_DELETE], authors: [strangerPubkey] } as Filter,
     ]);
     result.filterAccepted = true;
     result.storedEventsReturned = events.length;
@@ -336,10 +341,13 @@ try {
     relayChallenged: ownerAuth !== null,
     ownerAuthenticated: ownerAuth !== null,
     watcherAuthenticatedAsDifferentKey: watcherAuth !== null,
+    distinctKeys: ownerPubkey !== memberPubkey,
     note:
       ownerAuth === null
         ? "relay issued no AUTH challenge; NIP-42 not exercised"
-        : "both connections completed NIP-42 with distinct keys",
+        : singleIdentity
+          ? "both connections completed NIP-42 as the SAME key (single-identity mode)"
+          : "both connections completed NIP-42 with distinct keys",
   };
 
   // 0. The gate that could kill the design, checked on its own so a failure
