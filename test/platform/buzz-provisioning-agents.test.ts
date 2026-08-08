@@ -143,6 +143,9 @@ function makeHarness(
   const registered: string[] = [];
   const removed: string[] = [];
   const started: string[] = [];
+  // Stands in for main.ts's shared adapter map, which at create time holds
+  // only the endpoints that existed at startup.
+  const adapters = new Map<string, unknown>();
 
   const provisioning = {
     ...loaded.normalized.provisioning!,
@@ -166,8 +169,24 @@ function makeHarness(
       removeEndpoint: async () => {},
     } as unknown as BuzzTransport,
     agentRuntime: {
-      upsert: (input: { agentId: string }) => {
+      upsert: (input: {
+        agentId: string;
+        endpointId: string;
+        endpoint?: unknown;
+      }) => {
         if (options.failRuntime) throw new Error("runtime boom");
+        // Mirrors main.ts: the Bot needs a PlatformAdapter, resolved from a
+        // map that starts out holding YAML endpoints only. A create must
+        // therefore supply what is needed to build one for a brand-new
+        // endpoint, or every create fails here.
+        if (!adapters.has(input.endpointId)) {
+          if (!input.endpoint) {
+            throw new Error(
+              `provisioned agent '${input.agentId}' has no adapter for endpoint '${input.endpointId}'`,
+            );
+          }
+          adapters.set(input.endpointId, input.endpoint);
+        }
         registered.push(input.agentId);
       },
       remove: (agentId: string) => {

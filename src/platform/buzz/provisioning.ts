@@ -152,10 +152,17 @@ export interface ProvisioningDeps {
    * arm's unwind has an explicit deregister to call.
    */
   agentRuntime?: {
+    /**
+     * `endpoint` is the normalized endpoint config, passed because a create
+     * registers an agent whose endpoint did not exist when the process
+     * started: the caller's adapter map cannot already hold one, and a Bot
+     * cannot be built without it.
+     */
     upsert(input: {
       agentId: string;
       botConfig: BotConfig;
       endpointId: string;
+      endpoint: NormalizedEndpointConfig;
     }): void;
     remove(agentId: string): void;
   } | null;
@@ -166,6 +173,7 @@ export interface RestoredAgent {
   agentId: string;
   botConfig: BotConfig;
   endpointId: string;
+  endpoint: NormalizedEndpointConfig;
 }
 
 interface StoredEndpointBlock {
@@ -285,10 +293,20 @@ export class BuzzProvisioningService {
           );
           continue;
         }
+        const normalizedEndpoint = merged.model.endpoints.find(
+          (item) => item.id === endpoint.endpointId,
+        );
+        if (!normalizedEndpoint) {
+          errors.push(
+            `provisioned agent '${row.agentId}' has no normalized endpoint and was not restored`,
+          );
+          continue;
+        }
         agents.push({
           agentId: row.agentId,
           botConfig: botConfig as unknown as BotConfig,
           endpointId: endpoint.endpointId,
+          endpoint: normalizedEndpoint,
         });
       }
       return {
@@ -870,6 +888,7 @@ export class BuzzProvisioningService {
         agentId,
         botConfig: botConfig as unknown as BotConfig,
         endpointId,
+        endpoint: normalizedEndpoint,
       });
       runtimeRegistered = true;
 
