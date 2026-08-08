@@ -205,6 +205,7 @@ export async function startGateway(
     outbox,
     metrics,
     alerts,
+    buzzBroker,
   });
 
   // The promoted session manager is shared by normalized platform traffic
