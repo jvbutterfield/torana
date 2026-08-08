@@ -12,7 +12,9 @@ import { join } from "node:path";
 
 import {
   backendAgentId,
+  buildAgentBlock,
   deploy,
+  deriveHarnessName,
   effectiveRespondTo,
   encodeResponse,
   encodeStderr,
@@ -719,5 +721,87 @@ describe("loopback relays", () => {
         deployDeps(happyFetch([])),
       ),
     ).rejects.toThrow(/desktop-loopback relay/);
+  });
+});
+
+// ── US-032: the agent block ─────────────────────────────────────────────────
+
+describe("deriveHarnessName", () => {
+  test("explicit torana_harness wins over the launch command", () => {
+    expect(
+      deriveHarnessName({ torana_harness: "claude" }, "/usr/bin/goose"),
+    ).toBe("claude");
+  });
+
+  test("derives a bare name from a host path", () => {
+    // Read as a hint only. Torana resolves the binary from its own allowlist;
+    // the path itself is never executed (R7.3).
+    expect(deriveHarnessName({}, "/usr/local/bin/goose")).toBe("goose");
+    expect(deriveHarnessName(undefined, "goose")).toBe("goose");
+  });
+
+  test("strips a Windows extension", () => {
+    // Upstream leaves `.exe` in the derived provider id, so without this a
+    // Windows Desktop asks for a harness nobody would ever have allowlisted.
+    expect(deriveHarnessName({}, "C:\\tools\\goose.exe")).toBe("goose");
+  });
+
+  test("is undefined when there is nothing to derive from", () => {
+    expect(deriveHarnessName({}, undefined)).toBeUndefined();
+    expect(deriveHarnessName({}, "   ")).toBeUndefined();
+  });
+});
+
+describe("buildAgentBlock", () => {
+  test("carries instructions, model, and the supplied timeouts", () => {
+    const block = buildAgentBlock(
+      {
+        system_prompt: "be terse",
+        model: "claude-sonnet-5",
+        turn_timeout_seconds: 900,
+        launch: { command: "/usr/local/bin/claude" },
+      },
+      {},
+    );
+    expect(block).toEqual({
+      harness: "claude",
+      system_prompt: "be terse",
+      model: "claude-sonnet-5",
+      turn_timeout_seconds: 900,
+    });
+  });
+
+  test("omits fields the Desktop did not set rather than sending nulls", () => {
+    // A null would be indistinguishable from "explicitly cleared" on the
+    // Torana side, where absence means "no opinion, use the ceiling".
+    const block = buildAgentBlock(
+      { launch: { command: "claude" } },
+      {},
+    ) as Record<string, unknown>;
+    expect(Object.keys(block).sort()).toEqual(["harness", "system_prompt"]);
+  });
+
+  test("is undefined when no harness can be named", () => {
+    // An endpoint attach: Torana falls through to the YAML path.
+    expect(buildAgentBlock({ system_prompt: "hi" }, {})).toBeUndefined();
+  });
+
+  test("never carries a binary path, argv, or env", () => {
+    const block = buildAgentBlock(
+      {
+        launch: {
+          command: "/usr/local/bin/claude",
+          args: ["--dangerous"],
+          env: { SECRET: "x" },
+        },
+        env_vars: { OTHER: "y" },
+      },
+      {},
+    ) as Record<string, unknown>;
+    const serialized = JSON.stringify(block);
+    expect(serialized).not.toContain("/usr/local/bin");
+    expect(serialized).not.toContain("--dangerous");
+    expect(serialized).not.toContain("SECRET");
+    expect(serialized).not.toContain("OTHER");
   });
 });
