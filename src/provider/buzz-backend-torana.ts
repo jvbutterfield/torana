@@ -1,7 +1,7 @@
 // `buzz-backend-torana` — a Buzz Desktop remote-agent provider that deploys
 // onto a Torana gateway.
 //
-// Layer 2 of the remote-agents contract at `desktop-v0.5.6`: one process per
+// Layer 2 of the remote-agents contract at `desktop-v0.5.7`: one process per
 // operation, exactly one JSON object in on stdin, exactly one out on stdout,
 // non-zero exit means failure regardless of what was printed. The Desktop
 // treats everything this binary emits as untrusted and scrubs it, but we do

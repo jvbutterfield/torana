@@ -6,6 +6,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.15] - 2026-08-08
+
+### Changed
+
+- The pinned Buzz CLI moved from `desktop-v0.5.6` to `desktop-v0.5.7`
+  (commit `f167818d25dd9f03115ab907a16f07daee2ece5c`, Apple-silicon release
+  asset `505779314`). The default `platforms.buzz.cli_sha256` is now
+  `3c0d8264d8b994c3a19e4d769802e184b74caa8e5688ad432fc5722acc7eb545` and
+  doctor C024 names Buzz 0.5.7.
+
+  **Nothing in 0.5.7 reaches Torana's contract surface**, and unlike the 0.5.6
+  bump that statement is backed by comparing the blob SHA of each file at both
+  tags rather than by a diff summary. `docs/remote-agents.md`, `NIP-OA.md`,
+  `NIP-AA.md`, and every source behind the provider-deploy, reconcile,
+  access-policy, and owner-`!shutdown` paths are byte-identical. The CLI
+  command surface is unchanged, so no command changed tier.
+
+  0.5.7 is seven commits: max-token truncation recovery in the `buzz-agent`
+  harness (which Torana does not use — it drives its own runners), the boot
+  `<style>` moved to `boot.css` for a Tauri CSP nonce, an onboarding fix for
+  imported identities, relay-admission test isolation, and a mobile message
+  list fix. The one change on a path Torana reads, `relay.rs`, is test-only;
+  `effective_agent_relay_url` is untouched.
+
 ## [2.0.0-rc.14] - 2026-08-07
 
 ### Changed
