@@ -447,7 +447,17 @@ export const AgentApiTokenSchema = z
         "name must be lowercase alnum/_-, max 64 chars",
       ),
     secret_ref: SecretString,
-    bot_ids: z.array(BotIdSchema).min(1),
+    /**
+     * `"*"` means "any provisioned agent id", and is legal *only* on a token
+     * whose sole scope is `endpoints:admin` (enforced in the config-level
+     * superRefine, where the scope list is visible). Desktop-managed agents
+     * are created at deploy time, so their ids cannot be enumerated at
+     * configuration time — a literal list cannot express the grant.
+     *
+     * `"*"` fails `BotIdSchema`'s pattern, so the item type is widened rather
+     * than the pattern loosened: no real bot id may contain an asterisk.
+     */
+    bot_ids: z.array(z.union([BotIdSchema, z.literal("*")])).min(1),
     scopes: z.array(AgentApiScopeSchema).min(1),
     /**
      * Cap on concurrent inflight side-session acquisitions for this token,
@@ -768,7 +778,26 @@ export const ConfigSchema = z
               "endpoints:admin must be the token's only scope; provisioning uses a dedicated token",
           });
         }
+        // The wildcard rides on the exclusivity rule above rather than adding a
+        // new scope: `endpoints:admin` is already structurally barred from
+        // combining with `ask`/`send`/`admin`, so a wildcard token can create
+        // and administer provisioned agents but can never message as one.
+        const wildcardIdx = tok.bot_ids.indexOf("*");
+        if (
+          wildcardIdx >= 0 &&
+          !(tok.scopes.length === 1 && tok.scopes[0] === "endpoints:admin")
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["agent_api", "tokens", tIdx, "bot_ids", wildcardIdx],
+            message:
+              "bot_ids may contain '*' only when the token's sole scope is endpoints:admin",
+          });
+        }
         for (const [bIdx, botId] of tok.bot_ids.entries()) {
+          // '*' resolves at request time against the provisioned-agent store,
+          // which is empty at config-validation time by definition.
+          if (botId === "*") continue;
           if (!ids.has(botId)) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,

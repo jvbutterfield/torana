@@ -344,6 +344,10 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
     const misses: string[] = [];
     for (const tok of agentApi.tokens) {
       for (const botId of tok.bot_ids) {
+        // '*' is the provisioned-agent wildcard; it resolves at request time
+        // and has no configured bot to match. Config validation already
+        // restricts it to sole-scope endpoints:admin tokens.
+        if (botId === "*") continue;
         if (!known.has(botId)) misses.push(`${tok.name}→${botId}`);
       }
     }
@@ -929,6 +933,206 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
       status: "skip",
       detail: "database does not exist; provisioned endpoints not inspected",
     });
+  }
+
+  // C030..C033 — Desktop-managed (provisioned) agents.
+  //
+  // All four skip when the gateway has no `provisioning` block, following the
+  // C004 precedent: a check that assumes a feature is configured must not fail
+  // the majority of deployments that never enable it.
+  const provisioning = opts.normalized?.provisioning;
+  if (!provisioning) {
+    for (const id of ["C030", "C031", "C032", "C033"] as const) {
+      checks.push({
+        id,
+        status: "skip",
+        detail: "provisioning is not configured",
+      });
+    }
+  } else {
+    // C030 — every allowlisted harness resolves to a real executable. A
+    // harness that cannot be spawned is a create that fails at the last step,
+    // after the workspace and rows already exist.
+    const harnessProblems: string[] = [];
+    for (const [name, harness] of Object.entries(provisioning.harnesses)) {
+      const cliPath = harness.runner.cli_path;
+      const resolved = findExecutable(cliPath);
+      if (!resolved) {
+        harnessProblems.push(`${name}→${cliPath} (not found)`);
+        continue;
+      }
+      try {
+        if (!statSync(resolved).isFile()) {
+          harnessProblems.push(`${name}→${resolved} (not a file)`);
+        }
+      } catch {
+        harnessProblems.push(`${name}→${resolved} (unreadable)`);
+      }
+    }
+    const harnessCount = Object.keys(provisioning.harnesses).length;
+    checks.push({
+      id: "C030",
+      status: harnessProblems.length === 0 ? "ok" : "fail",
+      detail:
+        harnessProblems.length === 0
+          ? `${harnessCount} allowlisted harness binar${harnessCount === 1 ? "y" : "ies"} resolve`
+          : `unresolvable harness binaries: ${harnessProblems.join(", ")}`,
+    });
+
+    if (!existsSync(config.gateway.db_path!)) {
+      for (const id of ["C031", "C032", "C033"] as const) {
+        checks.push({
+          id,
+          status: "skip",
+          detail: "database does not exist; provisioned agents not inspected",
+        });
+      }
+    } else {
+      try {
+        const probe = new Database(config.gateway.db_path!, { readonly: true });
+        try {
+          const hasTable = (name: string): boolean =>
+            probe
+              .query(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+              )
+              .get(name) !== null;
+
+          if (!hasTable("provisioned_agents")) {
+            // Pre-v8 database: the migration has not run yet. That is a
+            // pending-migration condition, which C003 already reports.
+            for (const id of ["C031", "C032", "C033"] as const) {
+              checks.push({
+                id,
+                status: "skip",
+                detail: "schema predates provisioned agents (pre-v8)",
+              });
+            }
+          } else {
+            const agents = probe
+              .query(
+                `SELECT agent_id, harness, lifecycle, purge_deadline
+                   FROM provisioned_agents`,
+              )
+              .all() as Array<{
+              agent_id: string;
+              harness: string;
+              lifecycle: string;
+              purge_deadline: string | null;
+            }>;
+
+            // C031 — each row still projects: its harness is allowlisted, and
+            // its workspace survived whatever happened to the volume.
+            if (agents.length === 0) {
+              checks.push({
+                id: "C031",
+                status: "skip",
+                detail: "no provisioned agents",
+              });
+            } else {
+              const problems: string[] = [];
+              for (const row of agents) {
+                if (!(row.harness in provisioning.harnesses)) {
+                  problems.push(
+                    `${row.agent_id}→harness '${row.harness}' is no longer allowlisted`,
+                  );
+                }
+                const workspace = resolve(
+                  config.gateway.data_dir,
+                  "workspaces",
+                  row.agent_id,
+                );
+                if (!existsSync(workspace)) {
+                  problems.push(`${row.agent_id}→workspace missing`);
+                }
+              }
+              checks.push({
+                id: "C031",
+                status: problems.length === 0 ? "ok" : "fail",
+                detail:
+                  problems.length === 0
+                    ? `${agents.length} provisioned agent(s) resolve their harness and workspace`
+                    : `provisioned agent problems: ${problems.join(", ")}`,
+              });
+            }
+
+            // C032 — tombstone cursors must not be ahead of the clock. A
+            // future cursor silently narrows every backfill window, so a
+            // missed tombstone would never be recovered (R5.10).
+            if (!hasTable("buzz_tombstone_cursors")) {
+              checks.push({
+                id: "C032",
+                status: "skip",
+                detail: "schema predates tombstone cursors",
+              });
+            } else {
+              const cursors = probe
+                .query(
+                  "SELECT relay_url, last_created_at FROM buzz_tombstone_cursors",
+                )
+                .all() as Array<{
+                relay_url: string;
+                last_created_at: number;
+              }>;
+              const nowSecs = Math.floor(Date.now() / 1000);
+              const skewed = cursors.filter(
+                (row) => row.last_created_at > nowSecs + 300,
+              );
+              if (cursors.length === 0) {
+                checks.push({
+                  id: "C032",
+                  status: "skip",
+                  detail: "no tombstone cursors recorded yet",
+                });
+              } else {
+                checks.push({
+                  id: "C032",
+                  status: skewed.length === 0 ? "ok" : "warn",
+                  detail:
+                    skewed.length === 0
+                      ? `${cursors.length} tombstone cursor(s) within the clock`
+                      : `${skewed.length} tombstone cursor(s) are ahead of the local clock and will narrow backfill: ${skewed
+                          .map((row) => redactString(row.relay_url))
+                          .join(", ")}`,
+                });
+              }
+            }
+
+            // C033 — staged deletions are surfaced with their deadlines, so
+            // the grace window is something an operator can see rather than
+            // something that quietly expires.
+            const staged = agents.filter(
+              (row) => row.lifecycle === "staged_delete",
+            );
+            if (staged.length === 0) {
+              checks.push({
+                id: "C033",
+                status: "ok",
+                detail: "no staged deletions pending",
+              });
+            } else {
+              checks.push({
+                id: "C033",
+                status: "warn",
+                detail: `staged deletion(s) awaiting purge: ${staged
+                  .map((row) => `${row.agent_id}@${row.purge_deadline ?? "?"}`)
+                  .join(", ")}`,
+              });
+            }
+          }
+        } finally {
+          probe.close();
+        }
+      } catch (error) {
+        for (const id of ["C031", "C032", "C033"] as const) {
+          checks.push({
+            id,
+            status: "warn",
+            detail: `provisioned agents unavailable: ${redactString(error instanceof Error ? error.message : String(error))}`,
+          });
+        }
+      }
+    }
   }
 
   // C027 — hard shutdown budget must cover the two bounded drain windows.

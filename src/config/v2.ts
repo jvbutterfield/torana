@@ -399,6 +399,164 @@ const AlertsV2Schema = z
     message: "alerts.target cannot be combined with legacy via_bot/chat_id",
   });
 
+/**
+ * Floor for any Desktop-supplied timeout, in seconds. A ceiling below this
+ * would make every request clamp to a value the operator cannot express.
+ */
+export const PROVISIONING_TIMEOUT_FLOOR_SECS = 30;
+
+/**
+ * Placeholders Torana substitutes into a harness template at projection time.
+ * The set is closed: an unrecognized `{token}` is a typo that would otherwise
+ * reach a spawned process verbatim, and a misspelled `{sytem_prompt}` would
+ * silently run an agent with no instructions at all.
+ */
+export const HARNESS_PLACEHOLDERS = Object.freeze([
+  "model",
+  "system_prompt",
+  "agent_id",
+  "workspace",
+] as const);
+
+const PLACEHOLDER_PATTERN = /\{([^{}]*)\}/g;
+
+function unknownPlaceholders(value: string): string[] {
+  const known = new Set<string>(HARNESS_PLACEHOLDERS);
+  const bad: string[] = [];
+  for (const match of value.matchAll(PLACEHOLDER_PATTERN)) {
+    const name = match[1] ?? "";
+    if (!known.has(name)) bad.push(match[0]);
+  }
+  return bad;
+}
+
+const HarnessName = z
+  .string()
+  .regex(
+    /^[a-z][a-z0-9_-]{0,31}$/,
+    "harness name must match ^[a-z][a-z0-9_-]{0,31}$",
+  );
+
+/**
+ * The launch template for one allowlisted harness.
+ *
+ * This is operator-authored structure, not a runner instance: `args` and `env`
+ * carry placeholders that Torana fills. Because the *shape* is fixed here, a
+ * Desktop payload can never add an argv element or an env key — it can only
+ * supply values for the placeholders this template already contains (D4/R7.3).
+ */
+const HarnessRunnerTemplateSchema = z
+  .object({
+    type: z.enum(["claude-code", "codex", "command"]),
+    cli_path: z.string().min(1),
+    args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).default({}),
+  })
+  .strict();
+
+const HarnessCeilingsSchema = z
+  .object({
+    turn_timeout_secs: Int.min(PROVISIONING_TIMEOUT_FLOOR_SECS),
+    idle_timeout_secs: Int.min(PROVISIONING_TIMEOUT_FLOOR_SECS),
+    max_turn_duration_secs: Int.min(PROVISIONING_TIMEOUT_FLOOR_SECS),
+  })
+  .strict();
+
+const HarnessSchema = z
+  .object({
+    runner: HarnessRunnerTemplateSchema,
+    defaults: z
+      .object({ model: z.string().min(1).optional() })
+      .strict()
+      .default({}),
+    /** Single definition point for R11.3/R14.6; the R14 table cross-references it. */
+    ceilings: HarnessCeilingsSchema,
+    max_system_prompt_bytes: Int.min(1).max(1_048_576).default(65_536),
+  })
+  .strict();
+
+/**
+ * Gateway-level Buzz CLI policy for provisioned agents (D5/R8.1).
+ *
+ * Deliberately a subset of `agents[].tools.buzz`: the endpoint-id fields are
+ * per-agent and are supplied by the projection from the agent's own endpoint,
+ * so exposing them here would let one fleet-wide default point every agent at
+ * one endpoint. A Desktop record cannot reach any of this (R8.2).
+ */
+const ProvisionedBuzzToolsSchema = z
+  .object({
+    policy: z
+      .enum(["read_only", "collaborate", "maintainer", "custom"])
+      .default("read_only"),
+    allowed_commands: z
+      .array(z.string().regex(/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){1,2}$/))
+      .default([]),
+    expose_private_key_to_runner: Bool.default(false),
+    acknowledge_dangerous: Bool.default(false),
+  })
+  .strict();
+
+export const ProvisioningSchema = z
+  .object({
+    /** Counts every row, staged included — see the cap rationale in the plan. */
+    max_agents: Int.min(1).max(256).default(8),
+    /**
+     * Minimum 1: a zero here would mean a verified tombstone purges instantly,
+     * which is exactly the outcome staging exists to prevent, and it is far
+     * more likely to be a typo than an intent.
+     */
+    delete_grace_hours: Int.min(1).max(8_760).default(72),
+    min_free_bytes: Int.min(0).default(1_073_741_824),
+    workspace_quota_bytes: Int.min(0).default(2_147_483_648),
+    buzz_tools_default: ProvisionedBuzzToolsSchema.default({}),
+    harnesses: z.record(HarnessName, HarnessSchema),
+  })
+  .strict()
+  .superRefine((provisioning, ctx) => {
+    const names = Object.keys(provisioning.harnesses);
+    if (names.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["harnesses"],
+        message:
+          "provisioning.harnesses must declare at least one harness; without one no agent can ever be created",
+      });
+    }
+    for (const [name, harness] of Object.entries(provisioning.harnesses)) {
+      for (const [index, arg] of harness.runner.args.entries()) {
+        for (const bad of unknownPlaceholders(arg)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["harnesses", name, "runner", "args", index],
+            message: `unknown placeholder ${bad}; known placeholders are ${HARNESS_PLACEHOLDERS.map((p) => `{${p}}`).join(", ")}`,
+          });
+        }
+      }
+      for (const [key, value] of Object.entries(harness.runner.env)) {
+        for (const bad of unknownPlaceholders(value)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["harnesses", name, "runner", "env", key],
+            message: `unknown placeholder ${bad}; known placeholders are ${HARNESS_PLACEHOLDERS.map((p) => `{${p}}`).join(", ")}`,
+          });
+        }
+      }
+      if (
+        harness.ceilings.max_turn_duration_secs <
+        harness.ceilings.turn_timeout_secs
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["harnesses", name, "ceilings", "max_turn_duration_secs"],
+          message:
+            "max_turn_duration_secs must be >= turn_timeout_secs; a turn cannot outlive its own duration ceiling",
+        });
+      }
+    }
+  });
+
+export type ProvisioningConfig = z.infer<typeof ProvisioningSchema>;
+
 export const ConfigV2Schema = z
   .object({
     version: z.literal(2),
@@ -424,6 +582,12 @@ export const ConfigV2Schema = z
     agent_api: AgentApiSchema,
     publisher_api: PublisherApiSchema,
     publishers: z.array(PublisherSchema).default([]),
+    /**
+     * Optional: a gateway with no `provisioning` block cannot create
+     * Desktop-managed agents at all, which is the correct default and keeps
+     * every existing configuration byte-for-byte valid (R1.3).
+     */
+    provisioning: ProvisioningSchema.optional(),
     agents: z.array(AgentSchema).min(1),
   })
   .strict()
@@ -874,6 +1038,70 @@ export const ConfigV2Schema = z
         });
       }
     }
+    // Token-shape rules. These were previously only in the v1 `ConfigSchema`
+    // superRefine, which a v2 config never reaches: `loadConfig` parses v2
+    // through `ConfigV2Schema` and then `normalizeV2`, so the v1 branch is
+    // skipped entirely. That left a v2 deployment — which is every current
+    // deployment — able to declare a token combining `endpoints:admin` with
+    // messaging scopes, or naming a bot that does not exist. Both are enforced
+    // here so the two config versions agree.
+    const seenTokenNames = new Set<string>();
+    for (const [tokenIndex, token] of config.agent_api.tokens.entries()) {
+      if (seenTokenNames.has(token.name)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["agent_api", "tokens", tokenIndex, "name"],
+          message: `duplicate agent_api token name '${token.name}'`,
+        });
+      }
+      seenTokenNames.add(token.name);
+
+      // "Dedicated" is structural, not a convention: a token that can create
+      // Buzz endpoints and provisioned agents through publicly reachable admin
+      // routes must not also be a messaging token handed to agents and
+      // scripts.
+      if (
+        token.scopes.includes("endpoints:admin") &&
+        token.scopes.some((scope) => scope !== "endpoints:admin")
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["agent_api", "tokens", tokenIndex, "scopes"],
+          message:
+            "endpoints:admin must be the token's only scope; provisioning uses a dedicated token",
+        });
+      }
+
+      // The wildcard is safe only because of the rule above: `endpoints:admin`
+      // cannot combine with `ask`/`send`/`admin`, so "any provisioned agent"
+      // can never mean "message as any agent".
+      const wildcardIndex = token.bot_ids.indexOf("*");
+      if (
+        wildcardIndex >= 0 &&
+        !(token.scopes.length === 1 && token.scopes[0] === "endpoints:admin")
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["agent_api", "tokens", tokenIndex, "bot_ids", wildcardIndex],
+          message:
+            "bot_ids may contain '*' only when the token's sole scope is endpoints:admin",
+        });
+      }
+
+      for (const [botIndex, botId] of token.bot_ids.entries()) {
+        // '*' resolves at request time against the provisioned-agent store,
+        // which is empty at config-validation time by definition.
+        if (botId === "*") continue;
+        if (!allAgentIds.has(botId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["agent_api", "tokens", tokenIndex, "bot_ids", botIndex],
+            message: `agent_api.tokens[${tokenIndex}].bot_ids references unknown bot '${botId}'`,
+          });
+        }
+      }
+    }
+
     // `agent_api.tokens[].buzz_tools` grants ask turns a session-scoped Buzz
     // capability. The broker resolves the endpoint for a capability with no
     // conversation from `tools.buzz.default_endpoint_id`, so a token pointed
@@ -883,6 +1111,10 @@ export const ConfigV2Schema = z
     for (const [tokenIndex, token] of config.agent_api.tokens.entries()) {
       if (!token.buzz_tools) continue;
       for (const [botIndex, botId] of token.bot_ids.entries()) {
+        // The wildcard names provisioned agents, which have no YAML entry to
+        // carry a tools.buzz block — their policy comes from
+        // provisioning.buzz_tools_default instead (D5).
+        if (botId === "*") continue;
         const agent = config.agents.find((candidate) => candidate.id === botId);
         // Unknown-agent references are reported by the v1 token validation.
         if (!agent) continue;
@@ -1213,6 +1445,8 @@ export interface NormalizedConfigModel {
     acknowledgeDangerous: boolean;
   }>;
   alertsTarget?: { endpointId: string; externalConversationId: string };
+  /** Absent when the gateway is not configured to provision agents at all. */
+  provisioning?: ProvisioningConfig;
 }
 
 /**
@@ -1439,6 +1673,7 @@ export function normalizeV2(config: ConfigV2): {
       buzzPlatform: config.platforms.buzz,
       limits: config.limits,
       retention: config.retention,
+      provisioning: config.provisioning,
       publishers: config.publishers.map((publisher) => ({
         id: publisher.id,
         enabled: publisher.enabled,

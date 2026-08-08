@@ -116,13 +116,13 @@ describe("db/migrate", () => {
     const dbPath = join(tmpDir, "fresh.db");
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(null);
-    expect(plan.targetVersion).toBe(7);
+    expect(plan.targetVersion).toBe(8);
 
     const db = new Database(dbPath);
     const user = (
       db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(7);
+    expect(user).toBe(8);
 
     // inbound_updates has bot_id, not persona
     const cols = db.query("PRAGMA table_info(inbound_updates)").all() as Array<{
@@ -164,13 +164,13 @@ describe("db/migrate", () => {
     db.close();
   });
 
-  test("v0 → v7 preserves history and applies all compatibility steps", () => {
+  test("v0 → v8 preserves history and applies all compatibility steps", () => {
     const dbPath = join(tmpDir, "v0-upgrade.db");
     seedV0Schema(dbPath);
 
     const plan = applyMigrations(dbPath);
     expect(plan.currentVersion).toBe(0);
-    expect(plan.targetVersion).toBe(7);
+    expect(plan.targetVersion).toBe(8);
     expect(plan.steps.map((s) => s.id)).toEqual([
       "0001_persona_to_bot_id",
       "0002_agent_api",
@@ -179,13 +179,14 @@ describe("db/migrate", () => {
       "0005_normalized_turns_outbox",
       "0006_publisher_publications",
       "0007_provisioned_endpoints",
+      "0008_provisioned_agents",
     ]);
 
     const db = new Database(dbPath);
     const user = (
       db.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(7);
+    expect(user).toBe(8);
 
     // status remap (from 0001)
     const rows = db
@@ -278,7 +279,7 @@ describe("db/migrate", () => {
     expect(plan.steps.length).toBe(0);
   });
 
-  test("v1 → v7 applies 0002 through 0007", () => {
+  test("v1 → v8 applies 0002 through 0008", () => {
     const dbPath = join(tmpDir, "v1-upgrade.db");
     // Build a v1 DB by running the 0001 migration on a v0 DB, then
     // resetting user_version to 1 (simulating a v1-shipped install).
@@ -301,7 +302,7 @@ describe("db/migrate", () => {
 
     const plan = planMigration(dbPath);
     expect(plan.currentVersion).toBe(1);
-    expect(plan.targetVersion).toBe(7);
+    expect(plan.targetVersion).toBe(8);
     expect(plan.steps.map((s) => s.id)).toEqual([
       "0002_agent_api",
       "0003_runner_session_resume",
@@ -309,6 +310,7 @@ describe("db/migrate", () => {
       "0005_normalized_turns_outbox",
       "0006_publisher_publications",
       "0007_provisioned_endpoints",
+      "0008_provisioned_agents",
     ]);
 
     applyMigrations(dbPath);
@@ -317,11 +319,11 @@ describe("db/migrate", () => {
     const user = (
       db2.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(7);
+    expect(user).toBe(8);
     db2.close();
   });
 
-  test("v2 → v7 applies 0003 through 0007", () => {
+  test("v2 → v8 applies 0003 through 0008", () => {
     const dbPath = join(tmpDir, "v2-upgrade.db");
     // Build a v2 DB by running 0001 + 0002 manually.
     seedV0Schema(dbPath);
@@ -359,13 +361,14 @@ describe("db/migrate", () => {
 
     const plan = planMigration(dbPath);
     expect(plan.currentVersion).toBe(2);
-    expect(plan.targetVersion).toBe(7);
+    expect(plan.targetVersion).toBe(8);
     expect(plan.steps.map((s) => s.id)).toEqual([
       "0003_runner_session_resume",
       "0004_normalized_platform_state",
       "0005_normalized_turns_outbox",
       "0006_publisher_publications",
       "0007_provisioned_endpoints",
+      "0008_provisioned_agents",
     ]);
 
     applyMigrations(dbPath);
@@ -374,7 +377,7 @@ describe("db/migrate", () => {
     const user = (
       db2.query("PRAGMA user_version").get() as { user_version: number }
     ).user_version;
-    expect(user).toBe(7);
+    expect(user).toBe(8);
     const cols = (
       db2.query("PRAGMA table_info(worker_state)").all() as Array<{
         name: string;
@@ -384,13 +387,16 @@ describe("db/migrate", () => {
     db2.close();
   });
 
-  test("v5 → v7 snapshots and adds the publisher and provisioning tables transactionally", () => {
+  test("v5 → v8 snapshots and adds the publisher, provisioning, and managed-agent tables transactionally", () => {
     const dbPath = join(tmpDir, "v5-upgrade.db");
     applyMigrations(dbPath);
     const seed = new Database(dbPath);
     seed.exec(`
       DROP TABLE publisher_publications;
       DROP TABLE provisioned_endpoints;
+      DROP TABLE provisioned_agents;
+      DROP TABLE buzz_tombstone_cursors;
+      DROP TABLE provisioning_audit;
       PRAGMA user_version = 5;
     `);
     seed.close();
@@ -400,11 +406,12 @@ describe("db/migrate", () => {
     expect(plan.steps.map((step) => step.id)).toEqual([
       "0006_publisher_publications",
       "0007_provisioned_endpoints",
+      "0008_provisioned_agents",
     ]);
     const applied = applyMigrations(dbPath);
-    expect(applied.snapshotPath).toBe(`${dbPath}.pre-v7`);
+    expect(applied.snapshotPath).toBe(`${dbPath}.pre-v8`);
     const verify = new Database(dbPath);
-    expect(detectVersion(verify)).toBe(7);
+    expect(detectVersion(verify)).toBe(8);
     expect(
       verify
         .query(

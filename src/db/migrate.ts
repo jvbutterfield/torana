@@ -4,8 +4,8 @@
 //   - Fresh install: DB doesn't exist or has no tables. Apply schema.sql, set user_version=TARGET.
 //   - v0-v2 upgrades apply the legacy migrations followed by the normalized
 //     compatibility expansion.
-//   - v3 applies 0004..0007; v4 applies 0005..0007; v5 applies 0006 + 0007;
-//     v6 applies 0007; v7 is current.
+//   - v3 applies 0004..0008; v4 applies 0005..0008; v5 applies 0006..0008;
+//     v6 applies 0007 + 0008; v7 applies 0008; v8 is current.
 //
 // Migration is idempotent: running twice is a no-op. Failure rolls back the
 // transaction; next run re-applies from scratch.
@@ -102,7 +102,7 @@ export function detectVersion(db: Database): number | null {
   );
 }
 
-export const TARGET_VERSION = 7;
+export const TARGET_VERSION = 8;
 
 const STEP_0001: MigrationStep = {
   id: "0001_persona_to_bot_id",
@@ -167,9 +167,18 @@ const STEP_0007: MigrationStep = {
   },
 } as unknown as MigrationStep;
 
+const STEP_0008: MigrationStep = {
+  id: "0008_provisioned_agents",
+  description:
+    "Add DB-backed provisioned agents, tombstone cursors, and the provisioning audit log",
+  get sql(): string {
+    return readMigrationSql("0008_provisioned_agents.sql");
+  },
+} as unknown as MigrationStep;
+
 const STEP_V7_MAINTENANCE: MigrationStep = {
   id: "v7_incremental_auto_vacuum",
-  description: "Enable and verify incremental auto-vacuum for schema v7",
+  description: `Enable and verify incremental auto-vacuum for schema v${TARGET_VERSION}`,
   sql: "",
 };
 
@@ -187,7 +196,9 @@ function freshInstallStep(): MigrationStep {
       "\n" +
       STEP_0006.sql +
       "\n" +
-      STEP_0007.sql,
+      STEP_0007.sql +
+      "\n" +
+      STEP_0008.sql,
   };
 }
 
@@ -223,11 +234,19 @@ export function planMigration(dbPath: string): MigrationPlan {
         backfills,
       };
     }
+    if (version === 7) {
+      return {
+        currentVersion: 7,
+        targetVersion: TARGET_VERSION,
+        steps: [STEP_0008],
+        backfills,
+      };
+    }
     if (version === 6) {
       return {
         currentVersion: 6,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0007],
+        steps: [STEP_0007, STEP_0008],
         backfills,
       };
     }
@@ -235,7 +254,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 5,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0006, STEP_0007],
+        steps: [STEP_0006, STEP_0007, STEP_0008],
         backfills,
       };
     }
@@ -243,7 +262,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 4,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0005, STEP_0006, STEP_0007],
+        steps: [STEP_0005, STEP_0006, STEP_0007, STEP_0008],
         backfills,
       };
     }
@@ -251,7 +270,7 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 3,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0004, STEP_0005, STEP_0006, STEP_0007],
+        steps: [STEP_0004, STEP_0005, STEP_0006, STEP_0007, STEP_0008],
         backfills,
       };
     }
@@ -259,7 +278,14 @@ export function planMigration(dbPath: string): MigrationPlan {
       return {
         currentVersion: 2,
         targetVersion: TARGET_VERSION,
-        steps: [STEP_0003, STEP_0004, STEP_0005, STEP_0006, STEP_0007],
+        steps: [
+          STEP_0003,
+          STEP_0004,
+          STEP_0005,
+          STEP_0006,
+          STEP_0007,
+          STEP_0008,
+        ],
         backfills,
       };
     }
@@ -274,6 +300,7 @@ export function planMigration(dbPath: string): MigrationPlan {
           STEP_0005,
           STEP_0006,
           STEP_0007,
+          STEP_0008,
         ],
         backfills,
       };
@@ -290,6 +317,7 @@ export function planMigration(dbPath: string): MigrationPlan {
           STEP_0005,
           STEP_0006,
           STEP_0007,
+          STEP_0008,
         ],
         backfills,
       };
