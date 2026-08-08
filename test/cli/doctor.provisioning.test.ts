@@ -86,6 +86,7 @@ provisioning:
         type: claude-code
         cli_path: ${cliPath}
         args: ["--model", "{model}"]
+        acknowledge_dangerous: true
       ceilings:
         turn_timeout_secs: 3600
         idle_timeout_secs: 86400

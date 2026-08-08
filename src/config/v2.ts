@@ -451,8 +451,59 @@ const HarnessRunnerTemplateSchema = z
     cli_path: z.string().min(1),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).default({}),
+    /** Required for `type: command`; the wire protocol its stdout speaks. */
+    protocol: z.enum(["jsonl-text", "claude-ndjson", "codex-jsonl"]).optional(),
+    /**
+     * `type: command` passthroughs. Whether a given binary can resume by
+     * stable session id is a property of that binary, which Torana cannot
+     * infer — so the operator declares it and the ordinary agent-schema rules
+     * (durable session scopes require `stable_session_id`) do the enforcing.
+     */
+    process_model: z.enum(["resident", "per_turn", "stateless"]).optional(),
+    resume_model: z.enum(["stable_session_id", "none"]).optional(),
+    /**
+     * The `claude-code` runner always passes `--dangerously-skip-permissions`,
+     * so every turn has unsandboxed host access in its workspace. The YAML
+     * runner schema makes an operator acknowledge that explicitly, and a
+     * provisioned agent must not get a quieter deal than a YAML one — Torana
+     * refuses to set this on the operator's behalf.
+     */
+    acknowledge_dangerous: Bool.default(false),
   })
-  .strict();
+  .strict()
+  .superRefine((runner, ctx) => {
+    if (runner.type === "command" && !runner.protocol) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["protocol"],
+        message: "harness runner type 'command' requires a protocol",
+      });
+    }
+    if (runner.type !== "command" && runner.protocol) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["protocol"],
+        message: `protocol applies only to type 'command', not '${runner.type}'`,
+      });
+    }
+    for (const field of ["process_model", "resume_model"] as const) {
+      if (runner.type !== "command" && runner[field]) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `${field} applies only to type 'command', not '${runner.type}'`,
+        });
+      }
+    }
+    if (runner.type === "claude-code" && !runner.acknowledge_dangerous) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["acknowledge_dangerous"],
+        message:
+          "harness runner type 'claude-code' requires acknowledge_dangerous: true — every turn runs unsandboxed in the agent's workspace",
+      });
+    }
+  });
 
 const HarnessCeilingsSchema = z
   .object({

@@ -18,6 +18,7 @@ function harness(overrides: Record<string, unknown> = {}) {
       cli_path: "/usr/local/bin/claude",
       args: ["--model", "{model}", "--append-system-prompt", "{system_prompt}"],
       env: { CLAUDE_CONFIG_DIR: "/data/provisioned/{agent_id}/claude" },
+      acknowledge_dangerous: true,
     },
     defaults: { model: "claude-sonnet-5" },
     ceilings: {
@@ -53,6 +54,7 @@ describe("provisioning config", () => {
           runner: {
             type: "claude-code",
             cli_path: "claude",
+            acknowledge_dangerous: true,
             // A typo here would otherwise reach the process verbatim and the
             // agent would run with the literal string as its prompt.
             args: ["--append-system-prompt", "{sytem_prompt}"],
@@ -73,6 +75,7 @@ describe("provisioning config", () => {
           runner: {
             type: "claude-code",
             cli_path: "claude",
+            acknowledge_dangerous: true,
             args: [],
             env: { HOME: "/data/{workspaces}" },
           },
@@ -91,6 +94,7 @@ describe("provisioning config", () => {
           runner: {
             type: "claude-code",
             cli_path: "claude",
+            acknowledge_dangerous: true,
             args: ["{model}", "{system_prompt}", "{agent_id}", "{workspace}"],
             env: { W: "{workspace}", A: "{agent_id}" },
           },
@@ -210,6 +214,95 @@ describe("provisioning config", () => {
     expect(
       ProvisioningSchema.safeParse(provisioning({ max_agent: 4 })).success,
     ).toBe(false);
+  });
+
+  test("rejects a claude-code harness that does not acknowledge the danger", () => {
+    // The claude-code runner always passes --dangerously-skip-permissions, so
+    // every turn is unsandboxed in the agent's workspace. A YAML author has to
+    // acknowledge that explicitly; a provisioned agent must not get a quieter
+    // deal, and Torana must not tick the box on the operator's behalf.
+    const result = ProvisioningSchema.safeParse(
+      provisioning({
+        harnesses: {
+          claude: harness({
+            runner: {
+              type: "claude-code",
+              cli_path: "claude",
+              args: [],
+              env: {},
+            },
+          }),
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      "acknowledge_dangerous",
+    );
+  });
+
+  test("rejects a command harness with no protocol", () => {
+    const result = ProvisioningSchema.safeParse(
+      provisioning({
+        harnesses: {
+          custom: harness({
+            runner: { type: "command", cli_path: "/bin/echo", args: [] },
+          }),
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("protocol");
+  });
+
+  test("accepts a command harness that declares its protocol", () => {
+    expect(
+      ProvisioningSchema.safeParse(
+        provisioning({
+          harnesses: {
+            custom: harness({
+              runner: {
+                type: "command",
+                cli_path: "/bin/echo",
+                args: [],
+                protocol: "jsonl-text",
+              },
+            }),
+          },
+        }),
+      ).success,
+    ).toBe(true);
+  });
+
+  test("rejects command-only fields on a non-command harness", () => {
+    for (const field of [
+      "protocol",
+      "process_model",
+      "resume_model",
+    ] as const) {
+      const value =
+        field === "protocol"
+          ? "jsonl-text"
+          : field === "process_model"
+            ? "resident"
+            : "stable_session_id";
+      const result = ProvisioningSchema.safeParse(
+        provisioning({
+          harnesses: {
+            claude: harness({
+              runner: {
+                type: "claude-code",
+                cli_path: "claude",
+                args: [],
+                acknowledge_dangerous: true,
+                [field]: value,
+              },
+            }),
+          },
+        }),
+      );
+      expect(result.success).toBe(false);
+    }
   });
 
   test("rejects a harness name that is not a safe identifier", () => {

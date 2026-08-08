@@ -89,6 +89,61 @@ function toProvisionedEndpoint(
   };
 }
 
+/** A Desktop-managed agent whose definition lives here, not in torana.yaml. */
+export interface ProvisionedAgentRow {
+  agentId: string;
+  derivedPubkey: string;
+  harness: string;
+  systemPrompt: string;
+  /** null means "use the harness default", distinct from an empty string. */
+  model: string | null;
+  /** Desktop-supplied timeouts as received, before clamping. */
+  timeoutsJson: string;
+  instructionVersion: string;
+  lifecycle: "active" | "staged_delete";
+  stagedAt: string | null;
+  purgeDeadline: string | null;
+  provisionedBy: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RawProvisionedAgent {
+  agent_id: string;
+  derived_pubkey: string;
+  harness: string;
+  system_prompt: string;
+  model: string | null;
+  timeouts_json: string;
+  instruction_version: string;
+  lifecycle: string;
+  staged_at: string | null;
+  purge_deadline: string | null;
+  provisioned_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function toProvisionedAgent(row: RawProvisionedAgent): ProvisionedAgentRow {
+  return {
+    agentId: row.agent_id,
+    derivedPubkey: row.derived_pubkey,
+    harness: row.harness,
+    systemPrompt: row.system_prompt,
+    model: row.model,
+    timeoutsJson: row.timeouts_json,
+    instructionVersion: row.instruction_version,
+    // The column carries a CHECK constraint, so anything else means the row
+    // was written by something that bypassed this layer.
+    lifecycle: row.lifecycle === "staged_delete" ? "staged_delete" : "active",
+    stagedAt: row.staged_at,
+    purgeDeadline: row.purge_deadline,
+    provisionedBy: row.provisioned_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export type PublisherEnqueueResult =
   | { kind: "accepted"; publicationId: number; outboxId: number }
   | { kind: "replay"; publicationId: number; outboxId: number }
@@ -1195,6 +1250,145 @@ export class GatewayDB {
         row.provisionedBy,
         row.deployNonce,
       );
+  }
+
+  // ── Provisioned agents (schema v8) ────────────────────────────────────────
+  // The definition half of a Desktop-managed agent. Holds no secrets: the
+  // identity lives on the paired provisioned_endpoints row, sealed there.
+
+  private provisionedAgentSchema(): boolean {
+    return !!this._db
+      .query(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provisioned_agents'",
+      )
+      .get();
+  }
+
+  private static readonly PROVISIONED_AGENT_COLUMNS = `agent_id, derived_pubkey, harness, system_prompt, model,
+            timeouts_json, instruction_version, lifecycle, staged_at,
+            purge_deadline, provisioned_by, created_at, updated_at`;
+
+  listProvisionedAgents(): ProvisionedAgentRow[] {
+    if (!this.provisionedAgentSchema()) return [];
+    return (
+      this._db
+        .query(
+          `SELECT ${GatewayDB.PROVISIONED_AGENT_COLUMNS}
+             FROM provisioned_agents ORDER BY agent_id`,
+        )
+        .all() as RawProvisionedAgent[]
+    ).map(toProvisionedAgent);
+  }
+
+  getProvisionedAgent(agentId: string): ProvisionedAgentRow | null {
+    if (!this.provisionedAgentSchema()) return null;
+    const row = this._db
+      .query(
+        `SELECT ${GatewayDB.PROVISIONED_AGENT_COLUMNS}
+           FROM provisioned_agents WHERE agent_id=?`,
+      )
+      .get(agentId) as RawProvisionedAgent | null;
+    return row ? toProvisionedAgent(row) : null;
+  }
+
+  /** Reconciliation is keyed on the identity, exactly as for endpoints. */
+  getProvisionedAgentByPubkey(pubkey: string): ProvisionedAgentRow | null {
+    if (!this.provisionedAgentSchema()) return null;
+    const row = this._db
+      .query(
+        `SELECT ${GatewayDB.PROVISIONED_AGENT_COLUMNS}
+           FROM provisioned_agents WHERE derived_pubkey=?`,
+      )
+      .get(pubkey) as RawProvisionedAgent | null;
+    return row ? toProvisionedAgent(row) : null;
+  }
+
+  /**
+   * Counts every row, staged included. A staged agent still holds its
+   * identity, workspace, and sealed secrets, so excluding it would let a
+   * delete-then-create loop exceed the fleet the operator sized for (R11.1).
+   */
+  countProvisionedAgents(): number {
+    if (!this.provisionedAgentSchema()) return 0;
+    const row = this._db
+      .query("SELECT COUNT(*) AS n FROM provisioned_agents")
+      .get() as { n: number };
+    return row.n;
+  }
+
+  upsertProvisionedAgent(row: {
+    agentId: string;
+    derivedPubkey: string;
+    harness: string;
+    systemPrompt: string;
+    model: string | null;
+    timeoutsJson: string;
+    instructionVersion: string;
+    provisionedBy: string;
+  }): void {
+    if (!this.provisionedAgentSchema()) {
+      throw new Error("provisioned_agents table is missing; run migrations");
+    }
+    // Lifecycle and the staging columns are deliberately absent from the
+    // update list: an ordinary deploy must never silently un-stage a pending
+    // deletion. Only the explicit restore path (Phase 5) moves those.
+    this._db
+      .prepare(
+        `INSERT INTO provisioned_agents
+           (agent_id, derived_pubkey, harness, system_prompt, model,
+            timeouts_json, instruction_version, provisioned_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id) DO UPDATE SET
+           derived_pubkey=excluded.derived_pubkey,
+           harness=excluded.harness,
+           system_prompt=excluded.system_prompt,
+           model=excluded.model,
+           timeouts_json=excluded.timeouts_json,
+           instruction_version=excluded.instruction_version,
+           provisioned_by=excluded.provisioned_by,
+           updated_at=datetime('now')`,
+      )
+      .run(
+        row.agentId,
+        row.derivedPubkey,
+        row.harness,
+        row.systemPrompt,
+        row.model,
+        row.timeoutsJson,
+        row.instructionVersion,
+        row.provisionedBy,
+      );
+  }
+
+  /**
+   * Re-persist a recomputed instruction version without touching anything
+   * else. Applied values depend on harness config, so a harness edit changes
+   * what a running agent executes and the stored digest must move with it
+   * (R3.6) — but nothing else about the row has changed.
+   */
+  setProvisionedAgentInstructionVersion(
+    agentId: string,
+    instructionVersion: string,
+  ): boolean {
+    if (!this.provisionedAgentSchema()) return false;
+    return (
+      this._db
+        .prepare(
+          `UPDATE provisioned_agents
+              SET instruction_version=?, updated_at=datetime('now')
+            WHERE agent_id=?`,
+        )
+        .run(instructionVersion, agentId).changes === 1
+    );
+  }
+
+  deleteProvisionedAgent(agentId: string): boolean {
+    if (!this.provisionedAgentSchema()) return false;
+    return (
+      this._db
+        .prepare("DELETE FROM provisioned_agents WHERE agent_id=?")
+        .run(agentId).changes === 1
+    );
   }
 
   deleteProvisionedEndpoint(endpointId: string): boolean {
