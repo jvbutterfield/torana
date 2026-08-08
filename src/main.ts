@@ -279,6 +279,8 @@ export async function startGateway(
     provisioning: normalized.provisioning ?? null,
     dataDir: config.gateway.data_dir,
     agentTimeouts,
+    recycleSessions: (agentId, reason) =>
+      sessionManager.recycleForBot(agentId, reason),
     // Desktop-managed agents are Bots, and Bots are built here rather than in
     // the provisioning service. The service calls back through this so that a
     // create registers a running agent, and a failed create can deregister it.
