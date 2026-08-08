@@ -431,3 +431,39 @@ describe("gateway not configured for agent creation", () => {
     ).rejects.toMatchObject({ code: "not_configured" });
   });
 });
+
+describe("a second deploy of an existing provisioned agent", () => {
+  test("reconciles without crashing and without duplicating rows", async () => {
+    // Phase 4 owns *applying* instruction changes. Until then a reconcile
+    // deploy — which the Desktop fires on every community UI load — must at
+    // minimum be harmless: the classifier routes it to the existing endpoint
+    // path, and that path has to cope with an agent that exists only as a row.
+    const h = makeHarness();
+    await h.service.upsert("canary-buzz", createRequest(), "provisioner");
+    const outcome = await h.service.upsert(
+      "canary-buzz",
+      createRequest(),
+      "provisioner",
+    );
+    expect(["unchanged", "replaced", "created"]).toContain(outcome.kind);
+    expect(h.db.countProvisionedAgents()).toBe(1);
+    expect(h.db.getProvisionedAgent("canary")?.lifecycle).toBe("active");
+  });
+
+  test("a changed prompt does not yet apply, and does not corrupt the row", async () => {
+    // Documents the Phase 4 gap explicitly rather than leaving it implied: the
+    // stored instructions stay as created until the update arm exists.
+    const h = makeHarness();
+    await h.service.upsert("canary-buzz", createRequest(), "provisioner");
+    await h.service.upsert(
+      "canary-buzz",
+      createRequest({
+        agent: { harness: "claude", system_prompt: "completely different" },
+      }),
+      "provisioner",
+    );
+    const row = h.db.getProvisionedAgent("canary");
+    expect(row?.systemPrompt).toBe("be terse");
+    expect(row?.instructionVersion).toMatch(/^[0-9a-f]{12}$/);
+  });
+});
