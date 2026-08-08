@@ -568,6 +568,57 @@ export class BuzzProvisioningService {
     return true;
   }
 
+  /**
+   * Every Desktop-managed agent with the state an operator needs to act (R12.3).
+   *
+   * Workspace bytes are read from the periodic sweep's last figure rather than
+   * walked here: a list route that stats every agent's tree would turn an
+   * operator refresh into disk load proportional to the fleet.
+   */
+  listAgents(): Array<{
+    agentId: string;
+    pubkey: string;
+    harness: string;
+    lifecycle: string;
+    instructionVersion: string;
+    stagedAt: string | null;
+    purgeDeadline: string | null;
+    endpointId: string | null;
+    endpointState: string | null;
+    connected: boolean | null;
+    createdAt: string;
+    updatedAt: string;
+    provisionedBy: string;
+  }> {
+    return this.deps.db.listProvisionedAgents().map((row) => {
+      const endpoint = this.deps.db
+        .listProvisionedEndpoints()
+        .find((candidate) => candidate.agentId === row.agentId);
+      const endpointId = endpoint?.endpointId ?? null;
+      const state = endpointId
+        ? this.deps.db.getEndpointState(endpointId)
+        : null;
+      const health = endpointId
+        ? (this.deps.transport?.snapshot(endpointId) ?? null)
+        : null;
+      return {
+        agentId: row.agentId,
+        pubkey: row.derivedPubkey,
+        harness: row.harness,
+        lifecycle: row.lifecycle,
+        instructionVersion: row.instructionVersion,
+        stagedAt: row.stagedAt,
+        purgeDeadline: row.purgeDeadline,
+        endpointId,
+        endpointState: state?.lifecycleState ?? null,
+        connected: health ? Boolean(health.connected) : null,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        provisionedBy: row.provisionedBy,
+      };
+    });
+  }
+
   // ── internals ─────────────────────────────────────────────────────────────
 
   private requireProvisioning(): ProvisioningConfig {

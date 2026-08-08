@@ -146,12 +146,30 @@ export function registerAgentApiRoutes(
  *
  *  - the routes require the dedicated `endpoints:admin` scope, never `ask`;
  *  - the request body is capped before it is parsed;
- *  - the token's `bot_ids` still bound which agents it may attach endpoints to.
+ *  - the token's `bot_ids` still bound which agents it may attach endpoints to,
+ *    with `"*"` meaning "any Desktop-managed agent". Desktop-managed ids are
+ *    created at deploy time and so cannot be enumerated when the token is
+ *    written; the wildcard is legal only on a sole-scope `endpoints:admin`
+ *    token (enforced at config load), which structurally cannot also message.
  *
  * These must stay under `/v1/`. The deployment's edge proxy 404s `/v1/*` except
  * for a literal allowlist of these paths and forwards everything else
  * verbatim, so a route mounted at a bare `/admin/...` would be silently public.
  */
+/**
+ * Does this token cover this agent id?
+ *
+ * `"*"` is not a pattern language — it is the single literal "any provisioned
+ * agent", and no real bot id can contain an asterisk (BotIdSchema forbids it),
+ * so there is no prefix or glob matching to get wrong here.
+ */
+function tokenCoversAgent(
+  token: { bot_ids: readonly string[] },
+  agentId: string,
+): boolean {
+  return token.bot_ids.includes(agentId) || token.bot_ids.includes("*");
+}
+
 function registerProvisioningRoutes(
   unregs: Unregister[],
   router: HttpRouter,
@@ -189,7 +207,7 @@ function registerProvisioningRoutes(
               .join("; "),
           );
         }
-        if (!token.bot_ids.includes(parsed.data.agent_id)) {
+        if (!tokenCoversAgent(token, parsed.data.agent_id)) {
           return mapAuthFailure({
             kind: "bot_not_permitted",
             botId: parsed.data.agent_id,
@@ -224,7 +242,7 @@ function registerProvisioningRoutes(
         const status = provisioning.status(
           decodeURIComponent(params.endpoint_id!),
         );
-        if (!status || !token.bot_ids.includes(status.agentId)) {
+        if (!status || !tokenCoversAgent(token, status.agentId)) {
           return adminNotFound();
         }
         return jsonResponse(200, {
@@ -249,6 +267,40 @@ function registerProvisioningRoutes(
     ),
   );
 
+  // Desktop-managed agents (R12.3). A separate path from the endpoint routes
+  // because it lists agents, not endpoints — and because the edge allowlist is
+  // literal and method-scoped, so this had to be added there deliberately.
+  unregs.push(
+    router.route(
+      "GET",
+      "/v1/admin/buzz/agents",
+      provisionAuthed(deps, async (_req, _params, token) => {
+        const provisioning = deps.provisioning;
+        if (!provisioning) return provisioningUnavailable();
+        const agents = provisioning
+          .listAgents()
+          .filter((agent) => tokenCoversAgent(token, agent.agentId));
+        return jsonResponse(200, {
+          agents: agents.map((agent) => ({
+            agent_id: agent.agentId,
+            pubkey: agent.pubkey,
+            harness: agent.harness,
+            lifecycle: agent.lifecycle,
+            instruction_version: agent.instructionVersion,
+            staged_at: agent.stagedAt,
+            purge_deadline: agent.purgeDeadline,
+            endpoint_id: agent.endpointId,
+            endpoint_state: agent.endpointState,
+            connected: agent.connected,
+            created_at: agent.createdAt,
+            updated_at: agent.updatedAt,
+            provisioned_by: agent.provisionedBy,
+          })),
+        });
+      }),
+    ),
+  );
+
   unregs.push(
     router.route(
       "DELETE",
@@ -258,7 +310,7 @@ function registerProvisioningRoutes(
         if (!provisioning) return provisioningUnavailable();
         const endpointId = decodeURIComponent(params.endpoint_id!);
         const status = provisioning.status(endpointId);
-        if (!status || !token.bot_ids.includes(status.agentId)) {
+        if (!status || !tokenCoversAgent(token, status.agentId)) {
           return adminNotFound();
         }
         await provisioning.remove(endpointId);
