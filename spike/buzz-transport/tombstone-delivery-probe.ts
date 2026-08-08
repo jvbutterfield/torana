@@ -34,8 +34,18 @@
  * runs with generated keys and will report the membership refusal rather than
  * a false negative.
  *
+ * Footprint on the supplied identities. The watcher publishes nothing at all —
+ * it only authenticates and subscribes. The publisher writes exactly one event,
+ * the `kind:5` itself, whose coordinate names the synthetic agent. Neither
+ * identity has anything read, rotated, revoked, or removed, and no membership
+ * changes. Passing `--publish-record` additionally creates a real `kind:30177`
+ * managed-agent record under the publisher's identity and then deletes it,
+ * which is the one action with a visible side effect — see the comment at the
+ * publish site.
+ *
  * Usage:
  *   bun run tombstone-delivery-probe.ts --relay wss://<host> [--out <path>]
+ *                                       [--publish-record]
  */
 
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
@@ -204,6 +214,7 @@ class Conn {
 
 const relayUrl = arg("relay");
 const outPath = arg("out", "");
+const publishRecord = process.argv.includes("--publish-record");
 
 // The publisher and the watcher must be two identities the relay will admit;
 // the tombstoned agent is always synthetic so nothing real can be destroyed.
@@ -259,18 +270,32 @@ try {
         : "both connections completed NIP-42 with distinct keys",
   };
 
-  // 1. Publish the kind:30177 managed-agent record the tombstone will target.
-  //    Owner-signed, d-tag = agent pubkey — the coordinate's shape upstream.
-  const record = finalizeEvent(
-    {
-      kind: KIND_MANAGED_AGENT,
-      created_at: Math.floor(Date.now() / 1000),
-      content: JSON.stringify({ name: "phase0-probe-agent", probe: true }),
-      tags: [["d", agentPubkey]],
-    },
-    ownerSecret,
-  );
-  findings.recordPublish = await owner.publish(record);
+  // 1. Optionally publish the kind:30177 managed-agent record the tombstone
+  //    will target. Off by default: a kind:30177 under the publisher's identity
+  //    is a *real* managed-agent record, and a Desktop connected to this relay
+  //    could surface it as an agent until the tombstone lands. The relay does
+  //    not require the target to exist — `validate_standard_deletion_event`
+  //    only checks that the actor owns the coordinate, and a coordinate delete
+  //    matching no live row is logged, not rejected — so the delivery question
+  //    this probe exists to answer is unaffected either way. Enable it only to
+  //    additionally observe whether the coordinate delete took effect.
+  if (publishRecord) {
+    const record = finalizeEvent(
+      {
+        kind: KIND_MANAGED_AGENT,
+        created_at: Math.floor(Date.now() / 1000),
+        content: JSON.stringify({ name: "phase0-probe-agent", probe: true }),
+        tags: [["d", agentPubkey]],
+      },
+      ownerSecret,
+    );
+    findings.recordPublish = await owner.publish(record);
+  } else {
+    findings.recordPublish = {
+      skipped: true,
+      why: "pass --publish-record to also create and delete a real kind:30177 record",
+    };
+  }
 
   // 2. Watcher opens the live subscription BEFORE the tombstone is published —
   //    this is the watcher's steady state.
@@ -330,19 +355,20 @@ try {
     ids: backfilled.map((e) => e.id),
   };
 
-  // 6. Bonus: did the coordinate delete actually remove the 30177 record?
-  //    Informational — the watcher never relies on this.
-  const afterDelete = await backfill.querySync("probe-record", [
-    {
-      kinds: [KIND_MANAGED_AGENT],
-      authors: [ownerPubkey],
-      "#d": [agentPubkey],
-    } as Filter,
-  ]);
-  findings.recordAfterTombstone = {
-    stillPresent: afterDelete.length > 0,
-    count: afterDelete.length,
-  };
+  // 6. Bonus, only when a record was actually created: did the coordinate
+  //    delete remove it? Informational — the watcher never relies on this.
+  const afterDelete = publishRecord
+    ? await backfill.querySync("probe-record", [
+        {
+          kinds: [KIND_MANAGED_AGENT],
+          authors: [ownerPubkey],
+          "#d": [agentPubkey],
+        } as Filter,
+      ])
+    : [];
+  findings.recordAfterTombstone = publishRecord
+    ? { stillPresent: afterDelete.length > 0, count: afterDelete.length }
+    : { skipped: true, why: "no record was published" };
 
   const liveOk = findings.liveDelivery as { delivered: boolean };
   const backfillOk = findings.backfill as { containsTombstone: boolean };
