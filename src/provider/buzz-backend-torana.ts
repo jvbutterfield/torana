@@ -1,7 +1,7 @@
 // `buzz-backend-torana` — a Buzz Desktop remote-agent provider that deploys
 // onto a Torana gateway.
 //
-// Layer 2 of the remote-agents contract at `desktop-v0.5.5`: one process per
+// Layer 2 of the remote-agents contract at `desktop-v0.5.6`: one process per
 // operation, exactly one JSON object in on stdin, exactly one out on stdout,
 // non-zero exit means failure regardless of what was printed. The Desktop
 // treats everything this binary emits as untrusted and scrubs it, but we do
@@ -94,7 +94,89 @@ const TORANA_MANAGED_FIELDS = [
   "agent_args",
 ] as const;
 
+/**
+ * Access modes Torana accepts, ranked least-privilege first.
+ *
+ * `allowlist` is ranked wider than `owner_only` deliberately. The two are not
+ * strictly comparable — an allowlist naming only the owner is equivalent — but
+ * an allowlist is unbounded in principle and `owner_only` is not, so ranking it
+ * wider is the direction that cannot accidentally widen access.
+ *
+ * Upstream has no `nobody`; ours is a superset. See `RespondTo` in the Desktop's
+ * `managed_agents/types.rs`.
+ */
+const RESPOND_TO_RANK = Object.freeze({
+  nobody: 0,
+  owner_only: 1,
+  allowlist: 2,
+  anyone: 3,
+} as const);
+
+export type RespondToMode = keyof typeof RESPOND_TO_RANK;
+
 export class ProviderError extends Error {}
+
+/**
+ * Normalize an access mode into Torana's vocabulary.
+ *
+ * The Desktop serializes `RespondTo` as **kebab-case** (`owner-only`, via
+ * `#[serde(rename_all = "kebab-case")]`), while Torana's endpoint schema is
+ * snake_case (`owner_only`). Forwarding the payload value verbatim sends
+ * Torana a mode it rejects, so the two vocabularies are reconciled here, at the
+ * one boundary where a Desktop payload becomes a Torana request.
+ *
+ * An unrecognized mode fails loudly rather than defaulting: silently falling
+ * back to `owner_only` would be safe, but it would also hide a real protocol
+ * drift behind an agent that quietly stops answering the people it should.
+ */
+export function normalizeRespondTo(
+  value: string,
+  source: string,
+): RespondToMode {
+  const normalized = value.trim().toLowerCase().replace(/-/g, "_");
+  if (!(normalized in RESPOND_TO_RANK)) {
+    throw new ProviderError(
+      `${source} has an unrecognized respond_to '${value}'; expected one of ` +
+        `${Object.keys(RESPOND_TO_RANK).join(", ")}`,
+    );
+  }
+  return normalized as RespondToMode;
+}
+
+/**
+ * Compose the Desktop's projected access with the operator's provider config,
+ * taking whichever is narrower.
+ *
+ * Two sources both legitimately describe access: the deploy payload carries
+ * what the Desktop projected (and from 0.5.6 an owner-only build *clamps* that
+ * value specifically so a remote deployment cannot run wider than the UI shows),
+ * and `provider_config` carries the operator's deployment policy. Letting
+ * either one win outright is wrong in one direction each — config-wins lets an
+ * operator silently defeat the Desktop's clamp, payload-wins lets a Desktop
+ * record widen an endpoint past the operator's intent.
+ *
+ * Taking the minimum satisfies both: each source can narrow access, neither can
+ * widen it.
+ */
+export function effectiveRespondTo(
+  payloadValue: unknown,
+  configValue: string | null,
+): RespondToMode {
+  const fromPayload =
+    typeof payloadValue === "string" && payloadValue.trim() !== ""
+      ? normalizeRespondTo(payloadValue, "the deploy payload")
+      : null;
+  const fromConfig =
+    configValue !== null
+      ? normalizeRespondTo(configValue, "provider config")
+      : null;
+  if (fromPayload && fromConfig) {
+    return RESPOND_TO_RANK[fromConfig] < RESPOND_TO_RANK[fromPayload]
+      ? fromConfig
+      : fromPayload;
+  }
+  return fromPayload ?? fromConfig ?? "owner_only";
+}
 
 export function infoResponse(version: string): ProviderResponse {
   return {
@@ -295,18 +377,24 @@ export async function deploy(
     requireString(config, "torana_admin_token_ref") ?? "default",
   );
 
+  const respondTo = effectiveRespondTo(
+    agent.respond_to,
+    requireString(config, "respond_to"),
+  );
+
   const body: Record<string, unknown> = {
     agent_id: agentId,
     relay_url: relayUrl,
     private_key: nsec,
     auth_tag: authTag,
     community_id: requireString(config, "community_id") ?? "primary",
-    respond_to:
-      requireString(config, "respond_to") ??
-      (typeof agent.respond_to === "string" ? agent.respond_to : "owner_only"),
+    respond_to: respondTo,
     subscribe: requireString(config, "subscribe") ?? "mentions_and_dms",
     ...(ownerPubkey ? { owner_pubkey: ownerPubkey } : {}),
-    ...(agent.respond_to_allowlist?.length
+    // Only `allowlist` may carry one: Torana rejects an unused allowlist on
+    // `anyone` and `nobody` outright, and a record can easily hold a stale list
+    // from a mode the operator has since moved off.
+    ...(respondTo === "allowlist" && agent.respond_to_allowlist?.length
       ? { allowed_pubkeys: agent.respond_to_allowlist }
       : {}),
     ...(request.request_id ? { deploy_nonce: request.request_id } : {}),

@@ -197,10 +197,30 @@ prompt:
    online immediately instead of waiting out the relay's 180 s TTL;
 4. `lifecycle_state` becomes `disabled`, and the connection closes.
 
-**It stays down.** `disabled` is durable and a process restart does not
-re-enable it — that is the point of the invariant, not an accident. Bringing
-it back is an explicit action: `torana endpoints resume <id>` or, once the
-provider exists, a Desktop "Start" (provider deploy).
+**It stays down against the runtime.** `disabled` is durable: no process
+restart, supervisor flap, or reconnect re-enables it — that is the point of the
+invariant, not an accident.
+
+**A provider deploy does bring it back**, either from `torana endpoints resume
+<id>` or from a Buzz Desktop "Start". Since Desktop 0.5.6 that second path is
+**not necessarily an explicit human act**: the Desktop redeploys every
+provider-backed agent automatically before loading community UI, and the deploy
+protocol carries no field distinguishing that reconcile from an owner pressing
+Start — same operation, same payload, a fresh request id on both. Torana
+therefore cannot tell them apart and honours the deploy, rather than breaking
+the Start button for every stopped agent.
+
+In practice: **opening the Buzz community UI can restart an agent you stopped
+with `!shutdown`.** A revive is never silent — it logs
+`Buzz endpoint revived by deploy after an owner shutdown` and the provisioning
+API returns `result: "revived"` rather than `replaced` — but it is not
+prevented.
+
+There is currently **no Torana-side stop that a deploy cannot clear**: deleting
+the endpoint does not help either, because the next deploy simply creates it
+again. Stopping the redeploys means removing their source — delete the managed
+agent record in Buzz Desktop, or revoke the `endpoints:admin` token its provider
+uses.
 
 Only the endpoint's configured `owner_pubkey` can do this, on every
 `respond_to` setting, including `anyone`. A `!shutdown` from anyone else is an

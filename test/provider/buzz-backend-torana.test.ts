@@ -13,12 +13,14 @@ import { join } from "node:path";
 import {
   backendAgentId,
   deploy,
+  effectiveRespondTo,
   encodeResponse,
   encodeStderr,
   handleRequest,
   infoResponse,
   loadAdminToken,
   managedByToranaMessage,
+  normalizeRespondTo,
   PROTOCOL_VERSION,
   ProviderError,
   scrubSecrets,
@@ -254,6 +256,162 @@ describe("deploy", () => {
     await expect(
       deploy(deployRequest(), deployDeps(fetchImpl)),
     ).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+// The Desktop serializes `RespondTo` kebab-case and Torana's schema is
+// snake_case, so every one of these fixtures uses the Desktop's real
+// vocabulary (`owner-only`), not ours. The bug this covers survived because
+// the existing tests only ever fed back the value we generate.
+describe("respond_to normalization", () => {
+  test("translates the Desktop's kebab-case into Torana's snake_case", () => {
+    expect(normalizeRespondTo("owner-only", "the deploy payload")).toBe(
+      "owner_only",
+    );
+    expect(normalizeRespondTo("allowlist", "the deploy payload")).toBe(
+      "allowlist",
+    );
+    expect(normalizeRespondTo("anyone", "the deploy payload")).toBe("anyone");
+  });
+
+  test("accepts a value already in Torana's vocabulary, and tolerates case and padding", () => {
+    expect(normalizeRespondTo("owner_only", "provider config")).toBe(
+      "owner_only",
+    );
+    expect(normalizeRespondTo("  Owner-Only  ", "provider config")).toBe(
+      "owner_only",
+    );
+  });
+
+  test("refuses an unrecognized mode loudly, naming the source and the valid set", () => {
+    expect(() => normalizeRespondTo("everyone", "provider config")).toThrow(
+      ProviderError,
+    );
+    try {
+      normalizeRespondTo("everyone", "provider config");
+      throw new Error("expected a refusal");
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toContain("provider config");
+      expect(message).toContain("everyone");
+      expect(message).toContain("owner_only");
+      expect(message).toContain("nobody");
+    }
+  });
+});
+
+describe("respond_to composition", () => {
+  test("provider config cannot widen what the Desktop projected", () => {
+    // The case 0.5.6's owner-only clamp exists to prevent: the Desktop shows a
+    // locked owner-only control while the remote deployment answers anyone.
+    expect(effectiveRespondTo("owner-only", "anyone")).toBe("owner_only");
+    expect(effectiveRespondTo("owner-only", "allowlist")).toBe("owner_only");
+  });
+
+  test("provider config may still narrow it", () => {
+    expect(effectiveRespondTo("anyone", "owner_only")).toBe("owner_only");
+    expect(effectiveRespondTo("allowlist", "nobody")).toBe("nobody");
+  });
+
+  test("allowlist ranks wider than owner_only from either direction", () => {
+    expect(effectiveRespondTo("allowlist", "owner_only")).toBe("owner_only");
+    expect(effectiveRespondTo("owner-only", "allowlist")).toBe("owner_only");
+  });
+
+  test("nobody beats every other mode, whichever side supplies it", () => {
+    for (const other of ["owner-only", "allowlist", "anyone"]) {
+      expect(effectiveRespondTo(other, "nobody")).toBe("nobody");
+      expect(effectiveRespondTo("nobody", other)).toBe("nobody");
+    }
+  });
+
+  test("falls back to owner_only rather than the widest mode when a side is missing", () => {
+    expect(effectiveRespondTo(undefined, null)).toBe("owner_only");
+    expect(effectiveRespondTo("", null)).toBe("owner_only");
+    expect(effectiveRespondTo("anyone", null)).toBe("anyone");
+    expect(effectiveRespondTo(undefined, "anyone")).toBe("anyone");
+    expect(effectiveRespondTo(42, null)).toBe("owner_only");
+  });
+});
+
+describe("respond_to on the wire", () => {
+  const sentBody = (calls: Array<{ method: string; body?: string }>) =>
+    JSON.parse(calls.find((call) => call.method === "PUT")!.body!) as Record<
+      string,
+      unknown
+    >;
+
+  test("a Desktop payload with no config override reaches Torana in its own vocabulary", async () => {
+    const calls: Array<{ method: string; url: string; body?: string }> = [];
+    const response = (await deploy(
+      deployRequest({ agent: { respond_to: "owner-only" } }),
+      deployDeps(happyFetch(calls)),
+    )) as Record<string, unknown>;
+
+    expect(response.ok).toBe(true);
+    // Forwarding `owner-only` verbatim is what Torana's schema rejects.
+    expect(sentBody(calls).respond_to).toBe("owner_only");
+  });
+
+  test("an operator config cannot widen the Desktop's clamped access", async () => {
+    const calls: Array<{ method: string; url: string; body?: string }> = [];
+    await deploy(
+      deployRequest({
+        agent: { respond_to: "owner-only" },
+        provider_config: { respond_to: "anyone" },
+      }),
+      deployDeps(happyFetch(calls)),
+    );
+
+    expect(sentBody(calls).respond_to).toBe("owner_only");
+  });
+
+  test("allowlist mode carries its allowlist through", async () => {
+    const calls: Array<{ method: string; url: string; body?: string }> = [];
+    await deploy(
+      deployRequest({
+        agent: {
+          respond_to: "allowlist",
+          respond_to_allowlist: ["ab".repeat(32)],
+        },
+        provider_config: { respond_to: "allowlist" },
+      }),
+      deployDeps(happyFetch(calls)),
+    );
+
+    const sent = sentBody(calls);
+    expect(sent.respond_to).toBe("allowlist");
+    expect(sent.allowed_pubkeys).toEqual(["ab".repeat(32)]);
+  });
+
+  test("a stale allowlist is dropped by every mode that would reject it", async () => {
+    // Torana rejects an unused allowlist on `anyone` and `nobody` outright, and
+    // a Desktop record readily holds a list from a mode it has moved off.
+    for (const mode of ["anyone", "nobody", "owner-only"]) {
+      const calls: Array<{ method: string; url: string; body?: string }> = [];
+      await deploy(
+        deployRequest({
+          agent: { respond_to: mode, respond_to_allowlist: ["cd".repeat(32)] },
+          provider_config: { respond_to: mode },
+        }),
+        deployDeps(happyFetch(calls)),
+      );
+
+      expect(sentBody(calls).allowed_pubkeys).toBeUndefined();
+    }
+  });
+
+  test("an unrecognized mode fails in band before anything is created", async () => {
+    const calls: Array<{ method: string; url: string; body?: string }> = [];
+    const response = (await handleRequest(
+      deployRequest({ agent: { respond_to: "everyone" } }),
+      VERSION,
+      deployDeps(happyFetch(calls)),
+    )) as Record<string, unknown>;
+
+    expect(response.ok).toBe(false);
+    expect(response.error).toContain("everyone");
+    expect(calls).toEqual([]);
   });
 });
 

@@ -6,6 +6,58 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.14] - 2026-08-07
+
+### Changed
+
+- The pinned Buzz CLI moved from `desktop-v0.5.5` to `desktop-v0.5.6`
+  (commit `277d98a5cfb6d3b9af8b75122988f7a7df33ed5d`, Apple-silicon release
+  asset `505571273`). The default `platforms.buzz.cli_sha256` is now
+  `eadcf47ac7ea04f811d8122375fbe2a0b90e121a3e82a529ebca30dee2b784d2` and
+  doctor C024 names Buzz 0.5.6. **The 0.5.6 command surface is byte-identical
+  to 0.5.5** — the entire manifest diff is the binary checksum — so no command
+  changed tier and `DANGEROUS_BUZZ_COMMANDS` is unchanged. The one normative
+  spec movement, `BUZZ_ACP_AGENTS` becoming a reserved key carrying effective
+  (harness-capped) parallelism, does not reach Torana, which never maps
+  `launch.policy_env` and treats `parallelism` as Torana-managed.
+
+- Reviving an endpoint after an owner `!shutdown` is now an explicit,
+  reported outcome. A deploy has always cleared the durable `disabled` state,
+  but only as a side effect of the no-op guard failing to match, and it was
+  silent. Buzz Desktop 0.5.6 makes that matter: `reconcile_on_workspace_apply`
+  redeploys every provider-backed agent before each community UI load, so a
+  deploy is no longer proof that the owner asked for one — and the protocol
+  carries no field distinguishing the two, so Torana cannot tell them apart.
+  The revive is still honoured, because refusing it would break Buzz Desktop's
+  "Start" for every stopped agent. It now logs
+  `Buzz endpoint revived by deploy after an owner shutdown` and the
+  provisioning API returns `result: "revived"` instead of `"replaced"`.
+  `docs/operations.md` no longer describes the way back up as necessarily
+  explicit, and states plainly that opening the Buzz community UI can restart
+  an agent stopped with `!shutdown`. What the invariant still guarantees is
+  unchanged: no restart, supervisor flap, or reconnect revives a stopped
+  endpoint.
+
+### Fixed
+
+- The Buzz Desktop provider sent Torana an access mode Torana rejects. The
+  Desktop serializes `respond_to` in kebab-case (`owner-only`); Torana's
+  endpoint schema is snake_case (`owner_only`); the provider forwarded the
+  payload value verbatim whenever `provider_config` did not override it. The
+  two vocabularies are now reconciled at the provider's ingest boundary, and an
+  unrecognized mode is refused in band rather than passed through.
+- The provider let `provider_config` **widen** access beyond what the Desktop
+  projected. From 0.5.6 an owner-only Desktop build clamps `respond_to` in the
+  deploy payload precisely so a remote deployment cannot answer a wider
+  audience than the locked UI control shows; a `provider_config` of `anyone`
+  silently defeated that. The two sources are now composed by taking the
+  narrower, so either side may restrict access and neither may widen it.
+- The provider sent `allowed_pubkeys` alongside modes that reject one. Torana
+  refuses an unused allowlist on `anyone` and `nobody`, and a Desktop record
+  readily retains a list from a mode the user has since moved off, so an
+  otherwise-valid deploy failed validation. The allowlist is now sent only when
+  the effective mode is `allowlist`.
+
 ## [2.0.0-rc.13] - 2026-08-07
 
 ### Added
