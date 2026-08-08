@@ -215,6 +215,7 @@ class Conn {
 const relayUrl = arg("relay");
 const outPath = arg("out", "");
 const publishRecord = process.argv.includes("--publish-record");
+const readOnly = process.argv.includes("--read-only");
 
 // The publisher and the watcher must be two identities the relay will admit;
 // the tombstoned agent is always synthetic so nothing real can be destroyed.
@@ -254,6 +255,50 @@ const findings: Record<string, unknown> = {
 const owner = new Conn(relayUrl, ownerSecret, ownerAuthTag);
 const watcher = new Conn(relayUrl, memberSecret, memberAuthTag);
 const backfill = new Conn(relayUrl, memberSecret, memberAuthTag);
+
+// `--read-only` answers the single question that could kill the watcher design
+// — whether the relay will even *accept* a cross-author `kind:5` subscription —
+// without publishing anything. `author_only_filters_authorized` closes a global
+// subscription that targets exclusively author-only kinds with `authors` other
+// than self; if kind 5 were in `AUTHOR_ONLY_KINDS` the watcher could never
+// subscribe on another identity's behalf. An accepted filter (EOSE rather than
+// CLOSED) rules that out. It does not prove an event traverses the wire, so it
+// is strong-but-partial evidence — the full probe remains the complete answer.
+if (readOnly) {
+  const result: Record<string, unknown> = {
+    probe: "cross-author kind:5 subscription filter gate (read-only)",
+    relayUrl,
+    ranAt: new Date().toISOString(),
+    filter: { kinds: [KIND_DELETE], authors: [ownerPubkey] },
+    subscribedAs: memberPubkey,
+    wroteAnything: false,
+  };
+  try {
+    await watcher.connect();
+    const authed = await watcher.authenticate();
+    result.authenticated = authed !== null;
+    const events = await watcher.querySync("probe-filter-gate", [
+      { kinds: [KIND_DELETE], authors: [ownerPubkey] } as Filter,
+    ]);
+    result.filterAccepted = true;
+    result.storedEventsReturned = events.length;
+    result.verdict =
+      "POSITIVE — the relay accepts a cross-author kind:5 subscription; the author-only gate does not block the watcher";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    result.error = message;
+    result.filterAccepted = false;
+    result.verdict = /restricted: author-only/i.test(message)
+      ? "NEGATIVE — the relay refuses cross-author kind:5 subscriptions; the Q2 watcher design needs amendment"
+      : `INCONCLUSIVE — did not reach the filter gate (${message})`;
+  } finally {
+    watcher.close();
+  }
+  const renderedReadOnly = JSON.stringify(result, null, 2);
+  if (outPath) await Bun.write(outPath, `${renderedReadOnly}\n`);
+  console.log(renderedReadOnly);
+  process.exit(0);
+}
 
 try {
   await owner.connect();
