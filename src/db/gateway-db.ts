@@ -144,6 +144,26 @@ function toProvisionedAgent(row: RawProvisionedAgent): ProvisionedAgentRow {
   };
 }
 
+export interface ProvisioningAuditRow {
+  id: number;
+  agentId: string;
+  signal: string;
+  actor: string;
+  outcome: string;
+  detail: string | null;
+  createdAt: string;
+}
+
+interface RawProvisioningAudit {
+  id: number;
+  agent_id: string;
+  signal: string;
+  actor: string;
+  outcome: string;
+  detail: string | null;
+  created_at: string;
+}
+
 export type PublisherEnqueueResult =
   | { kind: "accepted"; publicationId: number; outboxId: number }
   | { kind: "replay"; publicationId: number; outboxId: number }
@@ -1380,6 +1400,54 @@ export class GatewayDB {
         )
         .run(instructionVersion, agentId).changes === 1
     );
+  }
+
+  /**
+   * Append one lifecycle row (R12.1). Never throws on a missing table: an
+   * audit write must not be the thing that fails a create, and a gateway
+   * running pre-v8 schema has C003 reporting the pending migration already.
+   */
+  appendProvisioningAudit(row: {
+    agentId: string;
+    signal: string;
+    actor: string;
+    outcome: string;
+    detail?: Record<string, unknown>;
+  }): void {
+    if (!this.provisionedAgentSchema()) return;
+    this._db
+      .prepare(
+        `INSERT INTO provisioning_audit (agent_id, signal, actor, outcome, detail)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        row.agentId,
+        row.signal,
+        row.actor,
+        row.outcome,
+        row.detail === undefined ? null : JSON.stringify(row.detail),
+      );
+  }
+
+  listProvisioningAudit(agentId: string, limit = 100): ProvisioningAuditRow[] {
+    if (!this.provisionedAgentSchema()) return [];
+    return (
+      this._db
+        .query(
+          `SELECT id, agent_id, signal, actor, outcome, detail, created_at
+             FROM provisioning_audit WHERE agent_id=?
+            ORDER BY id DESC LIMIT ?`,
+        )
+        .all(agentId, limit) as RawProvisioningAudit[]
+    ).map((row) => ({
+      id: row.id,
+      agentId: row.agent_id,
+      signal: row.signal,
+      actor: row.actor,
+      outcome: row.outcome,
+      detail: row.detail,
+      createdAt: row.created_at,
+    }));
   }
 
   deleteProvisionedAgent(agentId: string): boolean {

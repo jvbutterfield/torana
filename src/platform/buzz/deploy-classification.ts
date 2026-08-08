@@ -35,8 +35,18 @@ export interface ClassifyInput {
   ownerPubkey?: string;
   /** YAML agent ids that declare a runner. */
   yamlAgentIdsWithRunner: ReadonlySet<string>;
-  /** YAML agent ids with no runner — publishers and the like. */
-  yamlAgentIdsWithoutRunner: ReadonlySet<string>;
+  /**
+   * Other ids YAML has already claimed, which a provisioned agent may not take.
+   *
+   * The plan called this "YAML agents without a runner", but no such thing can
+   * exist: `agents[].runner` is required, so a runner-less agent does not
+   * parse. The ids that actually need reserving live in the sibling
+   * `publishers[]` array (and their endpoint ids), which share one global
+   * namespace with agent ids. `ConfigV2Schema` would catch a collision at
+   * merge time regardless — but as "publisher id must be globally unique",
+   * which tells an operator nothing about the deploy they just made.
+   */
+  reservedYamlIds: ReadonlySet<string>;
   /** The provisioned record for this id, if one exists. */
   existingAgent: ProvisionedAgentRow | null;
   /** The provisioned record bound to this pubkey, if a different one exists. */
@@ -116,10 +126,11 @@ export function classifyDeploy(input: ClassifyInput): DeployClassification {
     // record store is never touched for a YAML id (R1.4).
     return { kind: "yaml_attach", instructionsApplied: false };
   }
-  if (input.yamlAgentIdsWithoutRunner.has(input.agentId)) {
-    // R1.5, made loud. Before this plan a runner-less YAML id was merely
-    // "unknown"; now "unknown" means *create*, so without this gate a deploy
-    // naming a publisher would quietly provision a second agent beside it.
+  if (input.reservedYamlIds.has(input.agentId)) {
+    // R1.5, made loud. Before this plan such an id was merely "unknown"; now
+    // "unknown" means *create*, so without this gate a deploy naming a
+    // publisher would reach the create path and fail deep inside schema
+    // validation with a message about publisher uniqueness.
     return {
       kind: "reject",
       code: "conflict",

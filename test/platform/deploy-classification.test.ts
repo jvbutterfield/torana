@@ -41,7 +41,7 @@ function input(overrides: Partial<ClassifyInput> = {}): ClassifyInput {
     agentId: "canary",
     pubkey: "pub-canary",
     yamlAgentIdsWithRunner: new Set(["yamlbot"]),
-    yamlAgentIdsWithoutRunner: new Set(["dev-team"]),
+    reservedYamlIds: new Set(["dev-team"]),
     existingAgent: null,
     agentBoundToPubkey: null,
     yamlIdentityOwner: null,
@@ -63,11 +63,12 @@ describe("row 1 — YAML agent with a runner", () => {
   });
 });
 
-describe("row 2 — YAML agent without a runner (publisher)", () => {
+describe("row 2 — an id YAML has already claimed (publisher)", () => {
   test("is refused loudly and changes nothing (R1.5)", () => {
-    // Before this plan a runner-less YAML id was merely "unknown". Now
-    // "unknown" means create, so without this gate a deploy naming a publisher
-    // would quietly provision a second agent beside it.
+    // Before this plan such an id was merely "unknown". Now "unknown" means
+    // create, so without this gate a deploy naming a publisher reaches the
+    // create path and dies deep inside schema validation complaining about
+    // publisher uniqueness — true, but useless to the operator.
     const result = classifyDeploy(
       input({ agentId: "dev-team", agent: AGENT_BLOCK, ownerPubkey: "owner" }),
     );
