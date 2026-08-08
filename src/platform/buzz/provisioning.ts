@@ -158,6 +158,13 @@ export interface ProvisioningDeps {
   } | null;
 }
 
+/** A Desktop-managed agent rebuilt from its row, ready to register. */
+export interface RestoredAgent {
+  agentId: string;
+  botConfig: BotConfig;
+  endpointId: string;
+}
+
 interface StoredEndpointBlock {
   id: string;
   [key: string]: unknown;
@@ -191,18 +198,21 @@ export class BuzzProvisioningService {
    */
   loadPersisted(): {
     endpoints: NormalizedEndpointConfig[];
+    /** Desktop-managed agents to register before transports start (R1.6). */
+    agents: RestoredAgent[];
     normalized: NormalizedConfigModel | null;
     errors: string[];
   } {
     const rows = this.deps.db.listProvisionedEndpoints();
     if (rows.length === 0) {
-      return { endpoints: [], normalized: null, errors: [] };
+      return { endpoints: [], agents: [], normalized: null, errors: [] };
     }
     if (!this.deps.key) {
       // Fail closed and loudly. Running with provisioned rows we cannot open
       // would silently drop agents an operator believes are deployed.
       return {
         endpoints: [],
+        agents: [],
         normalized: null,
         errors: [
           `${rows.length} provisioned endpoint(s) are stored but ${PROVISIONING_KEY_ENV} is not set; ` +
@@ -219,21 +229,78 @@ export class BuzzProvisioningService {
         errors.push(error instanceof Error ? error.message : String(error));
       }
     }
-    if (blocks.length === 0) return { endpoints: [], normalized: null, errors };
+    if (blocks.length === 0)
+      return { endpoints: [], agents: [], normalized: null, errors };
     try {
       const merged = this.merge(blocks);
+      const agents: RestoredAgent[] = [];
+      for (const row of this.deps.db.listProvisionedAgents()) {
+        const endpoint = rows.find(
+          (candidate) => candidate.agentId === row.agentId,
+        );
+        if (!endpoint) {
+          // A row with no endpoint cannot be projected — one create writes
+          // both, so this means something wrote the table out of band.
+          errors.push(
+            `provisioned agent '${row.agentId}' has no endpoint row and was not restored`,
+          );
+          continue;
+        }
+        const botConfig = merged.config.agents.find(
+          (item) => item.id === row.agentId,
+        );
+        if (!botConfig) {
+          errors.push(
+            `provisioned agent '${row.agentId}' did not survive configuration normalization`,
+          );
+          continue;
+        }
+        // Applied values depend on harness config, so a harness edit between
+        // restarts legitimately changes what this agent runs. Recompute and
+        // re-persist, or the stored digest would misreport a live agent (R3.6).
+        try {
+          const projected = projectInstructions(
+            row,
+            this.requireProvisioning(),
+          );
+          if (projected.instructionVersion !== row.instructionVersion) {
+            log.info("instruction version moved with harness configuration", {
+              agent_id: row.agentId,
+              from: row.instructionVersion,
+              to: projected.instructionVersion,
+            });
+            this.deps.db.setProvisionedAgentInstructionVersion(
+              row.agentId,
+              projected.instructionVersion,
+            );
+          }
+        } catch (error) {
+          errors.push(
+            `provisioned agent '${row.agentId}': ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          continue;
+        }
+        agents.push({
+          agentId: row.agentId,
+          botConfig: botConfig as unknown as BotConfig,
+          endpointId: endpoint.endpointId,
+        });
+      }
       return {
         endpoints: blocks
           .map((block) =>
             merged.model.endpoints.find((item) => item.id === block.id),
           )
           .filter((item): item is NormalizedEndpointConfig => Boolean(item)),
+        agents,
         normalized: merged.model,
         errors,
       };
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
-      return { endpoints: [], normalized: null, errors };
+      return { endpoints: [], agents: [], normalized: null, errors };
     }
   }
 

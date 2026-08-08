@@ -268,6 +268,25 @@ export async function startGateway(
     key: provisioningKey,
     transport: null,
     maxEndpoints: normalized.sessions?.max_global,
+    provisioning: normalized.provisioning ?? null,
+    dataDir: config.gateway.data_dir,
+    // Desktop-managed agents are Bots, and Bots are built here rather than in
+    // the provisioning service. The service calls back through this so that a
+    // create registers a running agent, and a failed create can deregister it.
+    agentRuntime: {
+      upsert: ({ botConfig, endpointId }) => {
+        const adapter = adapters.get(endpointId);
+        if (!adapter) {
+          throw new Error(
+            `provisioned agent '${botConfig.id}' has no adapter for endpoint '${endpointId}'`,
+          );
+        }
+        registry.upsertProvisionedAgent({ botConfig, endpoint: adapter });
+      },
+      remove: (agentId) => {
+        registry.removeProvisionedAgent(agentId);
+      },
+    },
   });
   const persisted = provisioning.loadPersisted();
   for (const error of persisted.errors) {
@@ -283,6 +302,50 @@ export async function startGateway(
   if (persisted.endpoints.length > 0) {
     log.info("restored provisioned Buzz endpoints", {
       count: persisted.endpoints.length,
+    });
+  }
+
+  // Provisioned endpoints need adapters in the shared map, exactly as YAML
+  // endpoints get above. The transport would otherwise build a private adapter
+  // of its own (`transport.ts` reuses a configured one when it finds it), and
+  // everything else that resolves an endpoint through this map — alerts, the
+  // outbox, a provisioned agent's Bot — would come up empty.
+  for (const endpoint of persisted.endpoints) {
+    if (endpoint.platform !== "buzz" || !endpoint.buzz) continue;
+    if (!adapters.has(endpoint.id)) {
+      adapters.set(endpoint.id, new BuzzAdapter(endpoint));
+    }
+  }
+
+  // Desktop-managed agents are registered here, before the Buzz transport is
+  // built and started below. An agent whose endpoint came up with no Bot
+  // behind it would authenticate, announce presence, and then drop every
+  // message it received.
+  //
+  // Each is registered independently: one agent whose harness has been removed
+  // from the allowlist must not stop the others from starting. The failures
+  // land in the same operator-visible list as endpoint restore errors, and
+  // doctor C031 reports the same condition from the row side.
+  for (const agent of persisted.agents) {
+    try {
+      const adapter = adapters.get(agent.endpointId);
+      if (!adapter) {
+        throw new Error(`no adapter for endpoint '${agent.endpointId}'`);
+      }
+      registry.upsertProvisionedAgent({
+        botConfig: agent.botConfig,
+        endpoint: adapter,
+      });
+    } catch (error) {
+      log.error("provisioned agent could not be restored", {
+        agent_id: agent.agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (persisted.agents.length > 0) {
+    log.info("restored Desktop-managed agents", {
+      count: persisted.agents.length,
     });
   }
 
