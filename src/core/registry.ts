@@ -111,6 +111,11 @@ export class BotRegistry {
     this.adapters.set(id, input.endpoint);
     this.adapters.set(input.endpoint.endpoint.id, input.endpoint);
     this.provisioned.add(id);
+    // `startAll()` initializes the session host only for agents present when
+    // the gateway starts. A Desktop-managed agent can be registered later,
+    // after the scheduler is live; its first turn still needs worker_state and
+    // bot_state just like every startup agent.
+    if (this.conversationScheduler) bot.startSessionHost();
     log.info("provisioned agent registered", {
       bot_id: id,
       endpoint_id: input.endpoint.endpoint.id,
