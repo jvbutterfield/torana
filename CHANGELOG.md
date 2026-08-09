@@ -6,6 +6,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.17] - 2026-08-09
+
+### Fixed
+
+- **Desktop-managed Buzz agents now initialize their session host when they are
+  registered after the gateway has started.** Their first incoming turn can
+  therefore create and advance its worker generation exactly like a configured
+  startup agent, instead of dereferencing missing worker state and restarting
+  the Telegram gateway. This is a runtime-only fix: no schema migration or
+  Desktop re-provisioning is required.
+
 ## [2.0.0-rc.16] - 2026-08-09
 
 ### Added

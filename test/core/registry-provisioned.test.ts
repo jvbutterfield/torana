@@ -100,6 +100,21 @@ describe("upsertProvisionedAgent", () => {
     expect(registry.botIds).toContain("canary");
   });
 
+  test("initializes the session host for an agent added after startup", async () => {
+    registry.setConversationScheduler({ start: () => {} } as never);
+    await registry.startAll();
+
+    registry.upsertProvisionedAgent({
+      botConfig: makeTestBotConfig("canary"),
+      endpoint: adapterFor("canary", "canary-buzz"),
+    });
+
+    expect(db.getWorkerState("canary")?.status).toBe("ready");
+    // This was the production crash: the first managed turn increments this
+    // generation, and no row existed for an agent registered after startAll.
+    expect(db.incrementWorkerGeneration("canary")).toBe(1);
+  });
+
   test("a YAML agent is not marked provisioned", () => {
     expect(registry.isProvisioned("yamlbot")).toBe(false);
   });
