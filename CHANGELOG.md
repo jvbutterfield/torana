@@ -6,9 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [2.0.0-rc.16] - 2026-08-08
+## [2.0.0-rc.16] - 2026-08-09
+
+### Added
+
+- **Desktop-managed Buzz agents.** An agent can now be created, configured, and
+  deleted entirely from Buzz Desktop, with its definition living in the gateway
+  database rather than in `torana.yaml`. YAML agents are unchanged and the two
+  kinds coexist permanently.
+
+  The whole feature is **inert unless the gateway declares a `provisioning:`
+  block**. Without one, a deploy that would create an agent is refused with
+  `not_configured`, doctor C030–C033 skip, and nothing else behaves
+  differently. Existing deployments are unaffected by upgrading.
+  - Schema **v8**: `provisioned_agents`, `buzz_tombstone_cursors`, and an
+    append-only `provisioning_audit` that is deliberately not foreign-keyed, so
+    a purge record outlives the agent it describes.
+  - A record plus the operator's harness entry is projected into a complete v2
+    agent block and validated by the **unchanged** `ConfigV2Schema` — the
+    schema is not relaxed to make provisioned agents expressible.
+  - Instruction changes apply to a running agent at the turn boundary: an
+    in-flight turn finishes under the instructions it started with, and every
+    turn started after the deploy uses the new ones. Each agent carries an
+    observable `instruction_version` digest over the applied prompt, model, and
+    honored timeouts.
+  - Deletion is driven by an owner-signed NIP-09 tombstone against the agent's
+    `kind:30177` record, verified client-side and **staged**: drain, presence
+    offline, a persisted purge deadline (`delete_grace_hours`, default 72 h),
+    and an operator alert. Nothing durable is destroyed until the deadline, the
+    deadline survives restart, and the purge audit record is committed before
+    anything is removed. There is no TTL, idle timer, or reconcile-driven
+    reaping — absence from a reconcile set means nothing.
+  - New admin routes: `GET /v1/admin/buzz/agents`,
+    `GET|DELETE /v1/admin/buzz/agents/:id`,
+    `POST /v1/admin/buzz/agents/:id/restore`, and
+    `GET /v1/admin/buzz/reconciliation` (advisory; no write path).
+  - New CLI: `torana agents list|report|restore|purge` and
+    `torana audit prune`. None of them destroy anything directly — the running
+    gateway's sweep owns destruction.
+  - `endpoints:admin` tokens may now carry `bot_ids: ["*"]`, legal only when
+    that scope is the token's only one.
 
 ### Changed
+
+- **`TORANA_PROVISIONING_SECRETS_KEY` accepts a comma-separated key list**,
+  primary first, so it can be rotated without downtime or re-provisioning. On
+  startup every stored row still sealed under an outgoing key is re-sealed
+  under the primary and logged; doctor C029 gained a `warn` tier that reports
+  when rows remain on an outgoing key, which is what makes "the old key is safe
+  to delete" a check rather than a guess. A single-key value behaves exactly as
+  before.
 
 - The pinned Buzz CLI moved from `desktop-v0.5.7` to `desktop-v0.5.8`
   (commit `f3de860574bb3119018b4592353e9761635aeb07`, Apple-silicon release
