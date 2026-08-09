@@ -89,11 +89,44 @@ function errResp(status: number, desc: string, ec = status): Response {
   );
 }
 
+/** 429 carrying Telegram's declared cooldown in the error envelope. */
+function throttleResp(retryAfterSecs: number): Response {
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      error_code: 429,
+      description: "Too Many Requests: retry later",
+      parameters: { retry_after: retryAfterSecs },
+    }),
+    { status: 429 },
+  );
+}
+
+/**
+ * Poll until `predicate` holds. Real time is used only as a failure deadline —
+ * generous enough that a loaded runner can't trip it — so assertions stay
+ * about values, never about how long anything took.
+ */
+async function waitFor(
+  predicate: () => boolean,
+  what: string,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}`);
+    }
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
 function buildTransport(opts: {
   fetchImpl: typeof fetch;
   backoff_base_ms?: number;
   backoff_cap_ms?: number;
   disabled?: boolean;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }): PollingTransport {
   const botConfig = makeTestBotConfig("alpha");
   const config = makeTestConfig([botConfig], {
@@ -122,7 +155,24 @@ function buildTransport(opts: {
   if (opts.disabled) {
     db.setBotDisabled("alpha", "pre-disabled");
   }
-  return new PollingTransport({ config, db, clients });
+  return new PollingTransport({ config, db, clients, sleep: opts.sleep });
+}
+
+/**
+ * A `sleep` seam that records the requested delay and returns immediately, so
+ * the poll loop is driven by the scripted responses rather than by real time.
+ */
+function recordingSleep(): {
+  waits: number[];
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+} {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+  };
 }
 
 beforeEach(() => {
@@ -207,62 +257,133 @@ describe("PollingTransport — error handling", () => {
   });
 
   test("backoff grows exponentially on repeated failures", async () => {
-    // Chain 3 failures, capture inter-call timing. After the 3rd failure,
-    // hang the 4th call so stop() can cleanly cancel it (a mock that returns
-    // `okUpdates([])` synchronously would starve the setTimeout macrotask).
-    const calls: number[] = [];
-    const fetchImpl = (async (
-      url: string | URL | Request,
-      init?: RequestInit,
-    ) => {
-      const urlStr =
-        typeof url === "string"
-          ? url
-          : url instanceof URL
-            ? url.toString()
-            : url.url;
-      if (urlStr.endsWith("/deleteWebhook")) {
-        return new Response(JSON.stringify({ ok: true, result: true }));
-      }
-      if (!urlStr.includes("/getUpdates")) {
-        return new Response(JSON.stringify({ ok: true, result: true }));
-      }
-      calls.push(Date.now());
-      if (calls.length <= 3) {
-        return errResp(503, "Service Unavailable");
-      }
-      // Subsequent calls: hang until aborted. Keeps the loop quiet so the test
-      // timer can fire, and stop() aborts cleanly.
-      return new Promise<Response>((_resolve, reject) => {
-        const signal = init?.signal;
-        if (signal?.aborted) return reject(new Error("aborted"));
-        signal?.addEventListener("abort", () => reject(new Error("aborted")), {
-          once: true,
-        });
-      });
-    }) as unknown as typeof fetch;
+    // Assert the delay the backoff policy *requested*, not the wall-clock gap
+    // between calls. The measured version of this test was flaky on CI: timer
+    // jitter of tens of ms on a 50ms interval inflates the first gap enough to
+    // break a d2 > d1 * 1.3 ratio, so it was really asserting on the runner's
+    // scheduler. The sleep seam returns immediately, so the loop is driven by
+    // the scripted responses and the assertion is exact.
+    const { waits, sleep } = recordingSleep();
+    const fetchImpl = scriptedFetch([
+      errResp(503, "Service Unavailable"),
+      errResp(503, "Service Unavailable"),
+      errResp(503, "Service Unavailable"),
+      errResp(503, "Service Unavailable"),
+      // Script exhausted → subsequent calls hang until stop() aborts them,
+      // which parks the loop instead of spinning.
+    ]);
 
     const transport = buildTransport({
       fetchImpl,
       backoff_base_ms: 50,
       backoff_cap_ms: 10_000,
+      sleep,
     });
     await transport.start(async () => {
       /* */
     });
 
-    // Wait long enough for 3 failures + backoffs: 50 + 100 + 200 = 350ms + overhead.
-    await new Promise((r) => setTimeout(r, 800));
+    await waitFor(() => waits.length >= 4, "4 backoff waits");
     await transport.stop();
 
-    // Verify at least 3 calls and intervals increase.
-    expect(calls.length).toBeGreaterThanOrEqual(3);
-    if (calls.length >= 3) {
-      const d1 = calls[1] - calls[0];
-      const d2 = calls[2] - calls[1];
-      // Exponential growth: d2 ~ 2 * d1. Allow some jitter.
-      expect(d2).toBeGreaterThan(d1 * 1.3);
-    }
+    expect(waits.slice(0, 4)).toEqual([50, 100, 200, 400]);
+  });
+
+  test("backoff saturates at backoff_cap_ms instead of growing without bound", async () => {
+    const { waits, sleep } = recordingSleep();
+    const fetchImpl = scriptedFetch(
+      Array.from({ length: 6 }, () => errResp(503, "Service Unavailable")),
+    );
+
+    const transport = buildTransport({
+      fetchImpl,
+      backoff_base_ms: 50,
+      backoff_cap_ms: 200,
+      sleep,
+    });
+    await transport.start(async () => {
+      /* */
+    });
+
+    await waitFor(() => waits.length >= 6, "6 backoff waits");
+    await transport.stop();
+
+    // 50, 100, 200, then clamped — never 400.
+    expect(waits.slice(0, 6)).toEqual([50, 100, 200, 200, 200, 200]);
+  });
+
+  test("a successful poll resets the backoff back to the base delay", async () => {
+    const { waits, sleep } = recordingSleep();
+    const fetchImpl = scriptedFetch([
+      errResp(503, "Service Unavailable"),
+      errResp(503, "Service Unavailable"),
+      okUpdates([]), // success clears failureCount
+      errResp(503, "Service Unavailable"),
+      errResp(503, "Service Unavailable"),
+    ]);
+
+    const transport = buildTransport({
+      fetchImpl,
+      backoff_base_ms: 50,
+      backoff_cap_ms: 10_000,
+      sleep,
+    });
+    await transport.start(async () => {
+      /* */
+    });
+
+    await waitFor(() => waits.length >= 4, "4 backoff waits");
+    await transport.stop();
+
+    // Without the reset this would be 50, 100, 200, 400.
+    expect(waits.slice(0, 4)).toEqual([50, 100, 50, 100]);
+  });
+
+  test("429 Retry-After overrides a shorter exponential backoff", async () => {
+    // Telegram's declared cooldown wins when it is longer than what the
+    // exponential schedule would have waited; retrying inside the cooldown
+    // extends the throttle.
+    const { waits, sleep } = recordingSleep();
+    const fetchImpl = scriptedFetch([throttleResp(3), throttleResp(3)]);
+
+    const transport = buildTransport({
+      fetchImpl,
+      backoff_base_ms: 50,
+      backoff_cap_ms: 10_000,
+      sleep,
+    });
+    await transport.start(async () => {
+      /* */
+    });
+
+    await waitFor(() => waits.length >= 2, "2 backoff waits");
+    await transport.stop();
+
+    expect(waits.slice(0, 2)).toEqual([3_000, 3_000]);
+  });
+
+  test("exponential backoff wins when it exceeds a short Retry-After", async () => {
+    const { waits, sleep } = recordingSleep();
+    const fetchImpl = scriptedFetch([
+      errResp(503, "Service Unavailable"),
+      errResp(503, "Service Unavailable"),
+      throttleResp(1), // 1000ms cooldown, but we're already waiting 2000ms
+    ]);
+
+    const transport = buildTransport({
+      fetchImpl,
+      backoff_base_ms: 1_000,
+      backoff_cap_ms: 10_000,
+      sleep,
+    });
+    await transport.start(async () => {
+      /* */
+    });
+
+    await waitFor(() => waits.length >= 3, "3 backoff waits");
+    await transport.stop();
+
+    expect(waits.slice(0, 3)).toEqual([1_000, 2_000, 4_000]);
   });
 
   test("disabled bot at start: poller exits without calling getUpdates", async () => {
