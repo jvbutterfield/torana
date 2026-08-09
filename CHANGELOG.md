@@ -6,6 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.18] - 2026-08-09
+
+### Fixed
+
+- **Desktop-managed Buzz agents now share the live endpoint registry with the
+  outbox and streaming layers.** Replies and reactions from agents registered
+  after startup can resolve their new endpoint for delivery, instead of being
+  discarded as `no messaging endpoint`. No schema migration or Desktop
+  re-provisioning is required.
+
 ## [2.0.0-rc.17] - 2026-08-09
 
 ### Fixed
