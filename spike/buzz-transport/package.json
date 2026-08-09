@@ -4,12 +4,13 @@
   "type": "module",
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --types bun-types protocol.ts relay-client.ts live.ts hosted-live.ts measure-authenticated-capacity.ts verify-artifact-provenance.ts presence-watch.ts tombstone-delivery-probe.ts protocol.test.ts buzz-cli-golden.test.ts",
+    "typecheck": "tsc --noEmit --target esnext --module esnext --moduleResolution bundler --types bun-types protocol.ts relay-client.ts live.ts hosted-live.ts measure-authenticated-capacity.ts verify-artifact-provenance.ts presence-watch.ts tombstone-delivery-probe.ts managed-agent-drill.ts protocol.test.ts buzz-cli-golden.test.ts",
     "manifest": "bun run generate-cli-manifest.ts",
     "manifest:check": "bun run generate-cli-manifest.ts --check",
     "provenance:check": "bun run verify-artifact-provenance.ts",
     "capacity": "bun run measure-capacity.ts",
-    "capacity:authenticated": "bun run measure-authenticated-capacity.ts"
+    "capacity:authenticated": "bun run measure-authenticated-capacity.ts",
+    "drill": "bun run managed-agent-drill.ts"
   },
   "dependencies": {
     "@noble/curves": "2.0.1",
