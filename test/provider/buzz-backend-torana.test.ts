@@ -44,7 +44,7 @@ function providerConfig(overrides: Record<string, unknown> = {}) {
   return {
     torana_url: "https://torana.example",
     torana_agent_id: "cato",
-    torana_admin_token_ref: "default",
+    torana_admin_ref: "default",
     ...overrides,
   };
 }
@@ -135,7 +135,21 @@ describe("info", () => {
       properties: Record<string, { default?: unknown; enum?: string[] }>;
     };
     expect(schema.required).toEqual(["torana_url", "torana_agent_id"]);
-    expect(Object.keys(schema.properties)).toContain("torana_admin_token_ref");
+    expect(Object.keys(schema.properties)).toContain("torana_admin_ref");
+    // Buzz Desktop refuses to persist a provider_config key whose words
+    // include "token"; advertising the old name made the agent uncreatable.
+    expect(Object.keys(schema.properties)).not.toContain(
+      "torana_admin_token_ref",
+    );
+    for (const name of Object.keys(schema.properties)) {
+      expect(
+        name
+          .split(/[_\-.]/)
+          .filter((word) =>
+            ["secret", "password", "token", "key", "credential"].includes(word),
+          ),
+      ).toEqual([]);
+    }
     expect(schema.properties.respond_to!.enum).toContain("owner_only");
     expect(schema.properties.community_id!.default).toBe("primary");
 
