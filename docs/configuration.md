@@ -717,9 +717,10 @@ Precedence, which matters because `torana.yaml` is baked into a deploy image
 while provisioned rows live on the volume:
 
 1. **A YAML declaration always wins — endpoints and agents alike.** A deploy
-   whose endpoint id, whose agent id, or whose derived pubkey collides with
-   something declared here is rejected with "managed by static config". Nothing
-   arriving over the wire can shadow, mutate, or delete an agent you wrote down.
+   naming a YAML agent may use the existing endpoint-attach path, but cannot
+   shadow or mutate that agent's definition. A deploy whose endpoint id or
+   derived pubkey collides with static configuration, or whose agent id is a
+   publisher id, is rejected with "managed by static config".
 2. **Provisioned rows survive redeploys untouched.** They are never regenerated
    from image state.
 3. **Migrating an agent from YAML to provisioned is an explicit operator

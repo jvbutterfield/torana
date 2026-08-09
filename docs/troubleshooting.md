@@ -213,9 +213,11 @@ you declared but cannot create new ones. See
 [configuration](configuration.md#provisioning).
 
 **A deploy is refused with `managed by static config`**
-The id belongs to something in `torana.yaml` — an agent, a publisher, or a
-publisher's endpoint. That is deliberate and nothing was written. Pick a
-different `torana_agent_id`.
+The id belongs to a static publisher or endpoint in `torana.yaml`. That is
+deliberate and nothing was written except the rejection audit record. Pick a
+different `torana_agent_id`. A YAML *agent* id remains valid only for the
+legacy endpoint-attach path; Desktop-supplied instruction fields are not
+applied to that agent.
 
 **Instructions edited in Desktop had no effect**
 No Desktop _edit_ action calls the provider. The change reaches Torana on the
