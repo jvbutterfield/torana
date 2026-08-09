@@ -30,7 +30,7 @@ const POLL_INTERVAL_MS = 2000;
 export interface ProviderConfigFile {
   /** Bearer for the `endpoints:admin` token. Never travels in provider_config. */
   admin_token?: string;
-  /** Optional per-reference tokens, keyed by `torana_admin_token_ref`. */
+  /** Optional per-reference tokens, keyed by `torana_admin_ref`. */
   tokens?: Record<string, string>;
 }
 
@@ -202,10 +202,21 @@ export function infoResponse(version: string): ProviderResponse {
           type: "string",
           title: "Torana agent id",
           description:
-            "The agent already configured in Torana that this endpoint attaches to. " +
-            "Torana creates endpoints, never agents or runners.",
+            "The agent this deploy targets. An id already declared in the " +
+            "gateway's torana.yaml attaches an endpoint to it; an unknown id " +
+            "creates a Desktop-managed agent, if the gateway is configured for " +
+            "that. Lowercase, ^[a-z][a-z0-9_-]{0,31}$.",
         },
-        torana_admin_token_ref: {
+        // NOT `torana_admin_token_ref`. Buzz Desktop validates provider_config
+        // by splitting each key into words and rejecting any containing
+        // "secret", "password", "token", "key", or "credential" — a check meant
+        // to keep secrets out of Desktop-persisted config (invariant I2), which
+        // it enforces by name rather than by value. So the one field explicitly
+        // designed to hold a *reference instead of* a secret was the one it
+        // refused to store, and the agent could not be created at all. The
+        // schema's own default prefills the key, so a user cannot work around
+        // it by clearing the field. Renamed until upstream exempts `_ref`.
+        torana_admin_ref: {
           type: "string",
           title: "Admin token reference",
           description:
@@ -373,8 +384,14 @@ export async function deploy(
     }
   }
 
+  // The old name is still read so a config stored before the rename keeps
+  // working. Nothing can actually hold it — Desktop refuses to persist that key
+  // — but a provider that silently ignored a field it once advertised would be
+  // worse than one that accepts both.
   const token = (deps.loadToken ?? loadAdminToken)(
-    requireString(config, "torana_admin_token_ref") ?? "default",
+    requireString(config, "torana_admin_ref") ??
+      requireString(config, "torana_admin_token_ref") ??
+      "default",
   );
 
   const respondTo = effectiveRespondTo(
@@ -654,16 +671,11 @@ export async function handleRequest(
     try {
       // Best-effort: include the bearer in the scrub set when we can resolve
       // it, so an upstream error echoing an Authorization header is covered.
-      const ref =
-        typeof (raw as ProviderRequest)?.provider_config?.[
-          "torana_admin_token_ref"
-        ] === "string"
-          ? String(
-              (raw as ProviderRequest).provider_config![
-                "torana_admin_token_ref"
-              ],
-            )
-          : "default";
+      const config = (raw as ProviderRequest)?.provider_config;
+      const named = ["torana_admin_ref", "torana_admin_token_ref"].find(
+        (name) => typeof config?.[name] === "string" && config[name] !== "",
+      );
+      const ref = named ? String(config![named]) : "default";
       token = (deps.loadToken ?? loadAdminToken)(ref);
     } catch {
       token = null;

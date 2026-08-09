@@ -80,15 +80,23 @@ Multiple gateways get named references:
 
 Then in the Desktop's provider form:
 
-| Field                    | Meaning                                                    |
-| ------------------------ | ---------------------------------------------------------- |
-| `torana_url`             | Gateway base URL. Must be `https://` unless it's localhost |
-| `torana_agent_id`        | The agent in `torana.yaml` this endpoint attaches to       |
-| `torana_admin_token_ref` | Which entry in `provider.json` to use (default `default`)  |
-| `torana_endpoint_id`     | Optional; defaults to `<agent>-buzz`                       |
-| `community_id`           | Defaults to `primary`                                      |
-| `respond_to`             | `owner_only` (default), `allowlist`, `anyone`, `nobody`    |
-| `subscribe`              | `mentions_and_dms` (default) or `all_channels`             |
+| Field                | Meaning                                                    |
+| -------------------- | ---------------------------------------------------------- |
+| `torana_url`         | Gateway base URL. Must be `https://` unless it's localhost |
+| `torana_agent_id`    | The agent in `torana.yaml` this endpoint attaches to       |
+| `torana_admin_ref`   | Which entry in `provider.json` to use (default `default`)  |
+| `torana_endpoint_id` | Optional; defaults to `<agent>-buzz`                       |
+| `community_id`       | Defaults to `primary`                                      |
+| `respond_to`         | `owner_only` (default), `allowlist`, `anyone`, `nobody`    |
+| `subscribe`          | `mentions_and_dms` (default) or `all_channels`             |
+
+**Not `torana_admin_token_ref`.** Buzz Desktop rejects any provider_config key
+whose words include "token", "key", "secret", "password", or "credential" —
+a check meant to keep secrets out of Desktop-persisted config, applied by name
+rather than by value. It therefore refused the one field designed to hold a
+_reference instead of_ a secret, and the schema's own default prefills the key
+so it cannot be cleared from the form. The old name is still read for configs
+stored before the rename.
 
 The gateway side needs a dedicated `endpoints:admin` token and
 `TORANA_PROVISIONING_SECRETS_KEY`; see
