@@ -16,7 +16,8 @@
 //   bun run managed-agent-drill.ts snapshot --label "01-before-create"
 //   bun run managed-agent-drill.ts watch --agent canary --until staged_delete
 //
-// Env: TORANA_DRILL_URL, TORANA_DRILL_TOKEN. Artifacts land in
+// Env: TORANA_DRILL_URL, plus TORANA_DRILL_TOKEN or the deployment's own
+// TORANA_ADMIN_TOKEN_BUZZ_MANAGED_AGENTS (so `railway run` works). Artifacts in
 // `--out` (default ./drill-evidence) as one JSON file per snapshot.
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -52,6 +53,29 @@ function requireEnv(name: string): string {
     process.exit(64);
   }
   return value;
+}
+
+/**
+ * The admin bearer, from whichever name the environment already uses.
+ *
+ * `TORANA_ADMIN_TOKEN_BUZZ_MANAGED_AGENTS` is the deployment's own variable
+ * name, which means the drill can be run as
+ *
+ *   railway run bun run drill snapshot --label 01-before-create
+ *
+ * with the value injected from the service and never copied, echoed, or typed.
+ * That matters more here than in most tools: the point of this one is to
+ * produce trustworthy evidence, and a procedure whose first step is "paste the
+ * production admin token into your shell" invites exactly the accident that
+ * makes the evidence untrustworthy. `TORANA_DRILL_TOKEN` stays supported for
+ * running against a gateway Railway does not know about.
+ */
+function adminToken(): string {
+  return (
+    process.env.TORANA_DRILL_TOKEN ||
+    process.env.TORANA_ADMIN_TOKEN_BUZZ_MANAGED_AGENTS ||
+    requireEnv("TORANA_DRILL_TOKEN")
+  );
 }
 
 /**
@@ -97,7 +121,7 @@ async function get(
 
 async function snapshot(label: string): Promise<Snapshot> {
   const base = requireEnv("TORANA_DRILL_URL");
-  const token = requireEnv("TORANA_DRILL_TOKEN");
+  const token = adminToken();
   const notes: string[] = [];
 
   const agents = await get(base, token, "/v1/admin/buzz/agents");
@@ -202,7 +226,8 @@ if (command === "snapshot") {
     "usage:\n" +
       "  managed-agent-drill.ts snapshot --label <name> [--out <dir>]\n" +
       "  managed-agent-drill.ts watch --agent <id> [--until <lifecycle>] [--timeout <secs>] [--out <dir>]\n" +
-      "\nenv: TORANA_DRILL_URL, TORANA_DRILL_TOKEN",
+      "\nenv: TORANA_DRILL_URL, and TORANA_DRILL_TOKEN or " +
+      "TORANA_ADMIN_TOKEN_BUZZ_MANAGED_AGENTS",
   );
   process.exit(64);
 }

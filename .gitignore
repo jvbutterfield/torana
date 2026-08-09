@@ -24,3 +24,6 @@ tasks/*.md
 # checkout / collaborator can pick up where the previous session left off.
 !tasks/agent-api-progress.md
 !tasks/rc.7-security-hardening.md
+
+# Drill evidence is deployment state captured at a moment in time, not source.
+spike/buzz-transport/drill-evidence/
