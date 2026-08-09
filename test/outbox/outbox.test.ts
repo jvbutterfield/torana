@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import { OutboxProcessor } from "../../src/outbox.js";
 import { Metrics } from "../../src/metrics.js";
+import type { PlatformAdapter } from "../../src/platform/capabilities.js";
 import { TelegramClient, TelegramError } from "../../src/telegram/client.js";
 import { coerceTelegramAdapters } from "../../src/platform/telegram/adapter.js";
 import { makeTestBotConfig, makeTestConfig } from "../fixtures/bots.js";
@@ -72,6 +73,7 @@ interface Harness {
   }) => {
     outbox: OutboxProcessor;
     metrics: Metrics;
+    adapters: Map<string, PlatformAdapter>;
     calls: Array<{ method: string; body: Record<string, unknown> }>;
   };
   seedTurn: (botId: string, chatId?: number) => number;
@@ -159,7 +161,7 @@ beforeEach(() => {
       const outbox = new OutboxProcessor(config, db, adapters, metrics, null, {
         inFlightGraceSecs: opts.inFlightGraceSecs,
       });
-      return { outbox, metrics, calls };
+      return { outbox, metrics, adapters, calls };
     },
   };
 });
@@ -170,6 +172,28 @@ afterEach(() => {
 });
 
 describe("OutboxProcessor.drain", () => {
+  test("uses an endpoint adapter registered after the processor starts", async () => {
+    const { outbox, adapters, calls } = harness.makeProcessor();
+    const turnId = harness.seedTurn("canary");
+
+    const client = new TelegramClient({
+      botId: "canary",
+      token: "TT:AAAA",
+      apiBaseUrl: "https://api.telegram.org",
+      fetchImpl: makeFetch((method) => {
+        expect(method).toBe("sendMessage");
+        return Response.json({ ok: true, result: { message_id: 9002 } });
+      }),
+    });
+    adapters.set("canary", coerceTelegramAdapters(new Map([["canary", client]])).get("canary")!);
+
+    outbox.queueSend(turnId, "canary", 111, "hello");
+    await outbox.drain(2000);
+
+    expect(calls.filter((call) => call.method === "sendMessage")).toHaveLength(0);
+    expect(harness.db.getPendingOutbox()).toHaveLength(0);
+  });
+
   test("drains pending send rows and invokes send callbacks in order", async () => {
     const { outbox, calls } = harness.makeProcessor();
     const turnId = harness.seedTurn("alpha");

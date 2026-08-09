@@ -46,7 +46,9 @@ export class StreamManager {
   private config: Config;
   private db: GatewayDB;
   private outbox: OutboxProcessor;
-  private adapters: Map<BotId, PlatformAdapter>;
+  // Keep the shared registry live: provisioned endpoints are added after the
+  // streaming manager is constructed.
+  private adapters: ReadonlyMap<BotId, PlatformAdapter>;
 
   /**
    * Per-bot rate-limit cooldown timestamp (epoch ms). When set above
@@ -74,7 +76,7 @@ export class StreamManager {
     this.config = config;
     this.db = db;
     this.outbox = outbox;
-    this.adapters = new Map(endpoints);
+    this.adapters = endpoints;
     this.normalized = normalized;
   }
 

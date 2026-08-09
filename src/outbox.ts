@@ -31,7 +31,10 @@ const IN_FLIGHT_GRACE_SECS = 60;
 export class OutboxProcessor {
   private config: Config;
   private db: GatewayDB;
-  private adapters: Map<BotId, PlatformAdapter>;
+  // This is the gateway's shared adapter registry. Desktop-managed agents add
+  // endpoints after startup, so taking a snapshot here would make inbound
+  // routing work while outbound replies could never find the new adapter.
+  private adapters: ReadonlyMap<BotId, PlatformAdapter>;
   private metrics: Metrics;
   private alerts: AlertManager | null;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -62,7 +65,7 @@ export class OutboxProcessor {
   ) {
     this.config = config;
     this.db = db;
-    this.adapters = new Map(endpoints);
+    this.adapters = endpoints;
     this.metrics = metrics;
     this.alerts = alerts;
     this.inFlightGraceSecs = opts.inFlightGraceSecs ?? IN_FLIGHT_GRACE_SECS;
