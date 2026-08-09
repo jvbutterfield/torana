@@ -22,7 +22,9 @@ import { upgradeV1Object } from "../../src/config/v2.js";
 import {
   openSecret,
   parseProvisioningKey,
+  singleKeyring,
   ProvisioningSecretsError,
+  type ProvisioningKeyring,
   sealSecret,
   tokenMatches,
 } from "../../src/config/provisioning-secrets.js";
@@ -214,12 +216,18 @@ function openDb(loaded: ReturnType<typeof makeLoaded>): GatewayDB {
 function makeService(
   loaded: ReturnType<typeof makeLoaded>,
   db: GatewayDB,
-  options: { key?: Buffer | null; transport?: BuzzTransport | null } = {},
+  options: {
+    keyring?: ProvisioningKeyring | null;
+    transport?: BuzzTransport | null;
+  } = {},
 ) {
   return new BuzzProvisioningService({
     db,
     configV2: loaded.configV2,
-    key: options.key === undefined ? parseProvisioningKey(KEY) : options.key,
+    keyring:
+      options.keyring === undefined
+        ? singleKeyring(parseProvisioningKey(KEY))
+        : options.keyring,
     transport: options.transport ?? null,
   });
 }
@@ -265,7 +273,7 @@ async function waitFor(
 
 describe("provisioning secrets", () => {
   test("a sealed secret round-trips and is bound to its endpoint", () => {
-    const key = parseProvisioningKey(KEY);
+    const key = singleKeyring(parseProvisioningKey(KEY));
     const sealed = sealSecret(key, "alpha-buzz", "nsec-material");
     expect(sealed).not.toContain("nsec-material");
     expect(openSecret(key, "alpha-buzz", sealed)).toBe("nsec-material");
@@ -280,8 +288,8 @@ describe("provisioning secrets", () => {
   });
 
   test("a wrong key, a tampered envelope, and a truncated envelope all fail closed", () => {
-    const key = parseProvisioningKey(KEY);
-    const other = parseProvisioningKey("22".repeat(32));
+    const key = singleKeyring(parseProvisioningKey(KEY));
+    const other = singleKeyring(parseProvisioningKey("22".repeat(32)));
     const sealed = sealSecret(key, "alpha-buzz", "nsec-material");
 
     expect(() => openSecret(other, "alpha-buzz", sealed)).toThrow(
@@ -434,7 +442,7 @@ describe("provisioning validation", () => {
     const loaded = makeLoaded();
     const db = openDb(loaded);
     const service = makeService(loaded, db, {
-      key: null,
+      keyring: null,
       transport: makeTransport(loaded, db, []),
     });
     await expect(
@@ -448,7 +456,7 @@ describe("provisioning validation", () => {
     const service = new BuzzProvisioningService({
       db,
       configV2: loaded.configV2,
-      key: parseProvisioningKey(KEY),
+      keyring: singleKeyring(parseProvisioningKey(KEY)),
       transport: makeTransport(loaded, db, []),
       maxEndpoints: 0,
     });
@@ -832,12 +840,12 @@ describe("provisioning persistence", () => {
     });
     await service.upsert("alpha-provisioned", request("ws://127.0.0.1:1"), "t");
 
-    const noKey = makeService(loaded, db, { key: null }).loadPersisted();
+    const noKey = makeService(loaded, db, { keyring: null }).loadPersisted();
     expect(noKey.endpoints).toEqual([]);
     expect(noKey.errors[0]).toContain("TORANA_PROVISIONING_SECRETS_KEY");
 
     const wrongKey = makeService(loaded, db, {
-      key: parseProvisioningKey("33".repeat(32)),
+      keyring: singleKeyring(parseProvisioningKey("33".repeat(32))),
     }).loadPersisted();
     expect(wrongKey.endpoints).toEqual([]);
     expect(wrongKey.errors[0]).toContain("could not be decrypted");
@@ -855,7 +863,7 @@ describe("provisioning persistence", () => {
     const withoutAgent = new BuzzProvisioningService({
       db,
       configV2: { ...loaded.configV2!, agents: [] },
-      key: parseProvisioningKey(KEY),
+      keyring: singleKeyring(parseProvisioningKey(KEY)),
       transport: null,
     });
     const restored = withoutAgent.loadPersisted();
@@ -871,7 +879,7 @@ describe("provisioning persistence", () => {
     });
     await service.upsert("alpha-provisioned", request("ws://127.0.0.1:1"), "t");
     const errors = makeService(loaded, db, {
-      key: parseProvisioningKey("44".repeat(32)),
+      keyring: singleKeyring(parseProvisioningKey("44".repeat(32))),
     }).loadPersisted().errors;
     expect(errors.join(" ")).not.toContain(PROVISIONED_KEY);
     expect(errors.join(" ")).not.toContain("nsec");

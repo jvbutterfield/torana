@@ -28,8 +28,8 @@ import {
 import { redactString } from "./log.js";
 import { BUZZ_CLI_PIN } from "./broker/buzz-policy.js";
 import {
-  openSecret,
-  provisioningKeyFromEnv,
+  openSecretDetailed,
+  provisioningKeyringFromEnv,
   PROVISIONING_KEY_ENV,
 } from "./config/provisioning-secrets.js";
 
@@ -884,37 +884,52 @@ export async function runDoctor(opts: DoctorOptions): Promise<DoctorResult> {
           endpoint_id: string;
           private_key_ciphertext: string;
         }>;
-        const key = provisioningKeyFromEnv();
+        const keyring = provisioningKeyringFromEnv();
         if (rows.length === 0) {
           checks.push({
             id: "C029",
             status: "skip",
-            detail: key
+            detail: keyring
               ? "no provisioned Buzz endpoints; provisioning key is configured"
               : "no provisioned Buzz endpoints",
           });
-        } else if (!key) {
+        } else if (!keyring) {
           checks.push({
             id: "C029",
             status: "fail",
             detail: `${rows.length} provisioned Buzz endpoint(s) stored but ${PROVISIONING_KEY_ENV} is not set`,
           });
         } else {
+          // `stale` is the number an operator mid-rotation is actually asking
+          // for: while it is non-zero, removing the outgoing key destroys those
+          // identities. The gateway re-seals at startup, so a non-zero count
+          // here means the rotation deploy has not happened yet — or that a row
+          // failed to re-seal, which is worth saying out loud rather than
+          // leaving as a silently-fine "decrypts".
           let unopenable = 0;
+          let stale = 0;
           for (const row of rows) {
             try {
-              openSecret(key, row.endpoint_id, row.private_key_ciphertext);
+              const opened = openSecretDetailed(
+                keyring,
+                row.endpoint_id,
+                row.private_key_ciphertext,
+              );
+              if (opened.keyIndex > 0) stale += 1;
             } catch {
               unopenable += 1;
             }
           }
+          const keyCount = keyring.all.length;
           checks.push({
             id: "C029",
-            status: unopenable === 0 ? "ok" : "fail",
+            status: unopenable > 0 ? "fail" : stale > 0 ? "warn" : "ok",
             detail:
-              unopenable === 0
-                ? `${rows.length} provisioned Buzz endpoint(s) decrypt with the configured key`
-                : `${unopenable} of ${rows.length} provisioned Buzz endpoint(s) cannot be decrypted with the configured ${PROVISIONING_KEY_ENV}`,
+              unopenable > 0
+                ? `${unopenable} of ${rows.length} provisioned Buzz endpoint(s) cannot be decrypted with any of the ${keyCount} configured ${PROVISIONING_KEY_ENV} key(s)`
+                : stale > 0
+                  ? `${stale} of ${rows.length} provisioned Buzz endpoint(s) are still sealed under an outgoing key; redeploy to re-seal before removing it from ${PROVISIONING_KEY_ENV}`
+                  : `${rows.length} provisioned Buzz endpoint(s) decrypt with the primary key${keyCount > 1 ? `; the ${keyCount - 1} outgoing key(s) are no longer needed` : ""}`,
           });
         }
       } finally {

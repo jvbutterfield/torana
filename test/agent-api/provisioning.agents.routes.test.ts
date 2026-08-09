@@ -20,7 +20,10 @@ import {
   normalizedV1Model,
   upgradeV1Object,
 } from "../../src/config/v2.js";
-import { parseProvisioningKey } from "../../src/config/provisioning-secrets.js";
+import {
+  parseProvisioningKey,
+  singleKeyring,
+} from "../../src/config/provisioning-secrets.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import { applyMigrations } from "../../src/db/migrate.js";
 import { createServer, type Server } from "../../src/server.js";
@@ -74,7 +77,7 @@ function setup() {
   const provisioning = new BuzzProvisioningService({
     db,
     configV2,
-    key: parseProvisioningKey(KEY),
+    keyring: singleKeyring(parseProvisioningKey(KEY)),
     transport: null,
   });
 

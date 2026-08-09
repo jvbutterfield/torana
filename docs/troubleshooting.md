@@ -55,19 +55,23 @@ snapshot the database before altering it; see
 
 ## Doctor fails
 
-| Check    | Means                                                  | Fix                                                                              |
-| -------- | ------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| **C002** | `data_dir` missing or not writable                     | Create it, or fix ownership. Torana does not create parent directories.          |
-| **C003** | DB schema older than the binary expects                | `torana migrate`                                                                 |
-| **C004** | Telegram `getMe` failed                                | Bad or revoked bot token. Reports `skip` for Buzz-only agents, which is normal.  |
-| **C005** | Runner entry point not executable / not on `PATH`      | Install the `claude` or `codex` CLI, or fix `runner.cmd`. See below.             |
-| **C006** | Webhook `base_url` unreachable                         | DNS, TLS, or firewall. Any non-5xx counts as reachable.                          |
-| **C007** | Config file is world-readable                          | `chmod 600 torana.yaml`. Warns; does not block startup.                          |
-| **C015** | Database file is world-readable                        | `chmod 600` the DB. It contains every bot token.                                 |
-| **C016** | Data-directory lock is held or unverifiable            | See "data directory is locked" above.                                            |
-| **C027** | `shutdown.hard_timeout_secs` is below the drain budget | Raise it above `outbox_drain_secs + runner_grace_secs`.                          |
-| **C029** | Provisioned Buzz rows can't be decrypted               | `TORANA_PROVISIONING_SECRETS_KEY` is missing or wrong. **Restore the key** — the |
-|          |                                                        | rows are unrecoverable without it.                                               |
+| Check    | Means                                                  | Fix                                                                               |
+| -------- | ------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| **C002** | `data_dir` missing or not writable                     | Create it, or fix ownership. Torana does not create parent directories.           |
+| **C003** | DB schema older than the binary expects                | `torana migrate`                                                                  |
+| **C004** | Telegram `getMe` failed                                | Bad or revoked bot token. Reports `skip` for Buzz-only agents, which is normal.   |
+| **C005** | Runner entry point not executable / not on `PATH`      | Install the `claude` or `codex` CLI, or fix `runner.cmd`. See below.              |
+| **C006** | Webhook `base_url` unreachable                         | DNS, TLS, or firewall. Any non-5xx counts as reachable.                           |
+| **C007** | Config file is world-readable                          | `chmod 600 torana.yaml`. Warns; does not block startup.                           |
+| **C015** | Database file is world-readable                        | `chmod 600` the DB. It contains every bot token.                                  |
+| **C016** | Data-directory lock is held or unverifiable            | See "data directory is locked" above.                                             |
+| **C027** | `shutdown.hard_timeout_secs` is below the drain budget | Raise it above `outbox_drain_secs + runner_grace_secs`.                           |
+| **C029** | Provisioned Buzz rows can't be decrypted               | `TORANA_PROVISIONING_SECRETS_KEY` is missing or wrong. **Restore the key** — the  |
+|          |                                                        | rows are unrecoverable without it. A `warn` instead means a rotation is mid-way.  |
+| **C030** | An allowlisted harness binary doesn't resolve          | Fix `provisioning.harnesses.<name>.runner.cli_path`, or install the binary.       |
+| **C031** | A managed agent's harness or workspace is gone         | The harness was removed from the allowlist, or the volume lost `workspaces/`.     |
+| **C032** | A tombstone cursor is ahead of the local clock         | Warns only. A future cursor narrows backfill; check for host clock skew.          |
+| **C033** | Staged deletions are pending                           | Warns, with each deadline. `torana agents restore <id>` while the window is open. |
 
 Agent-API specific: **C009** (enabled with no tokens), **C010** (token names an
 unknown bot), **C011** (`ask` scope on a runner without side-session support),
@@ -198,6 +202,56 @@ refreshes marks the endpoint `presence_stale`. Check connectivity and
 An owner `!shutdown` disables an endpoint durably. `torana endpoints resume`
 brings it back, as does a fresh provider deploy. Opt out with
 `owner_shutdown: disabled`.
+
+---
+
+## Desktop-managed agents
+
+**A deploy is refused with `not_configured`**
+The gateway has no `provisioning:` block, so it can attach endpoints to agents
+you declared but cannot create new ones. See
+[configuration](configuration.md#provisioning).
+
+**A deploy is refused with `managed by static config`**
+The id belongs to something in `torana.yaml` — an agent, a publisher, or a
+publisher's endpoint. That is deliberate and nothing was written. Pick a
+different `torana_agent_id`.
+
+**Instructions edited in Desktop had no effect**
+No Desktop _edit_ action calls the provider. The change reaches Torana on the
+next deploy — pressing Start, or the automatic reconcile when Desktop loads
+community UI. Confirm which version is live with
+`torana agents list` and compare `instruction_version` before and after.
+
+**An agent was deleted in Desktop but is still running**
+Check `torana agents list`. If it is `staged_delete`, it is inside its grace
+window and will purge at `purge_at`. If it is still `active`, the tombstone
+never arrived: Desktop's publish is best-effort and a failure is swallowed
+locally. It will show in `torana agents report` with `record_state: absent`;
+remove it deliberately with
+`torana agents purge <id> --acknowledge-data-loss`.
+
+**An agent was staged for deletion and you want it back**
+`torana agents restore <id>`, any time before `purge_at`. The endpoint stays
+down until the next deploy or `torana endpoints resume <id>`, and the agent is
+now running with no Desktop record behind it — expect it in the reconciliation
+report.
+
+**`torana agents purge` printed success but nothing was destroyed**
+That command moves the deadline; the running gateway's sweep destroys, within
+300 s. With the gateway stopped, it happens at the next start. Confirm with
+`torana agents list`.
+
+**The reconciliation report says `record_state: unknown` for everything**
+The relay could not be reached inside the 10 s probe budget, or the watcher is
+not connected. `unknown` is deliberate — an unreachable relay is never reported
+as `absent`, because `absent` reads as "the Desktop deleted this".
+
+**A tombstone appears under `rejected_tombstones`**
+It deleted nothing, by design. `yaml_identity` means it named an agent declared
+in `torana.yaml`, which relay events can never remove. `owner_mismatch` and
+`invalid_signature` mean it was not the owner's word. `unmatched_pubkey` means
+no managed agent holds that identity.
 
 ---
 

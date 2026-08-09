@@ -249,6 +249,140 @@ advancing past an unprocessed accepted event. After an intentional access
 change, inspect endpoint status and cursor age before assuming the relay is at
 fault.
 
+## Rotating `TORANA_PROVISIONING_SECRETS_KEY`
+
+Every provisioned endpoint's private key and auth tag are sealed under this key.
+Rotating it takes two deploys, needs no re-provisioning, and has no downtime
+beyond the rolling restarts the config edits already cause.
+
+1. **Add the new key in front of the old one.** The variable is a
+   comma-separated list, primary first:
+
+   ```sh
+   TORANA_PROVISIONING_SECRETS_KEY="<new>,<old>"
+   ```
+
+2. **Redeploy.** At startup the gateway re-seals every row that still opens
+   under the outgoing key, logging one line per row:
+
+   ```
+   re-sealed a provisioned endpoint under the primary key  endpoint_id=… was_key_index=1
+   re-sealed provisioned endpoints under the primary key   resealed=3 already_primary=0
+   ```
+
+3. **Confirm nothing is left on the old key** before you delete it. `torana
+doctor` C029 answers exactly this question:
+
+   ```
+   C029  ok    3 provisioned Buzz endpoint(s) decrypt with the primary key; the 1 outgoing key(s) are no longer needed
+   ```
+
+   A `warn` here — "still sealed under an outgoing key" — means step 2 has not
+   taken effect yet. **Do not proceed while it says that**: deleting the old key
+   at that point destroys those agent identities permanently.
+
+4. **Drop the old key** and redeploy again:
+
+   ```sh
+   TORANA_PROVISIONING_SECRETS_KEY="<new>"
+   ```
+
+During the window both processes hold both keys, so an in-flight deploy seals
+under whichever primary its process holds and stays readable by the other. New
+rows are always sealed under the primary, never the outgoing key.
+
+Listing the same key twice is rejected at startup — it is nearly always a
+half-finished edit that would report every row as already current while changing
+nothing. A row that opens under **no** configured key is left untouched and
+reported, by both C029 and the startup restore, which fails closed rather than
+running an endpoint nobody can account for.
+
+## Rotating the `endpoints:admin` token
+
+Bearer auth is per-request and the `tokens[]` array accepts several entries, so
+this needs no coordination beyond the redeploys the config edits already cause.
+
+1. Add the new token alongside the existing one and redeploy.
+2. Switch the Desktop provider's local config
+   (`~/.config/torana/provider.json`) to the new value and confirm a deploy
+   still succeeds.
+3. Remove the old entry and redeploy.
+
+If the new token is the wildcard (`bot_ids: ["*"]`), remember it must be
+sole-scope `endpoints:admin`; config validation rejects it combined with `ask`
+or `send`.
+
+## Provisioning audit retention
+
+`provisioning_audit` records every lifecycle transition for Desktop-managed
+agents: create, update, start, stop, stage-delete, restore, purge, reject, and
+every tombstone that deleted nothing. **Nothing sweeps it.** Pruning is an
+explicit operator act:
+
+```sh
+torana audit prune --dry-run          # what would go, using retention.provisioning_audit_days
+torana audit prune --before 2026-01-01
+```
+
+Purge records are skipped by default and reported separately:
+
+```
+deleted 214 audit row(s) older than 2025-08-09 00:00:00
+kept 3 purge record(s) — they outlive the agents they describe; use --include-purge-records --acknowledge-data-loss to remove them
+```
+
+A purge record is the only surviving evidence of what a purge destroyed — agent
+id, pubkey, endpoint, workspace path and byte count, instruction version, the
+tombstone that staged it, and the timestamps. Removing one takes both
+`--include-purge-records` and `--acknowledge-data-loss`. Prompts appear in audit
+detail only as digests; secrets never appear at all.
+
+## Staged-deletion alerts
+
+A verified tombstone stages a deletion and fires an alert naming the purge
+deadline and the command to reverse it. When a single sweep stages two or more
+agents the text escalates to `persona cascade suspected: N agents staged` —
+Buzz's persona-delete cascade tombstones every agent derived from that persona,
+and the events are indistinguishable on the wire from a single deliberate
+delete. The alert is how you learn the blast radius while every one of them is
+still reversible:
+
+```sh
+torana agents list              # lifecycle + purge_at per agent
+torana agents restore <id>      # cancel one, during its grace window
+```
+
+See [platforms/buzz](platforms/buzz.md#deleting-is-staged-never-immediate) for
+what restore does and does not do.
+
+## One-time setup for Desktop-managed agents
+
+Complete once. After it, creating, updating, starting, stopping, and deleting a
+Desktop-managed agent needs **zero** Railway-side action — no YAML edit, no
+redeploy, no `railway ssh`.
+
+1. **Railway variables:** `TORANA_PROVISIONING_SECRETS_KEY`, the
+   `endpoints:admin` token secret, and any model credentials the harness base
+   env references (e.g. `ANTHROPIC_API_KEY`).
+2. **`torana.yaml` in the deploy image:** the
+   [`provisioning`](configuration.md#provisioning) block — harness allowlist,
+   `max_agents`, `delete_grace_hours`, quotas, `buzz_tools_default` — plus the
+   wildcard `endpoints:admin` token entry.
+3. **Edge proxy allowlist:** the agent routes, literal and method-scoped —
+   `GET /v1/admin/buzz/agents`, `GET|DELETE /v1/admin/buzz/agents/:id`,
+   `POST /v1/admin/buzz/agents/:id/restore`,
+   `GET /v1/admin/buzz/reconciliation`.
+4. **Volume:** confirm headroom for `workspaces/` above `min_free_bytes`.
+5. **Desktop machine:** provider binary on `PATH`, `~/.config/torana/provider.json`
+   holding the token, and each agent's provider config supplying
+   `torana_agent_id` (plus optional `torana_harness`).
+6. **Schema:** migration to v8 rides the standard deploy (`--auto-migrate`).
+
+**The honest exceptions.** These remain gateway-level and each needs a redeploy:
+adding a harness to the allowlist, changing ceilings, caps, or the grace period,
+and rotating either long-lived secret. The claim is "no _per-agent_
+configuration", not "no configuration at all".
+
 ## Buzz canary rollout
 
 1. Deploy with `platforms.buzz.enabled: false`; run validate and doctor.

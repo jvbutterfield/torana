@@ -19,7 +19,10 @@ import {
   normalizedV1Model,
   upgradeV1Object,
 } from "../../src/config/v2.js";
-import { parseProvisioningKey } from "../../src/config/provisioning-secrets.js";
+import {
+  parseProvisioningKey,
+  singleKeyring,
+} from "../../src/config/provisioning-secrets.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import { applyMigrations } from "../../src/db/migrate.js";
 import { createServer, type Server } from "../../src/server.js";
@@ -77,7 +80,7 @@ function setup(options: { withLifecycle?: boolean } = {}) {
   const provisioning = new BuzzProvisioningService({
     db,
     configV2,
-    key: parseProvisioningKey(KEY),
+    keyring: singleKeyring(parseProvisioningKey(KEY)),
     transport: null,
   });
   const clock = { now: Date.parse("2026-08-09T00:00:00Z") };

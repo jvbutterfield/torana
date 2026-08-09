@@ -23,8 +23,10 @@ import {
 } from "../../config/v2.js";
 import {
   openSecret,
+  openSecretDetailed,
   sealSecret,
   PROVISIONING_KEY_ENV,
+  type ProvisioningKeyring,
 } from "../../config/provisioning-secrets.js";
 import type {
   GatewayDB,
@@ -140,8 +142,12 @@ export interface ProvisioningDeps {
   db: GatewayDB;
   /** The parsed YAML config this process started with. */
   configV2: ConfigV2 | null;
-  /** Sealing key, or null when `TORANA_PROVISIONING_SECRETS_KEY` is unset. */
-  key: Buffer | null;
+  /**
+   * Keys this process may open rows with, primary first, or null when
+   * `TORANA_PROVISIONING_SECRETS_KEY` is unset. Sealing always uses the
+   * primary; the rest exist so a rotation can run without downtime (R9.6).
+   */
+  keyring: ProvisioningKeyring | null;
   transport: BuzzTransport | null;
   /** Ceiling on live endpoints; provisioning refuses rather than degrades. */
   maxEndpoints?: number;
@@ -213,6 +219,112 @@ export class BuzzProvisioningService {
   }
 
   /**
+   * Re-seal every row that still opens under an outgoing key (R9.6).
+   *
+   * Run at startup, before anything reads a row. Rotation is then a two-deploy
+   * procedure with no downtime and no re-provisioning: set
+   * `TORANA_PROVISIONING_SECRETS_KEY=<new>,<old>` and redeploy — this pass
+   * moves every row onto `<new>` and logs each one — then drop `<old>` and
+   * redeploy again. In the window between them both processes can open every
+   * row, so an in-flight deploy seals under whichever primary its process
+   * holds and stays readable either way.
+   *
+   * Doing it eagerly rather than on next write is what makes "is the rotation
+   * finished?" answerable. Lazy re-sealing would leave a quiet agent on the
+   * outgoing key indefinitely, and the operator would have no safe moment to
+   * remove it.
+   *
+   * A row that opens under no key at all is *not* an error here — it is left
+   * alone and reported by `loadPersisted` and doctor C029, which fail closed.
+   * Re-sealing must not be the thing that decides an unreadable row's fate.
+   */
+  resealUnderPrimary(): {
+    resealed: number;
+    alreadyPrimary: number;
+    errors: string[];
+  } {
+    const keyring = this.deps.keyring;
+    const result = { resealed: 0, alreadyPrimary: 0, errors: [] as string[] };
+    if (!keyring || keyring.all.length < 2) {
+      // One key means nothing can be stale. Skipping keeps the ordinary boot
+      // free of a pass that would decrypt every row to prove it has no work.
+      return result;
+    }
+    for (const row of this.deps.db.listProvisionedEndpoints()) {
+      try {
+        const privateKey = openSecretDetailed(
+          keyring,
+          row.endpointId,
+          row.privateKeyCiphertext,
+        );
+        const authTag = row.authTagCiphertext
+          ? openSecretDetailed(keyring, row.endpointId, row.authTagCiphertext)
+          : null;
+        if (privateKey.keyIndex === 0 && (authTag?.keyIndex ?? 0) === 0) {
+          result.alreadyPrimary += 1;
+          continue;
+        }
+        // Both columns are rewritten even when only one was stale: they are one
+        // credential, and leaving half of it on the outgoing key would make the
+        // "no rows left on the old key" check pass while one still is.
+        this.deps.db.resealProvisionedEndpoint({
+          endpointId: row.endpointId,
+          privateKeyCiphertext: sealSecret(
+            keyring,
+            row.endpointId,
+            privateKey.plaintext,
+          ),
+          authTagCiphertext: authTag
+            ? sealSecret(keyring, row.endpointId, authTag.plaintext)
+            : null,
+        });
+        result.resealed += 1;
+        log.info("re-sealed a provisioned endpoint under the primary key", {
+          endpoint_id: row.endpointId,
+          agent_id: row.agentId,
+          was_key_index: Math.max(privateKey.keyIndex, authTag?.keyIndex ?? 0),
+        });
+      } catch (error) {
+        result.errors.push(
+          `${row.endpointId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    return result;
+  }
+
+  /**
+   * How many stored rows are still sealed under a non-primary key.
+   *
+   * The question an operator asks halfway through a rotation: zero means the
+   * outgoing key can be removed. Read-only, and used by doctor C029.
+   */
+  rowsOnOutgoingKeys(): { stale: number; unreadable: number } {
+    const keyring = this.deps.keyring;
+    if (!keyring) return { stale: 0, unreadable: 0 };
+    let stale = 0;
+    let unreadable = 0;
+    for (const row of this.deps.db.listProvisionedEndpoints()) {
+      try {
+        const privateKey = openSecretDetailed(
+          keyring,
+          row.endpointId,
+          row.privateKeyCiphertext,
+        );
+        const authTag = row.authTagCiphertext
+          ? openSecretDetailed(keyring, row.endpointId, row.authTagCiphertext)
+          : null;
+        if (privateKey.keyIndex > 0 || (authTag?.keyIndex ?? 0) > 0) stale += 1;
+      } catch {
+        unreadable += 1;
+      }
+    }
+    return { stale, unreadable };
+  }
+
+  /**
    * Rebuild every persisted endpoint at startup. Rows are validated through
    * the same merge as a live deploy, so a row that has become invalid (its
    * agent removed from YAML, its id now colliding with a YAML endpoint) is
@@ -229,7 +341,7 @@ export class BuzzProvisioningService {
     if (rows.length === 0) {
       return { endpoints: [], agents: [], normalized: null, errors: [] };
     }
-    if (!this.deps.key) {
+    if (!this.deps.keyring) {
       // Fail closed and loudly. Running with provisioned rows we cannot open
       // would silently drop agents an operator believes are deployed.
       return {
@@ -386,7 +498,7 @@ export class BuzzProvisioningService {
     request: ProvisionRequest,
     actor: string,
   ): Promise<ProvisionOutcome> {
-    if (!this.deps.key) {
+    if (!this.deps.keyring) {
       throw new ProvisioningError(
         "not_configured",
         `${PROVISIONING_KEY_ENV} is not set; endpoint provisioning is disabled`,
@@ -642,12 +754,12 @@ export class BuzzProvisioningService {
       derivedPubkey: pubkey,
       configJson: JSON.stringify(redactBlock(block)),
       privateKeyCiphertext: sealSecret(
-        this.deps.key,
+        this.deps.keyring,
         endpointId,
         request.private_key,
       ),
       authTagCiphertext: sealSecret(
-        this.deps.key,
+        this.deps.keyring,
         endpointId,
         request.auth_tag,
       ),
@@ -816,15 +928,19 @@ export class BuzzProvisioningService {
       agents,
       credentialFor: (endpointId) => {
         const row = endpoints.find((item) => item.endpointId === endpointId);
-        if (!row || !this.deps.key) return null;
+        if (!row || !this.deps.keyring) return null;
         try {
           const privateKey = openSecret(
-            this.deps.key,
+            this.deps.keyring,
             row.endpointId,
             row.privateKeyCiphertext,
           );
           const authTag = row.authTagCiphertext
-            ? openSecret(this.deps.key, row.endpointId, row.authTagCiphertext)
+            ? openSecret(
+                this.deps.keyring,
+                row.endpointId,
+                row.authTagCiphertext,
+              )
             : null;
           // Same funnel discipline as `blockFromRow`: a stored secret becomes
           // redactable at the moment it re-enters the process.
@@ -1094,12 +1210,12 @@ export class BuzzProvisioningService {
           derivedPubkey: pubkey,
           configJson: JSON.stringify(redactBlock(block)),
           privateKeyCiphertext: sealSecret(
-            this.deps.key!,
+            this.deps.keyring!,
             endpointId,
             request.private_key,
           ),
           authTagCiphertext: sealSecret(
-            this.deps.key!,
+            this.deps.keyring!,
             endpointId,
             request.auth_tag,
           ),
@@ -1196,19 +1312,19 @@ export class BuzzProvisioningService {
   }
 
   private blockFromRow(row: ProvisionedEndpointRow): StoredEndpointBlock {
-    if (!this.deps.key) {
+    if (!this.deps.keyring) {
       throw new Error(
         `${PROVISIONING_KEY_ENV} is not set; cannot open provisioned endpoint '${row.endpointId}'`,
       );
     }
     const stored = JSON.parse(row.configJson) as StoredEndpointBlock;
     const privateKey = openSecret(
-      this.deps.key,
+      this.deps.keyring,
       row.endpointId,
       row.privateKeyCiphertext,
     );
     const authTag = row.authTagCiphertext
-      ? openSecret(this.deps.key, row.endpointId, row.authTagCiphertext)
+      ? openSecret(this.deps.keyring, row.endpointId, row.authTagCiphertext)
       : null;
     // The restore path: these were sealed by an earlier process, so the
     // config-load `setSecrets()` never saw them. Register at the moment they

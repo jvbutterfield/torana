@@ -79,6 +79,8 @@ interface ParsedArgs {
   confirmShared: boolean;
   deadLetterPending: boolean;
   acknowledgeDataLoss: boolean;
+  includePurgeRecords: boolean;
+  before: string | null;
   limit: number;
 }
 
@@ -100,6 +102,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     confirmShared: false,
     deadLetterPending: false,
     acknowledgeDataLoss: false,
+    includePurgeRecords: false,
+    before: null,
     limit: 100,
   };
 
@@ -119,6 +123,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.deadLetterPending = true;
     } else if (a === "--acknowledge-data-loss") {
       args.acknowledgeDataLoss = true;
+    } else if (a === "--include-purge-records") {
+      args.includePurgeRecords = true;
+    } else if (a === "--before") {
+      const next = argv[++i];
+      if (!next) throw new Error("--before requires a YYYY-MM-DD date");
+      args.before = next;
     } else if (a === "--limit") {
       const next = argv[++i];
       if (!next) throw new Error("--limit requires a number");
@@ -163,6 +173,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.publisherProbe = value;
     } else if (a.startsWith("--to=")) {
       args.migrationTo = Number(a.slice("--to=".length));
+    } else if (a.startsWith("--before=")) {
+      const value = a.slice("--before=".length);
+      if (!value) throw new Error("--before requires a YYYY-MM-DD date");
+      args.before = value;
     } else if (a.startsWith("--limit=")) {
       args.limit = Number(a.slice("--limit=".length));
     } else if (a.startsWith("-")) {
@@ -702,6 +716,71 @@ async function main(argv: string[]): Promise<void> {
       }
       return;
     }
+    // Provisioning lifecycle audit retention (R12.5).
+    //
+    // Pruning is an operator act and never a timer's: `retention` supplies the
+    // default window, not a sweeper. The purge record is the only surviving
+    // evidence of what a purge destroyed, so removing one takes a second,
+    // separate flag on top of `--acknowledge-data-loss`.
+    case "audit": {
+      const action = argv[1];
+      if (!action || action !== "prune") {
+        throw new Error(
+          "usage: torana audit prune [--before <YYYY-MM-DD>] [--dry-run] " +
+            "[--include-purge-records --acknowledge-data-loss] [--config <path>]",
+        );
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, normalized, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const retentionDays =
+        normalized.retention?.provisioning_audit_days ?? 365;
+      let before: string;
+      if (args.before) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(args.before)) {
+          throw new Error("--before must be a YYYY-MM-DD date");
+        }
+        before = `${args.before} 00:00:00`;
+      } else {
+        before = new Date(Date.now() - retentionDays * 86_400_000)
+          .toISOString()
+          .slice(0, 19)
+          .replace("T", " ");
+      }
+      if (args.includePurgeRecords && !args.acknowledgeDataLoss) {
+        throw new Error(
+          "--include-purge-records destroys the only record of what each purge " +
+            "removed. Rerun with --acknowledge-data-loss to confirm",
+        );
+      }
+      const db = new GatewayDB(config.gateway.db_path!);
+      try {
+        const result = db.pruneProvisioningAudit({
+          before,
+          includePurgeRecords: args.includePurgeRecords,
+          dryRun: args.dryRun,
+        });
+        if (args.format === "json") {
+          console.log(JSON.stringify({ before, ...result }, null, 2));
+          return;
+        }
+        console.log(
+          args.dryRun
+            ? `would delete ${result.matched} audit row(s) older than ${before}`
+            : `deleted ${result.deleted} audit row(s) older than ${before}`,
+        );
+        if (!args.includePurgeRecords && result.purgeRecordsKept > 0) {
+          console.log(
+            `kept ${result.purgeRecordsKept} purge record(s) — they outlive the ` +
+              `agents they describe; use --include-purge-records ` +
+              `--acknowledge-data-loss to remove them`,
+          );
+        }
+      } finally {
+        db.close();
+      }
+      return;
+    }
     case "migrate": {
       // `--to` stays an explicit acknowledgement of the target rather than a
       // free-form version selector: the documented bridge activation is 6, and
@@ -791,6 +870,7 @@ Gateway commands:
   agents report          Reconciliation report from the database (no relay probe)
   agents restore <id>    Reverse a staged deletion during its grace period
   agents purge <id>      Bring a purge forward (requires --acknowledge-data-loss)
+  audit prune            Delete old provisioning audit rows (purge records exempt)
   version      Print package + runtime version
 
 Agent-API client commands (require --server + --token, env equivalents, or a profile):
@@ -815,6 +895,8 @@ Gateway options:
   --profile <name>      (doctor) Resolve --server + --token from the profile store
   --publisher-probe <id> (doctor) Authenticate and verify one disabled publisher destination without publishing
   --acknowledge-data-loss (agents purge) Confirm destruction of record, secrets, and workspace
+  --before <YYYY-MM-DD>  (audit prune) Cutoff; defaults to retention.provisioning_audit_days
+  --include-purge-records (audit prune) Also delete purge records (needs --acknowledge-data-loss)
 
 Run \`torana <client-cmd> --help\` for per-subcommand options + exit codes.
 

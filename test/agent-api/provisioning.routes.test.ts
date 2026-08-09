@@ -18,7 +18,10 @@ import {
   normalizedV1Model,
   upgradeV1Object,
 } from "../../src/config/v2.js";
-import { parseProvisioningKey } from "../../src/config/provisioning-secrets.js";
+import {
+  parseProvisioningKey,
+  singleKeyring,
+} from "../../src/config/provisioning-secrets.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import { applyMigrations } from "../../src/db/migrate.js";
 import { logger } from "../../src/log.js";
@@ -93,7 +96,7 @@ function setup(options: { withProvisioning?: boolean } = {}) {
       : new BuzzProvisioningService({
           db,
           configV2,
-          key: parseProvisioningKey(KEY),
+          keyring: singleKeyring(parseProvisioningKey(KEY)),
           // No transport: a deploy should refuse cleanly rather than half
           // succeed when the Buzz platform is off.
           transport: null,

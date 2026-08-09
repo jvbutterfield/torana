@@ -177,6 +177,14 @@ const RetentionV2Schema = z
     dead_outbox_days: Int.min(1).default(90),
     signed_sent_payload_hours: Int.min(1).default(24),
     pending_mutation_days: Int.min(1).default(30),
+    /**
+     * Provisioning lifecycle audit rows (R12.5). Unlike every other window
+     * here, nothing sweeps on it: it is the default `--before` for the explicit
+     * `torana audit prune`, and purge records are exempt even then. A purge
+     * record deleted along with the agent it describes proves nothing, so
+     * removing one is an operator decision, never a timer's.
+     */
+    provisioning_audit_days: Int.min(1).default(365),
   })
   .strict()
   .default({});
@@ -1871,6 +1879,9 @@ export function normalizedV1Model(config: Config): NormalizedConfigModel {
       dead_outbox_days: 90,
       signed_sent_payload_hours: 24,
       pending_mutation_days: 30,
+      // A v1 config has no provisioning and so no audit rows, but the field is
+      // non-optional in the model; the schema default keeps the two in step.
+      provisioning_audit_days: 365,
     },
     alertsTarget:
       config.alerts?.via_bot && config.alerts.chat_id !== undefined

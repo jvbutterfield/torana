@@ -469,16 +469,22 @@ regardless. See [`sessions.md`](sessions.md).
 Sweeper windows and the database ceiling. All durations are whole days unless
 noted.
 
-| Key                         | Type    | Default              | Notes                                               |
-| --------------------------- | ------- | -------------------- | --------------------------------------------------- |
-| `database_size_cap_bytes`   | int ≥ 1 | `4294967296` (4 GiB) | Logical ceiling; enqueue fails before it grows past |
-| `inbound_payload_days`      | int ≥ 0 | `30`                 | `0` drops raw payloads immediately after processing |
-| `inbound_event_days`        | int ≥ 1 | `90`                 | Dedup records                                       |
-| `terminal_turn_days`        | int ≥ 1 | `90`                 | Completed and failed turns                          |
-| `sent_outbox_days`          | int ≥ 1 | `14`                 | Delivered outbox rows                               |
-| `dead_outbox_days`          | int ≥ 1 | `90`                 | Dead-lettered rows, kept for inspection             |
-| `signed_sent_payload_hours` | int ≥ 1 | `24`                 | Signed Buzz payload bytes after successful delivery |
-| `pending_mutation_days`     | int ≥ 1 | `30`                 | Unresolved edit/delete/reaction mutations           |
+| Key                         | Type    | Default              | Notes                                                  |
+| --------------------------- | ------- | -------------------- | ------------------------------------------------------ |
+| `database_size_cap_bytes`   | int ≥ 1 | `4294967296` (4 GiB) | Logical ceiling; enqueue fails before it grows past    |
+| `inbound_payload_days`      | int ≥ 0 | `30`                 | `0` drops raw payloads immediately after processing    |
+| `inbound_event_days`        | int ≥ 1 | `90`                 | Dedup records                                          |
+| `terminal_turn_days`        | int ≥ 1 | `90`                 | Completed and failed turns                             |
+| `sent_outbox_days`          | int ≥ 1 | `14`                 | Delivered outbox rows                                  |
+| `dead_outbox_days`          | int ≥ 1 | `90`                 | Dead-lettered rows, kept for inspection                |
+| `signed_sent_payload_hours` | int ≥ 1 | `24`                 | Signed Buzz payload bytes after successful delivery    |
+| `pending_mutation_days`     | int ≥ 1 | `30`                 | Unresolved edit/delete/reaction mutations              |
+| `provisioning_audit_days`   | int ≥ 1 | `365`                | Default cutoff for `torana audit prune`; **not swept** |
+
+`provisioning_audit_days` is the odd one out: nothing deletes on it. It is the
+default `--before` for the explicit `torana audit prune`, and purge records are
+exempt even then — see
+[operations](operations.md#provisioning-audit-retention).
 
 ### `agents[]`
 
@@ -694,24 +700,119 @@ Three things make it safe to expose:
   account for. **Back up the key separately from the volume — a restore without
   it cannot recover those agent identities.** Doctor check `C029` reports
   whether every stored row decrypts with the configured key.
+  Rotating this key is a two-deploy procedure with no downtime; see
+  [operations](operations.md#rotating-torana_provisioning_secrets_key).
 - **A dedicated token.** The routes require the `endpoints:admin` scope, and
   config validation rejects a token that combines it with `ask` or `send`. The
-  token's `bot_ids` still bound which agents it may attach endpoints to.
-- **Agent binding.** Every deploy names an `agent_id` that already exists in
-  this file with a runner. Provisioning creates _endpoints_, never agents or
-  runners, so an identity with no agent to bind to — an outbound-only publisher,
-  for instance — is refused rather than half-created.
+  token's `bot_ids` still bound which agents it may act on, with `"*"` meaning
+  "any Desktop-managed agent" — legal only on a token whose sole scope is
+  `endpoints:admin`, which structurally cannot also message.
+- **Agent binding.** Every deploy names an `agent_id`. If that id is declared in
+  this file with a runner, the deploy attaches an endpoint to it and the agent's
+  definition is never touched. If it is unknown everywhere _and_ the gateway has
+  a [`provisioning`](#provisioning) block, the deploy **creates** the agent —
+  see below. If it collides with a publisher id, it is refused.
 
 Precedence, which matters because `torana.yaml` is baked into a deploy image
 while provisioned rows live on the volume:
 
-1. **A YAML endpoint always wins.** A deploy whose endpoint id _or_ whose
-   derived pubkey collides with a YAML-declared endpoint is rejected with
-   "managed by static config".
-2. **Provisioned endpoints survive redeploys untouched.** They are never
-   regenerated from image state.
+1. **A YAML declaration always wins — endpoints and agents alike.** A deploy
+   whose endpoint id, whose agent id, or whose derived pubkey collides with
+   something declared here is rejected with "managed by static config". Nothing
+   arriving over the wire can shadow, mutate, or delete an agent you wrote down.
+2. **Provisioned rows survive redeploys untouched.** They are never regenerated
+   from image state.
 3. **Migrating an agent from YAML to provisioned is an explicit operator
    sequence** — remove the endpoint block, redeploy, then provider-deploy. It
    never happens automatically.
 
 `torana endpoints status` shows `yaml` or `provisioned` per endpoint.
+
+## Desktop-managed agents
+
+With a `provisioning` block configured, a deploy naming an id that is unknown to
+both this file and the database **creates the agent** — its record, its
+workspace, and its endpoint — in one operation, and starts it. The agent's
+definition then lives in the database rather than here.
+
+This is not a relaxation of the schema. A stored record plus the operator's
+harness entry is projected into a complete `agents[]` block and run through the
+**same** validation this file gets, so a projected agent that would be invalid
+as YAML is rejected the same way.
+
+Operator surface: `torana agents list|report|restore|purge`,
+`GET|DELETE /v1/admin/buzz/agents/:id`, `POST /v1/admin/buzz/agents/:id/restore`,
+and `GET /v1/admin/buzz/reconciliation`. Lifecycle, instruction updates, and the
+staged-delete pipeline are described in
+[platforms/buzz](platforms/buzz.md#desktop-managed-agents).
+
+### `provisioning`
+
+Optional. Its absence is what makes agent creation impossible — a gateway with
+no `provisioning` block can still attach endpoints to agents you declared, and
+refuses anything that would create one.
+
+| Key                     | Type        | Default             | Notes                                                           |
+| ----------------------- | ----------- | ------------------- | --------------------------------------------------------------- |
+| `max_agents`            | int 1..256  | `8`                 | Counts **every** record, staged deletions included              |
+| `delete_grace_hours`    | int 1..8760 | `72`                | Staged-delete window; `0` is rejected so a typo cannot mean now |
+| `min_free_bytes`        | int ≥ 0     | `1073741824`        | Create fails closed below this much free space                  |
+| `workspace_quota_bytes` | int ≥ 0     | `2147483648`        | Advisory per-agent quota; nothing is ever auto-deleted          |
+| `buzz_tools_default`    | block       | `policy: read_only` | Fleet-wide Buzz CLI policy; a Desktop record cannot widen it    |
+| `harnesses`             | map         | — (at least one)    | The allowlist Desktop selects from **by name**                  |
+
+`max_agents` counts staged rows because a staged agent still holds an identity,
+a workspace, and sealed secrets — excluding them would let a delete-then-create
+loop exceed the fleet you sized for.
+
+Each harness entry owns the binary path, the argv _shape_, and the base
+environment. Desktop supplies only values for placeholders the operator already
+wrote, so a payload can never add an argv element or an env key:
+
+```yaml
+provisioning:
+  max_agents: 8
+  delete_grace_hours: 72
+  min_free_bytes: 1073741824
+  workspace_quota_bytes: 2147483648
+  buzz_tools_default:
+    policy: read_only
+  harnesses:
+    claude:
+      runner:
+        type: claude-code
+        cli_path: /usr/local/bin/claude
+        args:
+          ["--model", "{model}", "--append-system-prompt", "{system_prompt}"]
+        env:
+          CLAUDE_CONFIG_DIR: "/data/state/provisioned/{agent_id}/claude-config"
+          ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+        acknowledge_dangerous: true
+      defaults:
+        model: claude-sonnet-5
+      ceilings:
+        turn_timeout_secs: 3600
+        idle_timeout_secs: 86400
+        max_turn_duration_secs: 3600
+      max_system_prompt_bytes: 65536
+```
+
+The four placeholders are `{model}`, `{system_prompt}`, `{agent_id}`, and
+`{workspace}`. The set is closed — an unrecognized `{token}` fails validation
+rather than reaching a spawned process verbatim, because a misspelled
+`{sytem_prompt}` would silently run an agent with no instructions at all. An
+argv element whose placeholder resolves to nothing is dropped along with the
+bare flag in front of it, so `["--model", "{model}"]` with no model yields
+neither element rather than a dangling `--model`.
+
+`ceilings` is the single definition point for what a Desktop-supplied timeout
+may not exceed. Requested values are clamped into `[30s, ceiling]`, and both the
+requested and applied values are reported in the deploy result. `type:
+claude-code` requires `acknowledge_dangerous: true` for the same reason a YAML
+runner does — every turn runs unsandboxed in the agent's workspace, and a
+provisioned agent does not get a quieter deal than one you wrote by hand.
+
+**Adding a harness is a gateway config change and needs a redeploy.** Torana has
+no config hot-reload. This is the one documented exception to "no Railway-side
+action per agent" — see
+[operations](operations.md#one-time-setup-for-desktop-managed-agents).

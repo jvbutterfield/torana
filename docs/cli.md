@@ -158,12 +158,35 @@ torana outbox list [--limit N] [--format text|json]
 torana outbox dead-letter <id>
 torana outbox replay <id>
 torana gateway drain
+torana agents list [--format text|json]
+torana agents report [--format text|json]
+torana agents restore <agent-id>
+torana agents purge <agent-id> --acknowledge-data-loss
+torana audit prune [--before YYYY-MM-DD] [--dry-run] [--format text|json]
+                   [--include-purge-records --acknowledge-data-loss]
 ```
 
 `--limit` is bounded to `1..500`. Outbox listings omit payload bodies. Replay
 accepts only `dead`/`failed` rows and restores the exact stored payload and
 signed event. `gateway drain` validates the data-directory lock PID and sends
 the gateway `SIGTERM`, invoking the ordered no-loss shutdown path.
+
+The `agents` commands operate on Desktop-managed agents
+([platforms/buzz](platforms/buzz.md#desktop-managed-agents)). **None of them
+destroys anything directly.** `restore` cancels a staged deletion during its
+grace window; it does not bring the endpoint back up. `purge` brings the
+deadline forward to now — the running gateway's sweep does the destruction
+within 300 s, because it is the process holding the agent's runner, its endpoint
+supervisor, and the audit-first ordering. With the gateway stopped, the purge
+runs at its next start. `report` is the reconciliation report's database half
+and works offline, leaving every relay-side record state `unknown` rather than
+guessing; the API route probes the relay.
+
+`audit prune` deletes provisioning lifecycle audit rows older than a cutoff,
+defaulting to `retention.provisioning_audit_days`. Purge records are exempt
+unless you pass **both** `--include-purge-records` and
+`--acknowledge-data-loss`: a purge record is the only surviving evidence of what
+that purge destroyed. Nothing prunes on a timer.
 
 `torana buzz call` is the runner-facing typed broker client. It reads one JSON
 request from stdin and requires the short-lived capability supplied by Torana
