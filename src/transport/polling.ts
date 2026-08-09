@@ -12,10 +12,41 @@ import { TelegramError } from "../telegram/client.js";
 
 const log = logger("transport.polling");
 
+/**
+ * Delay seam for the backoff wait. Resolves after `ms`, or early if `signal`
+ * aborts (shutdown must not have to wait out a 30s backoff).
+ *
+ * Injectable so tests can assert on the delay the backoff policy *requested*
+ * rather than on wall-clock gaps between calls. Measuring elapsed time makes
+ * the assertion a statement about the host's scheduler: on a loaded CI runner,
+ * tens of milliseconds of timer jitter on a 50ms interval is enough to swamp
+ * the ratio between consecutive waits.
+ */
+export type SleepFn = (ms: number, signal?: AbortSignal) => Promise<void>;
+
+const realSleep: SleepFn = (ms, signal) =>
+  new Promise<void>((resolve) => {
+    // A listener added to an already-aborted signal never fires, so an abort
+    // that lands just before the wait starts would otherwise be ignored for
+    // the full backoff.
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(() => resolve(), ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+
 export interface PollingTransportOptions {
   config: Config;
   db: GatewayDB;
   clients: Map<BotId, TelegramClient>;
+  /** Test seam for the backoff wait. Defaults to a cancellable setTimeout. */
+  sleep?: SleepFn;
 }
 
 /**
@@ -39,17 +70,20 @@ class BotPoller {
   private running = false;
   private donePromise: Promise<void> | null = null;
   private failureCount = 0;
+  private sleepFn: SleepFn;
 
   constructor(
     botId: BotId,
     client: TelegramClient,
     db: GatewayDB,
     config: Config,
+    sleepFn: SleepFn = realSleep,
   ) {
     this.botId = botId;
     this.client = client;
     this.db = db;
     this.config = config;
+    this.sleepFn = sleepFn;
   }
 
   start(onUpdate: OnUpdateHandler): void {
@@ -176,17 +210,7 @@ class BotPoller {
   }
 
   private async sleep(ms: number): Promise<void> {
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => resolve(), ms);
-      this.abortController?.signal.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
-    });
+    await this.sleepFn(ms, this.abortController?.signal);
   }
 }
 
@@ -200,7 +224,7 @@ export class PollingTransport implements Transport {
     for (const [botId, client] of opts.clients) {
       this.pollers.set(
         botId,
-        new BotPoller(botId, client, opts.db, opts.config),
+        new BotPoller(botId, client, opts.db, opts.config, opts.sleep),
       );
     }
   }
