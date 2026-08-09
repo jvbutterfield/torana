@@ -60,6 +60,7 @@ export class ProjectionError extends Error {
   constructor(
     readonly code:
       | "unknown_harness"
+      | "harness_disabled"
       | "prompt_too_large"
       | "not_configured"
       | "invalid_timeouts",
@@ -191,6 +192,12 @@ export function projectInstructions(
       `harness '${row.harness}' is not allowlisted; configured harnesses: ${
         known.join(", ") || "(none)"
       }`,
+    );
+  }
+  if (!harness.enabled) {
+    throw new ProjectionError(
+      "harness_disabled",
+      `harness '${row.harness}' is disabled by the gateway operator`,
     );
   }
 
@@ -396,6 +403,12 @@ export function projectAgentBlock(input: {
           args: runner.args,
           ...base,
           acknowledge_dangerous: harness.runner.acknowledge_dangerous,
+          ...(runner.type === "codex"
+            ? {
+                approval_mode: harness.runner.approval_mode ?? "full-auto",
+                sandbox: harness.runner.sandbox ?? "workspace-write",
+              }
+            : {}),
         };
 
   const tools = input.provisioning.buzz_tools_default;

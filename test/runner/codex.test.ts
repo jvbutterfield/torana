@@ -228,6 +228,41 @@ describe("CodexRunner lifecycle", () => {
     await runner.stop(2000);
   }, 20_000);
 
+  test("yolo bypasses Codex approvals and never emits a sandbox flag", async () => {
+    const runner = new CodexRunner({
+      botId: "alpha",
+      config: makeConfig("replay-resume", {
+        approval_mode: "yolo",
+        sandbox: "danger-full-access",
+        acknowledge_dangerous: true,
+      }),
+      logDir: tmpDir,
+      protocolFlags: TEST_PROTOCOL_FLAGS,
+    });
+    const { waitFor, waitForTurn } = track(runner);
+    await runner.start();
+    await waitFor("ready", 1000);
+
+    runner.sendTurn("T1", "first", []);
+    await waitForTurn("done", "T1", 5000);
+    runner.sendTurn("T2", "second", []);
+    await waitForTurn("done", "T2", 5000);
+
+    const lines = (await Bun.file(resolve(tmpDir, "alpha.log")).text())
+      .split("\n")
+      .filter((line) => line.includes('"thread.started"'))
+      .map((line) => JSON.parse(line) as { __argv?: string[] });
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line.__argv).toContain(
+        "--dangerously-bypass-approvals-and-sandbox",
+      );
+      expect(line.__argv).not.toContain("--sandbox");
+    }
+
+    await runner.stop(2000);
+  }, 20_000);
+
   test("reset() clears thread_id → next turn starts fresh", async () => {
     const runner = new CodexRunner({
       botId: "alpha",

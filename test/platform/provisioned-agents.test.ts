@@ -274,6 +274,31 @@ describe("harness allowlist and prompt size (R7.2)", () => {
     }
   });
 
+  test("refuses an operator-disabled harness before projection", () => {
+    const disabled = ProvisioningSchema.parse({
+      harnesses: {
+        "personal-unsafe": {
+          enabled: false,
+          runner: {
+            type: "codex",
+            cli_path: "codex",
+            args: [],
+            approval_mode: "yolo",
+            acknowledge_dangerous: true,
+          },
+          ceilings: {
+            turn_timeout_secs: 600,
+            idle_timeout_secs: 600,
+            max_turn_duration_secs: 600,
+          },
+        },
+      },
+    });
+    expect(() =>
+      projectInstructions(row({ harness: "personal-unsafe" }), disabled),
+    ).toThrow(/disabled by the gateway operator/);
+  });
+
   test("refuses an oversized system prompt", () => {
     const long = "x".repeat(65);
     expect(() =>
@@ -451,6 +476,37 @@ function endpointBlock(agentId: string, privateKey: string) {
 }
 
 describe("projected agents pass the unchanged ConfigV2Schema (R1.2)", () => {
+  test("a Codex harness without an explicit policy stays at the safe defaults", () => {
+    const codexOnly = ProvisioningSchema.parse({
+      harnesses: {
+        codex: {
+          runner: { type: "codex", cli_path: "codex", args: [] },
+          ceilings: {
+            turn_timeout_secs: 600,
+            idle_timeout_secs: 600,
+            max_turn_duration_secs: 600,
+          },
+        },
+      },
+    });
+    const block = projectAgentBlock({
+      agentId: "safe-codex",
+      workspace: "/data/workspaces/safe-codex",
+      instructions: projectInstructions(row({ harness: "codex" }), codexOnly),
+      provisioning: codexOnly,
+      endpointBlock: endpointBlock(
+        "safe-codex",
+        "0000000000000000000000000000000000000000000000000000000000000006",
+      ),
+    });
+    expect(block.runner).toMatchObject({
+      type: "codex",
+      approval_mode: "full-auto",
+      sandbox: "workspace-write",
+      acknowledge_dangerous: false,
+    });
+  });
+
   test("a claude-code projection parses alongside a YAML agent", () => {
     const block = projectAgentBlock({
       agentId: "canary",
@@ -494,7 +550,13 @@ describe("projected agents pass the unchanged ConfigV2Schema (R1.2)", () => {
           },
         },
         codex: {
-          runner: { type: "codex", cli_path: "codex", args: [] },
+          runner: {
+            type: "codex",
+            cli_path: "codex",
+            args: [],
+            approval_mode: "yolo",
+            acknowledge_dangerous: true,
+          },
           ceilings: {
             turn_timeout_secs: 600,
             idle_timeout_secs: 600,
@@ -545,6 +607,12 @@ describe("projected agents pass the unchanged ConfigV2Schema (R1.2)", () => {
       .map((a) => a.runner.type)
       .sort();
     expect(types).toEqual(["claude-code", "codex", "command"]);
+    const codex = parsed.data.agents.find((a) => a.id === "agent-codex");
+    expect(codex?.runner).toMatchObject({
+      type: "codex",
+      approval_mode: "yolo",
+      acknowledge_dangerous: true,
+    });
   });
 
   test("the projection carries the gateway Buzz tool default, not a Desktop one", () => {
