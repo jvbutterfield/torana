@@ -142,3 +142,217 @@ describe("provisioned agent accessors", () => {
     expect(db.listProvisionedAgents()).toEqual([]);
   });
 });
+
+// US-034 — the staging columns and the purge sweep's read path.
+describe("staged deletion", () => {
+  test("stage writes both columns together and restore clears both", () => {
+    insert();
+    expect(
+      db.stageProvisionedAgentDelete({
+        agentId: "canary",
+        stagedAt: "2026-08-09 00:00:00",
+        purgeDeadline: "2026-08-12 00:00:00",
+      }),
+    ).toBe(true);
+    expect(db.getProvisionedAgent("canary")).toMatchObject({
+      lifecycle: "staged_delete",
+      stagedAt: "2026-08-09 00:00:00",
+      purgeDeadline: "2026-08-12 00:00:00",
+    });
+    expect(db.restoreProvisionedAgent("canary")).toBe(true);
+    expect(db.getProvisionedAgent("canary")).toMatchObject({
+      lifecycle: "active",
+      stagedAt: null,
+      purgeDeadline: null,
+    });
+  });
+
+  test("the schema refuses a half-applied stage", () => {
+    // The CHECK is what makes "both columns move together" true even against a
+    // writer that bypasses this layer. A lifecycle without a deadline would be
+    // a row the sweep skips forever.
+    insert();
+    const raw = new Database(dbPath);
+    try {
+      expect(() =>
+        raw
+          .prepare(
+            "UPDATE provisioned_agents SET lifecycle='staged_delete' WHERE agent_id=?",
+          )
+          .run("canary"),
+      ).toThrow();
+    } finally {
+      raw.close();
+    }
+    expect(db.getProvisionedAgent("canary")?.lifecycle).toBe("active");
+  });
+
+  test("staging refuses a row that is already staged", () => {
+    // Backfill overlap redelivers tombstones. Re-staging would push the
+    // deadline out on every reconnect and the grace window would never end.
+    insert();
+    db.stageProvisionedAgentDelete({
+      agentId: "canary",
+      stagedAt: "2026-08-09 00:00:00",
+      purgeDeadline: "2026-08-12 00:00:00",
+    });
+    expect(
+      db.stageProvisionedAgentDelete({
+        agentId: "canary",
+        stagedAt: "2026-08-10 00:00:00",
+        purgeDeadline: "2026-08-13 00:00:00",
+      }),
+    ).toBe(false);
+    expect(db.getProvisionedAgent("canary")?.purgeDeadline).toBe(
+      "2026-08-12 00:00:00",
+    );
+  });
+
+  test("only the explicit hatch may rewrite a deadline, and only on a staged row", () => {
+    insert();
+    expect(
+      db.setProvisionedAgentPurgeDeadline("canary", "2026-08-09 00:00:00"),
+    ).toBe(false);
+    db.stageProvisionedAgentDelete({
+      agentId: "canary",
+      stagedAt: "2026-08-09 00:00:00",
+      purgeDeadline: "2026-08-12 00:00:00",
+    });
+    expect(
+      db.setProvisionedAgentPurgeDeadline("canary", "2026-08-09 00:00:00"),
+    ).toBe(true);
+    expect(db.getProvisionedAgent("canary")?.purgeDeadline).toBe(
+      "2026-08-09 00:00:00",
+    );
+  });
+
+  test("the sweep reads only expired staged rows, oldest deadline first", () => {
+    insert();
+    insert({ agentId: "second", derivedPubkey: "pub-second" });
+    insert({ agentId: "third", derivedPubkey: "pub-third" });
+    db.stageProvisionedAgentDelete({
+      agentId: "canary",
+      stagedAt: "2026-08-09 00:00:00",
+      purgeDeadline: "2026-08-12 00:00:00",
+    });
+    db.stageProvisionedAgentDelete({
+      agentId: "second",
+      stagedAt: "2026-08-09 00:00:00",
+      purgeDeadline: "2026-08-10 00:00:00",
+    });
+    // `third` stays active: no deadline, so nothing may ever sweep it (D2).
+    expect(
+      db
+        .listProvisionedAgentsDueForPurge("2026-08-13 00:00:00")
+        .map((row) => row.agentId),
+    ).toEqual(["second", "canary"]);
+    expect(
+      db
+        .listProvisionedAgentsDueForPurge("2026-08-11 00:00:00")
+        .map((row) => row.agentId),
+    ).toEqual(["second"]);
+    expect(db.listProvisionedAgentsDueForPurge("2026-08-09 00:00:00")).toEqual(
+      [],
+    );
+  });
+});
+
+describe("tombstone cursors", () => {
+  test("round-trips, and an unknown relay reads as null", () => {
+    expect(db.getTombstoneCursor("wss://relay.example")).toBeNull();
+    db.advanceTombstoneCursor({
+      relayUrl: "wss://relay.example",
+      lastCreatedAt: 1_700_000_000,
+      lastEventId: "aa".repeat(32),
+    });
+    expect(db.getTombstoneCursor("wss://relay.example")).toMatchObject({
+      lastCreatedAt: 1_700_000_000,
+      lastEventId: "aa".repeat(32),
+    });
+  });
+
+  test("never moves backwards, so a late old event cannot rewind the window", () => {
+    db.advanceTombstoneCursor({
+      relayUrl: "wss://relay.example",
+      lastCreatedAt: 1_700_000_000,
+      lastEventId: "new",
+    });
+    db.advanceTombstoneCursor({
+      relayUrl: "wss://relay.example",
+      lastCreatedAt: 1_600_000_000,
+      lastEventId: "old",
+    });
+    expect(db.getTombstoneCursor("wss://relay.example")).toMatchObject({
+      lastCreatedAt: 1_700_000_000,
+      lastEventId: "new",
+    });
+  });
+
+  test("cursors are per relay", () => {
+    db.advanceTombstoneCursor({
+      relayUrl: "wss://a.example",
+      lastCreatedAt: 1,
+      lastEventId: null,
+    });
+    db.advanceTombstoneCursor({
+      relayUrl: "wss://b.example",
+      lastCreatedAt: 2,
+      lastEventId: null,
+    });
+    expect(db.getTombstoneCursor("wss://a.example")?.lastCreatedAt).toBe(1);
+    expect(db.getTombstoneCursor("wss://b.example")?.lastCreatedAt).toBe(2);
+  });
+});
+
+describe("audit retrieval by signal", () => {
+  test("returns only the requested signals, newest first", () => {
+    insert();
+    db.appendProvisioningAudit({
+      agentId: "canary",
+      signal: "create",
+      actor: "provisioner",
+      outcome: "created",
+    });
+    for (const outcome of ["unmatched_pubkey", "yaml_identity"]) {
+      db.appendProvisioningAudit({
+        agentId: "(unmatched)",
+        signal: "tombstone_rejected",
+        actor: "relay-tombstone",
+        outcome,
+      });
+    }
+    const rows = db.listProvisioningAuditBySignal(["tombstone_rejected"]);
+    expect(rows.map((row) => row.outcome)).toEqual([
+      "yaml_identity",
+      "unmatched_pubkey",
+    ]);
+  });
+
+  test("an empty signal list returns nothing rather than everything", () => {
+    insert();
+    db.appendProvisioningAudit({
+      agentId: "canary",
+      signal: "create",
+      actor: "provisioner",
+      outcome: "created",
+    });
+    expect(db.listProvisioningAuditBySignal([])).toEqual([]);
+  });
+
+  test("a purge record survives the agent it describes", () => {
+    // `provisioning_audit` is deliberately not foreign-keyed: a cascade would
+    // delete exactly the evidence that proves what was destroyed (R12.5).
+    insert();
+    db.appendProvisioningAudit({
+      agentId: "canary",
+      signal: "purge",
+      actor: "purge-sweep",
+      outcome: "purged",
+      detail: { workspace_bytes: 42 },
+    });
+    db.deleteProvisionedAgent("canary");
+    const rows = db.listProvisioningAudit("canary");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.signal).toBe("purge");
+  });
+});

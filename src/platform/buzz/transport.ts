@@ -40,6 +40,15 @@ export const PRESENCE_STALE = "presence_stale";
  */
 export const OWNER_SHUTDOWN = "owner_shutdown";
 
+/**
+ * `state_reason` written when a verified tombstone stages an agent's deletion.
+ *
+ * Distinct from `owner_shutdown` and from `config_disabled` so an operator
+ * reading endpoint state can tell "the owner pressed Stop" from "this agent is
+ * inside its purge grace window", and so the config sync never re-enables it.
+ */
+export const STAGED_DELETE = "staged_delete";
+
 export type BuzzEndpointHealthState =
   | "disabled"
   | "draining"
@@ -190,6 +199,25 @@ export class BuzzTransport implements Transport {
       await supervisor!.drainAndAnnounceOffline(opts.drainReason);
     }
     await supervisor!.stop();
+    return true;
+  }
+
+  /**
+   * Drain an endpoint and announce it offline **without** dropping its
+   * supervisor — what staging a deletion needs (R5.4).
+   *
+   * `removeEndpoint` would also work, but it forgets the endpoint entirely, and
+   * a staged deletion is reversible during the grace period: keeping the
+   * supervisor means a restore followed by `torana endpoints resume` brings the
+   * agent back in-process rather than only on the next deploy. The caller sets
+   * the terminal lifecycle state, exactly as the owner-`!shutdown` path does.
+   */
+  async drainEndpoint(endpointId: string, reason: string): Promise<boolean> {
+    const supervisor = this.supervisors.find(
+      (item) => item.endpointId === endpointId,
+    );
+    if (!supervisor) return false;
+    await supervisor.drainAndAnnounceOffline(reason);
     return true;
   }
 

@@ -1470,6 +1470,117 @@ export class GatewayDB {
     );
   }
 
+  /**
+   * Move an agent into `staged_delete` with its purge deadline (R5.4).
+   *
+   * Both staging columns are written in the same statement because the schema
+   * CHECK requires them to move together: a lifecycle set without a deadline is
+   * a row the purge sweep would skip forever, and a deadline without a
+   * lifecycle would schedule a live agent for destruction.
+   *
+   * Guarded on `lifecycle='active'` so a second tombstone for an agent already
+   * staged cannot silently extend its grace window — re-staging would push the
+   * deadline out on every redelivered backfill event.
+   */
+  stageProvisionedAgentDelete(input: {
+    agentId: string;
+    stagedAt: string;
+    purgeDeadline: string;
+  }): boolean {
+    if (!this.provisionedAgentSchema()) return false;
+    return (
+      this._db
+        .prepare(
+          `UPDATE provisioned_agents
+              SET lifecycle='staged_delete', staged_at=?, purge_deadline=?,
+                  updated_at=datetime('now')
+            WHERE agent_id=? AND lifecycle='active'`,
+        )
+        .run(input.stagedAt, input.purgeDeadline, input.agentId).changes === 1
+    );
+  }
+
+  /**
+   * Move an already-staged agent's purge deadline (the operator hatch).
+   *
+   * Separate from `stageProvisionedAgentDelete`, which refuses to touch a row
+   * that is already staged so a redelivered tombstone cannot extend the grace
+   * window. Bringing a deadline *forward* is an explicit, acknowledged operator
+   * act, and it is the only thing allowed to rewrite one.
+   */
+  setProvisionedAgentPurgeDeadline(
+    agentId: string,
+    purgeDeadline: string,
+  ): boolean {
+    if (!this.provisionedAgentSchema()) return false;
+    return (
+      this._db
+        .prepare(
+          `UPDATE provisioned_agents
+              SET purge_deadline=?, updated_at=datetime('now')
+            WHERE agent_id=? AND lifecycle='staged_delete'`,
+        )
+        .run(purgeDeadline, agentId).changes === 1
+    );
+  }
+
+  /**
+   * Staged agents whose grace period has expired, oldest deadline first.
+   *
+   * The deadline is read from the row rather than from an in-memory timer, so a
+   * restart mid-grace neither resurrects a staged agent nor purges it early
+   * (R5.4). Timestamps are the `datetime('now')` format this schema uses
+   * throughout, which sorts and compares lexicographically.
+   */
+  listProvisionedAgentsDueForPurge(
+    nowTimestamp: string,
+  ): ProvisionedAgentRow[] {
+    if (!this.provisionedAgentSchema()) return [];
+    return (
+      this._db
+        .query(
+          `SELECT ${GatewayDB.PROVISIONED_AGENT_COLUMNS}
+             FROM provisioned_agents
+            WHERE lifecycle='staged_delete' AND purge_deadline IS NOT NULL
+              AND purge_deadline <= ?
+            ORDER BY purge_deadline, agent_id`,
+        )
+        .all(nowTimestamp) as RawProvisionedAgent[]
+    ).map(toProvisionedAgent);
+  }
+
+  /**
+   * Recent audit rows for a set of signals, newest first.
+   *
+   * The reconciliation report reads rejected tombstones through this rather
+   * than from watcher memory: a report that forgets every unmatched tombstone
+   * on restart is exactly the report an operator consults after a restart.
+   */
+  listProvisioningAuditBySignal(
+    signals: readonly string[],
+    limit = 100,
+  ): ProvisioningAuditRow[] {
+    if (!this.provisionedAgentSchema() || signals.length === 0) return [];
+    const placeholders = signals.map(() => "?").join(", ");
+    return (
+      this._db
+        .query(
+          `SELECT id, agent_id, signal, actor, outcome, detail, created_at
+             FROM provisioning_audit WHERE signal IN (${placeholders})
+            ORDER BY id DESC LIMIT ?`,
+        )
+        .all(...signals, limit) as RawProvisioningAudit[]
+    ).map((row) => ({
+      id: row.id,
+      agentId: row.agent_id,
+      signal: row.signal,
+      actor: row.actor,
+      outcome: row.outcome,
+      detail: row.detail,
+      createdAt: row.created_at,
+    }));
+  }
+
   deleteProvisionedAgent(agentId: string): boolean {
     if (!this.provisionedAgentSchema()) return false;
     return (
@@ -1477,6 +1588,77 @@ export class GatewayDB {
         .prepare("DELETE FROM provisioned_agents WHERE agent_id=?")
         .run(agentId).changes === 1
     );
+  }
+
+  // ── tombstone watcher cursors ─────────────────────────────────────────────
+
+  /**
+   * The watcher's durable per-relay cursor (R5.10).
+   *
+   * Without this a tombstone published while the gateway was down is lost
+   * permanently — D2 forbids a sweep, so nothing else would ever catch it and
+   * the agent would run forever with its Desktop record long gone.
+   */
+  getTombstoneCursor(relayUrl: string): {
+    relayUrl: string;
+    lastCreatedAt: number;
+    lastEventId: string | null;
+    updatedAt: string;
+  } | null {
+    if (!this.tombstoneCursorSchema()) return null;
+    const row = this._db
+      .query(
+        `SELECT relay_url, last_created_at, last_event_id, updated_at
+           FROM buzz_tombstone_cursors WHERE relay_url=?`,
+      )
+      .get(relayUrl) as {
+      relay_url: string;
+      last_created_at: number;
+      last_event_id: string | null;
+      updated_at: string;
+    } | null;
+    return row
+      ? {
+          relayUrl: row.relay_url,
+          lastCreatedAt: row.last_created_at,
+          lastEventId: row.last_event_id,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
+  /**
+   * Advance a relay cursor. Never moves backwards: a backfill can deliver
+   * events out of order, and a late-arriving old event must not rewind the
+   * window and cause the whole batch to be reprocessed on every reconnect.
+   */
+  advanceTombstoneCursor(input: {
+    relayUrl: string;
+    lastCreatedAt: number;
+    lastEventId: string | null;
+  }): void {
+    if (!this.tombstoneCursorSchema()) return;
+    this._db
+      .prepare(
+        `INSERT INTO buzz_tombstone_cursors
+           (relay_url, last_created_at, last_event_id)
+         VALUES (?, ?, ?)
+         ON CONFLICT(relay_url) DO UPDATE SET
+           last_created_at=MAX(excluded.last_created_at, last_created_at),
+           last_event_id=CASE
+             WHEN excluded.last_created_at >= last_created_at
+               THEN excluded.last_event_id ELSE last_event_id END,
+           updated_at=datetime('now')`,
+      )
+      .run(input.relayUrl, input.lastCreatedAt, input.lastEventId);
+  }
+
+  private tombstoneCursorSchema(): boolean {
+    return !!this._db
+      .query(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='buzz_tombstone_cursors'",
+      )
+      .get();
   }
 
   deleteProvisionedEndpoint(endpointId: string): boolean {
