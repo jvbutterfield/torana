@@ -24,6 +24,7 @@ import {
   ProvisionRequestSchema,
   type BuzzProvisioningService,
 } from "../platform/buzz/provisioning.js";
+import type { BuzzAgentLifecycleService } from "../platform/buzz/agent-lifecycle.js";
 
 import pkg from "../../package.json" with { type: "json" };
 
@@ -36,6 +37,13 @@ export interface AgentApiRouterDeps extends AgentApiDeps {
    * no provisioning" from "this path is not routed at all".
    */
   provisioning?: BuzzProvisioningService;
+  /**
+   * The delete pipeline. Separate from `provisioning` because staging, restore,
+   * and the reconciliation report have a different blast radius from creating
+   * an endpoint, and because a gateway may have provisioning wired with no
+   * lifecycle service (tests, and any build without a Buzz transport).
+   */
+  agentLifecycle?: BuzzAgentLifecycleService;
 }
 
 /**
@@ -317,6 +325,160 @@ function registerProvisioningRoutes(
         return jsonResponse(200, {
           endpoint_id: endpointId,
           result: "removed",
+        });
+      }),
+    ),
+  );
+
+  registerAgentLifecycleRoutes(unregs, router, deps);
+}
+
+/**
+ * The delete pipeline's operator surface (R5.5, R5.7, R5.12).
+ *
+ * Three routes, and the asymmetry between them is the point. `DELETE` stages —
+ * it never destroys — so the worst an admin token can do in one call is start a
+ * reversible grace period. `restore` reverses it. `reconciliation` is
+ * read-only, and deliberately has no write path at all: every state Torana
+ * cannot account for is reported to a human rather than acted on (D2).
+ */
+function registerAgentLifecycleRoutes(
+  unregs: Unregister[],
+  router: HttpRouter,
+  deps: AgentApiRouterDeps,
+): void {
+  const agentPath = "/v1/admin/buzz/agents/:agent_id";
+
+  unregs.push(
+    router.route(
+      "GET",
+      agentPath,
+      provisionAuthed(deps, async (_req, params, token) => {
+        const provisioning = deps.provisioning;
+        if (!provisioning) return provisioningUnavailable();
+        const agentId = decodeURIComponent(params.agent_id!);
+        if (!tokenCoversAgent(token, agentId)) return adminNotFound();
+        const agent = provisioning
+          .listAgents()
+          .find((item) => item.agentId === agentId);
+        if (!agent) return adminNotFound();
+        return jsonResponse(200, {
+          agent_id: agent.agentId,
+          pubkey: agent.pubkey,
+          harness: agent.harness,
+          lifecycle: agent.lifecycle,
+          instruction_version: agent.instructionVersion,
+          staged_at: agent.stagedAt,
+          purge_deadline: agent.purgeDeadline,
+          endpoint_id: agent.endpointId,
+          endpoint_state: agent.endpointState,
+          connected: agent.connected,
+          created_at: agent.createdAt,
+          updated_at: agent.updatedAt,
+          provisioned_by: agent.provisionedBy,
+        });
+      }),
+    ),
+  );
+
+  unregs.push(
+    router.route(
+      "DELETE",
+      agentPath,
+      provisionAuthed(deps, async (_req, params, token) => {
+        const lifecycle = deps.agentLifecycle;
+        if (!lifecycle) return provisioningUnavailable();
+        const agentId = decodeURIComponent(params.agent_id!);
+        if (!tokenCoversAgent(token, agentId)) return adminNotFound();
+        const result = await lifecycle.stage(agentId, {
+          kind: "operator",
+          via: "api",
+        });
+        switch (result.kind) {
+          case "unknown_agent":
+            return adminNotFound();
+          case "not_configured":
+            return provisioningUnavailable();
+          case "already_staged":
+            return jsonResponse(200, {
+              agent_id: agentId,
+              result: "already_staged",
+              purge_deadline: result.purgeDeadline ?? null,
+            });
+          case "staged":
+            return jsonResponse(200, {
+              agent_id: agentId,
+              result: "staged",
+              purge_deadline: result.purgeDeadline ?? null,
+              staged_in_window: result.fanout ?? 1,
+            });
+        }
+      }),
+    ),
+  );
+
+  unregs.push(
+    router.route(
+      "POST",
+      "/v1/admin/buzz/agents/:agent_id/restore",
+      provisionAuthed(deps, async (_req, params, token) => {
+        const lifecycle = deps.agentLifecycle;
+        if (!lifecycle) return provisioningUnavailable();
+        const agentId = decodeURIComponent(params.agent_id!);
+        if (!tokenCoversAgent(token, agentId)) return adminNotFound();
+        const result = lifecycle.restore(agentId, `token:${token.name}`);
+        if (result === "unknown_agent") return adminNotFound();
+        if (result === "not_staged") {
+          return adminConflict(
+            `agent '${agentId}' is not staged for deletion; nothing to restore`,
+          );
+        }
+        return jsonResponse(200, { agent_id: agentId, result: "restored" });
+      }),
+    ),
+  );
+
+  unregs.push(
+    router.route(
+      "GET",
+      "/v1/admin/buzz/reconciliation",
+      provisionAuthed(deps, async (_req, _params, token) => {
+        const lifecycle = deps.agentLifecycle;
+        if (!lifecycle) return provisioningUnavailable();
+        const report = await lifecycle.reconciliationReport();
+        return jsonResponse(200, {
+          generated_at: report.generatedAt,
+          record_probe: report.recordProbe,
+          agents: report.agents
+            .filter((agent) => tokenCoversAgent(token, agent.agentId))
+            .map((agent) => ({
+              agent_id: agent.agentId,
+              pubkey: agent.pubkey,
+              owner_pubkey: agent.ownerPubkey,
+              relay_url: agent.relayUrl,
+              harness: agent.harness,
+              lifecycle: agent.lifecycle,
+              staged_at: agent.stagedAt,
+              purge_deadline: agent.purgeDeadline,
+              instruction_version: agent.instructionVersion,
+              endpoint_id: agent.endpointId,
+              endpoint_state: agent.endpointState,
+              connected: agent.connected,
+              presence_stale: agent.presenceStale,
+              record_state: agent.recordState,
+            })),
+          // Not filtered by `bot_ids`: an unmatched tombstone has no agent id
+          // to filter on, and hiding it from a wildcard-less token would hide
+          // exactly the evidence the report exists to surface.
+          rejected_tombstones: report.rejectedTombstones.map((entry) => ({
+            seen_at: entry.seenAt,
+            reason: entry.reason,
+            event_id: entry.eventId,
+            agent_pubkey: entry.agentPubkey,
+            owner_pubkey: entry.ownerPubkey,
+            relay_url: entry.relayUrl,
+            detail: entry.detail,
+          })),
         });
       }),
     ),

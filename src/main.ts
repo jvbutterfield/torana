@@ -16,6 +16,8 @@ import {
   type NormalizedEndpointConfig,
 } from "./config/v2.js";
 import { BuzzProvisioningService } from "./platform/buzz/provisioning.js";
+import { BuzzAgentLifecycleService } from "./platform/buzz/agent-lifecycle.js";
+import { TombstoneWatcher } from "./platform/buzz/tombstone-watcher.js";
 import { AgentTimeoutRegistry } from "./platform/buzz/agent-timeouts.js";
 import { provisioningKeyFromEnv } from "./config/provisioning-secrets.js";
 import {
@@ -296,6 +298,27 @@ export async function startGateway(
       },
     },
   });
+
+  // The delete pipeline. Both of these outlive every endpoint supervisor by
+  // design: the most likely delete sequence is "stop the agent, then delete
+  // it", so a watcher owned by an endpoint would have nothing listening at the
+  // moment the tombstone publishes (R5.8).
+  let tombstoneWatcher: TombstoneWatcher | null = null;
+  const agentLifecycle = new BuzzAgentLifecycleService({
+    db,
+    dataDir: config.gateway.data_dir,
+    provisioning: normalized.provisioning ?? null,
+    transport: () => buzzTransport,
+    alerts,
+    agentTimeouts,
+    agentRuntime: {
+      remove: (agentId) => registry.removeProvisionedAgent(agentId),
+    },
+    onFleetChanged: () => tombstoneWatcher?.refresh(),
+    probeRecords: (coordinates) =>
+      tombstoneWatcher?.probeRecords(coordinates) ?? Promise.resolve(new Map()),
+  });
+
   const persisted = provisioning.loadPersisted();
   for (const error of persisted.errors) {
     log.error("provisioned Buzz endpoint could not be restored", { error });
@@ -371,6 +394,7 @@ export async function startGateway(
         orphans: agentApiOrphans,
         buzzBroker,
         provisioning,
+        agentLifecycle,
       }),
     );
     const retention = config.agent_api.send.idempotency_retention_ms;
@@ -487,6 +511,32 @@ export async function startGateway(
     });
     provisioning.attachTransport(buzzTransport);
     transports.push(buzzTransport);
+
+    // One connection per distinct relay across all provisioned agents, staged
+    // ones included, for the lifetime of the process. `refresh()` is what makes
+    // it track a fleet that changes at runtime; it is also called directly on
+    // every create, stage, restore, and purge.
+    if (normalized.provisioning && provisioningKey) {
+      tombstoneWatcher = new TombstoneWatcher({
+        db,
+        lifecycle: agentLifecycle,
+        targets: () => provisioning.tombstoneTargets(),
+        // YAML identities are never stageable by a relay event, so the watcher
+        // needs to recognize them in order to refuse them loudly rather than
+        // reporting them as merely unmatched.
+        yamlPubkeys: () =>
+          new Set(
+            normalized.endpoints
+              .filter(
+                (endpoint) => endpoint.platform === "buzz" && endpoint.buzz,
+              )
+              .map((endpoint) => endpoint.buzz!.pubkey),
+          ),
+        maxFrameBytes: normalized.buzzPlatform.max_frame_bytes,
+        waitMs: normalized.limits?.relay_ok_wait_ms ?? 5_000,
+        reconnect: normalized.buzzPlatform.reconnect,
+      });
+    }
   }
 
   // Relay endpoints make accidental overlapping gateway instances externally
@@ -528,6 +578,20 @@ export async function startGateway(
   // log line just makes the dup-risk visible.
   outbox.recoverInFlight();
   outbox.start();
+
+  // The delete pipeline comes up after the transports, so staging has a
+  // supervisor to drain and purge has one to remove. `start()` runs a purge
+  // sweep immediately: deadlines are persisted, so a gateway that was down when
+  // one expired must act on it at boot rather than up to 300 s later (R5.4).
+  if (normalized.provisioning) {
+    agentLifecycle.start();
+    tombstoneWatcher?.start();
+    if (tombstoneWatcher) {
+      log.info("tombstone watcher started", {
+        relays: tombstoneWatcher.relayUrls.length,
+      });
+    }
+  }
 
   // Periodic mailbox-backlog alert.
   const backlogTimer = setInterval(() => {
@@ -627,6 +691,11 @@ export async function startGateway(
         clearInterval(orphanSweeperTimer);
         if (agentApiIdempotencySweep) clearInterval(agentApiIdempotencySweep);
         if (publisherRetentionSweep) clearInterval(publisherRetentionSweep);
+        agentLifecycle.stop();
+        // Awaited rather than fired and forgotten: the watcher owns real
+        // sockets, and an orphaned relay connection is exactly the overlapping
+        // second subscription the data-directory lock exists to prevent.
+        if (tombstoneWatcher) await tombstoneWatcher.stop();
 
         // Unregister agent-api routes so new calls 404 before we tear down.
         for (const u of agentApiUnregs) {

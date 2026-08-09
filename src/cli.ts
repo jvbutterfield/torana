@@ -20,6 +20,10 @@ import { GatewayDB } from "./db/gateway-db.js";
 import { startGateway } from "./main.js";
 import { runDoctor, runRemoteDoctor, type DoctorCheck } from "./doctor.js";
 import {
+  BuzzAgentLifecycleService,
+  PURGE_SWEEP_INTERVAL_MS,
+} from "./platform/buzz/agent-lifecycle.js";
+import {
   AgentApiClient,
   type AgentApiClientOptions,
 } from "./agent-api/client.js";
@@ -74,6 +78,7 @@ interface ParsedArgs {
   migrationTo: number | null;
   confirmShared: boolean;
   deadLetterPending: boolean;
+  acknowledgeDataLoss: boolean;
   limit: number;
 }
 
@@ -94,6 +99,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     migrationTo: null,
     confirmShared: false,
     deadLetterPending: false,
+    acknowledgeDataLoss: false,
     limit: 100,
   };
 
@@ -111,6 +117,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.confirmShared = true;
     } else if (a === "--dead-letter-pending") {
       args.deadLetterPending = true;
+    } else if (a === "--acknowledge-data-loss") {
+      args.acknowledgeDataLoss = true;
     } else if (a === "--limit") {
       const next = argv[++i];
       if (!next) throw new Error("--limit requires a number");
@@ -568,6 +576,132 @@ async function main(argv: string[]): Promise<void> {
       }
       return;
     }
+    // Desktop-managed agents: the operator's half of the delete pipeline.
+    //
+    // Nothing here destroys anything directly, and that is deliberate. The
+    // running gateway owns the one code path that purges, because it is the
+    // process holding the agent's runner, its endpoint supervisor, and the
+    // audit-first ordering that makes a purge record outlive the data it
+    // describes. These commands move durable state and let that path act on it.
+    case "agents": {
+      const action = argv[1];
+      const agentId = argv[2] && !argv[2]!.startsWith("-") ? argv[2]! : null;
+      if (
+        !action ||
+        !["list", "restore", "purge", "report"].includes(action) ||
+        ((action === "restore" || action === "purge") && !agentId)
+      ) {
+        throw new Error(
+          "usage: torana agents <list|report|restore <id>|purge <id> --acknowledge-data-loss> [--config <path>]",
+        );
+      }
+      const path = resolveConfigPath(args.configPath);
+      const { config, normalized, secrets } = loadConfigFromFile(path);
+      setSecrets(secrets);
+      const db = new GatewayDB(config.gateway.db_path!);
+      try {
+        const lifecycle = new BuzzAgentLifecycleService({
+          db,
+          dataDir: config.gateway.data_dir,
+          provisioning: normalized.provisioning ?? null,
+          // No transport and no runtime: this process holds neither. Every
+          // command below is a durable state change the gateway acts on.
+          transport: () => null,
+        });
+
+        if (action === "list") {
+          const rows = db.listProvisionedAgents();
+          if (args.format === "json") {
+            console.log(JSON.stringify(rows, null, 2));
+            return;
+          }
+          if (rows.length === 0) {
+            console.log("no Desktop-managed agents");
+            return;
+          }
+          for (const row of rows) {
+            console.log(
+              `${row.agentId}\t${row.harness}\t${row.lifecycle}\tversion=${row.instructionVersion}` +
+                (row.purgeDeadline ? `\tpurge_at=${row.purgeDeadline}` : ""),
+            );
+          }
+          return;
+        }
+
+        if (action === "report") {
+          // Offline: no relay is reachable from here, so every managed-agent
+          // record state is `unknown` rather than guessed. The API route is the
+          // one that probes; this is the database half, which is the half an
+          // operator can read with the gateway down.
+          const report = await lifecycle.reconciliationReport();
+          if (args.format === "json") {
+            console.log(JSON.stringify(report, null, 2));
+            return;
+          }
+          for (const agent of report.agents) {
+            console.log(
+              `${agent.agentId}\t${agent.lifecycle}\tendpoint=${agent.endpointState ?? "-"}\trecord=${agent.recordState}`,
+            );
+          }
+          for (const entry of report.rejectedTombstones) {
+            console.log(
+              `tombstone-rejected\t${entry.seenAt}\t${entry.reason}\t${entry.agentPubkey ?? "-"}`,
+            );
+          }
+          if (
+            report.agents.length === 0 &&
+            report.rejectedTombstones.length === 0
+          ) {
+            console.log("nothing to reconcile");
+          }
+          return;
+        }
+
+        if (action === "restore") {
+          const result = lifecycle.restore(agentId!, "operator-cli");
+          if (result === "unknown_agent") {
+            throw new Error(
+              `agent '${agentId}' is not a Desktop-managed agent`,
+            );
+          }
+          if (result === "not_staged") {
+            throw new Error(
+              `agent '${agentId}' is not staged for deletion; nothing to restore`,
+            );
+          }
+          console.log(
+            `agent '${agentId}' restored; its endpoint stays down until the next ` +
+              `deploy or \`torana endpoints resume\`, and it is now running with no ` +
+              `Desktop record — expect it in the reconciliation report`,
+          );
+          return;
+        }
+
+        if (!args.acknowledgeDataLoss) {
+          throw new Error(
+            `purging '${agentId}' destroys its record, endpoint, sealed secrets, and ` +
+              `workspace. Rerun with --acknowledge-data-loss`,
+          );
+        }
+        const result = lifecycle.expedite(agentId!, "operator-cli");
+        if (result === "unknown_agent") {
+          throw new Error(`agent '${agentId}' is not a Desktop-managed agent`);
+        }
+        if (result === "not_configured") {
+          throw new Error(
+            "this gateway has no `provisioning` block, so it manages no agents",
+          );
+        }
+        console.log(
+          `agent '${agentId}' is due for purge now; the running gateway destroys it ` +
+            `within one sweep (${PURGE_SWEEP_INTERVAL_MS / 1000}s). With the gateway ` +
+            `stopped, the purge runs at its next start`,
+        );
+      } finally {
+        db.close();
+      }
+      return;
+    }
     case "migrate": {
       // `--to` stays an explicit acknowledgement of the target rather than a
       // free-form version selector: the documented bridge activation is 6, and
@@ -653,6 +787,10 @@ Gateway commands:
   endpoints drain <id>   Stop Buzz intake while accepted work drains
   endpoints disable <id> Disable a drained Buzz endpoint
   endpoints resume <id>  Resume a configured Buzz endpoint
+  agents list            List Desktop-managed agents and their lifecycle state
+  agents report          Reconciliation report from the database (no relay probe)
+  agents restore <id>    Reverse a staged deletion during its grace period
+  agents purge <id>      Bring a purge forward (requires --acknowledge-data-loss)
   version      Print package + runtime version
 
 Agent-API client commands (require --server + --token, env equivalents, or a profile):
@@ -676,6 +814,7 @@ Gateway options:
   --token <tok>         (doctor) Bearer token for remote probe
   --profile <name>      (doctor) Resolve --server + --token from the profile store
   --publisher-probe <id> (doctor) Authenticate and verify one disabled publisher destination without publishing
+  --acknowledge-data-loss (agents purge) Confirm destruction of record, secrets, and workspace
 
 Run \`torana <client-cmd> --help\` for per-subcommand options + exit codes.
 

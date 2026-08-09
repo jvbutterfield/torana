@@ -49,6 +49,11 @@ import {
   workspacePathFor,
   WorkspaceError,
 } from "./provisioned-workspaces.js";
+import {
+  buildTombstoneTargets,
+  type TombstoneRelayTarget,
+} from "./tombstone-watcher.js";
+import { readEndpointBlock, stagingEventIdFor } from "./agent-lifecycle.js";
 import { addSecrets, logger } from "../../log.js";
 import { decodeSecret, publicKey } from "./protocol.js";
 import type { AgentTimeoutRegistry } from "./agent-timeouts.js";
@@ -515,7 +520,16 @@ export class BuzzProvisioningService {
           signal: "restore",
           actor,
           outcome: "unstaged_by_deploy",
-          detail: { purge_deadline: classification.existing.purgeDeadline },
+          detail: {
+            purge_deadline: classification.existing.purgeDeadline,
+            // Recorded in the same shape the operator restore path uses, so a
+            // backfill redelivering that tombstone cannot re-stage the agent
+            // this deploy just brought back.
+            reversed_event_id: stagingEventIdFor(
+              this.deps.db,
+              request.agent_id,
+            ),
+          },
         });
       }
       instructionChange = this.applyInstructionChange({
@@ -770,6 +784,60 @@ export class BuzzProvisioningService {
         updatedAt: row.updatedAt,
         provisionedBy: row.provisionedBy,
       };
+    });
+  }
+
+  /**
+   * What the tombstone watcher needs, with exactly one key opened per relay.
+   *
+   * Relay URL and owner pubkey come out of the stored (redacted) endpoint
+   * block, so building the whole target list touches no secret at all; only the
+   * one endpoint chosen for NIP-42 on each relay is decrypted. That keeps the
+   * 60-second reconcile cheap and keeps the sealed-secret funnel narrow.
+   */
+  tombstoneTargets(): TombstoneRelayTarget[] {
+    const endpoints = this.deps.db.listProvisionedEndpoints();
+    const agents = this.deps.db.listProvisionedAgents().flatMap((row) => {
+      const endpoint = endpoints.find((item) => item.agentId === row.agentId);
+      if (!endpoint) return [];
+      const stored = readEndpointBlock(endpoint);
+      return [
+        {
+          agentId: row.agentId,
+          agentPubkey: row.derivedPubkey,
+          lifecycle: row.lifecycle,
+          endpointId: endpoint.endpointId,
+          relayUrl: stored.relayUrl,
+          ownerPubkey: stored.ownerPubkey,
+        },
+      ];
+    });
+    return buildTombstoneTargets({
+      agents,
+      credentialFor: (endpointId) => {
+        const row = endpoints.find((item) => item.endpointId === endpointId);
+        if (!row || !this.deps.key) return null;
+        try {
+          const privateKey = openSecret(
+            this.deps.key,
+            row.endpointId,
+            row.privateKeyCiphertext,
+          );
+          const authTag = row.authTagCiphertext
+            ? openSecret(this.deps.key, row.endpointId, row.authTagCiphertext)
+            : null;
+          // Same funnel discipline as `blockFromRow`: a stored secret becomes
+          // redactable at the moment it re-enters the process.
+          addSecrets(authTag ? [privateKey, authTag] : [privateKey]);
+          return { privateKey, authTag };
+        } catch (error) {
+          log.error("could not open a provisioned endpoint key for watching", {
+            endpoint_id: endpointId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        }
+      },
     });
   }
 

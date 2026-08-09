@@ -18,7 +18,8 @@ export type AlertKind =
   | "outboxFailures"
   | "attachmentDiskFull"
   | "loopBudgetRejected"
-  | "webhookSetFailed";
+  | "webhookSetFailed"
+  | "agentStagedForDeletion";
 
 export class AlertManager {
   private cooldowns = new Map<string, number>();
@@ -179,6 +180,33 @@ export class AlertManager {
       "loopBudgetRejected",
       botId,
       `⚠️ agent ${botId}: Buzz reply suppressed by ${scope} loop budget`,
+    );
+  }
+
+  /**
+   * A verified tombstone staged an agent for deletion (R5.4, Q5).
+   *
+   * The alert is what makes the grace window *noticed* rather than merely
+   * reversible in theory. `fanout` is how many agents this sweep has staged:
+   * upstream's persona-delete cascade reuses the identical tombstone builder,
+   * so the events are indistinguishable on the wire and blast-radius protection
+   * cannot be signal-side. Counting stages is the only place the operator can
+   * learn the radius while every one of them is still reversible.
+   */
+  async agentStagedForDeletion(
+    botId: BotId,
+    purgeDeadline: string,
+    fanout: number,
+  ): Promise<void> {
+    const cascade =
+      fanout >= 2
+        ? ` — persona cascade suspected: ${fanout} agents staged`
+        : "";
+    await this.emit(
+      "agentStagedForDeletion",
+      botId,
+      `🗑 agent ${botId} staged for deletion; purge at ${purgeDeadline}. ` +
+        `Reverse with \`torana agents restore ${botId}\`${cascade}`,
     );
   }
 
