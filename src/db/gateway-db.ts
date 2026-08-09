@@ -1272,6 +1272,39 @@ export class GatewayDB {
       );
   }
 
+  /**
+   * Replace a row's sealed columns and nothing else (R9.6 re-seal).
+   *
+   * Deliberately not `upsertProvisionedEndpoint`: re-sealing must not touch
+   * `config_json`, `provisioned_by`, or `deploy_nonce`. A rotation is a change
+   * of key, not a re-provisioning, and rewriting `provisioned_by` would make
+   * every audit trail claim the rotation deployed the agent.
+   *
+   * `updated_at` does move — the row's bytes changed, and an operator watching
+   * a rotation land is exactly who reads that column.
+   */
+  resealProvisionedEndpoint(input: {
+    endpointId: string;
+    privateKeyCiphertext: string;
+    authTagCiphertext: string | null;
+  }): boolean {
+    if (!this.provisionedSchema()) return false;
+    return (
+      this._db
+        .prepare(
+          `UPDATE provisioned_endpoints
+              SET private_key_ciphertext=?, auth_tag_ciphertext=?,
+                  updated_at=datetime('now')
+            WHERE endpoint_id=?`,
+        )
+        .run(
+          input.privateKeyCiphertext,
+          input.authTagCiphertext,
+          input.endpointId,
+        ).changes === 1
+    );
+  }
+
   // ── Provisioned agents (schema v8) ────────────────────────────────────────
   // The definition half of a Desktop-managed agent. Holds no secrets: the
   // identity lives on the paired provisioned_endpoints row, sealed there.
@@ -1579,6 +1612,56 @@ export class GatewayDB {
       detail: row.detail,
       createdAt: row.created_at,
     }));
+  }
+
+  /**
+   * Count and optionally delete audit rows older than a cutoff (R12.5).
+   *
+   * Purge records are excluded unless `includePurgeRecords` is set, and that
+   * flag exists to be typed out deliberately: the purge record is the only
+   * evidence of what was destroyed, and it is meant to outlive it. Everything
+   * else here is ordinary lifecycle chatter.
+   *
+   * `dryRun` returns the same counts without deleting, so an operator can see
+   * the blast radius before committing to it. Nothing calls this on a timer.
+   */
+  pruneProvisioningAudit(input: {
+    before: string;
+    includePurgeRecords?: boolean;
+    dryRun?: boolean;
+  }): { matched: number; purgeRecordsKept: number; deleted: number } {
+    if (!this.provisionedAgentSchema()) {
+      return { matched: 0, purgeRecordsKept: 0, deleted: 0 };
+    }
+    const includePurge = input.includePurgeRecords === true;
+    const purgeFilter = includePurge ? "" : " AND signal <> 'purge'";
+    const matched = (
+      this._db
+        .query(
+          `SELECT COUNT(*) AS n FROM provisioning_audit
+            WHERE created_at < ?${purgeFilter}`,
+        )
+        .get(input.before) as { n: number }
+    ).n;
+    const purgeRecordsKept = includePurge
+      ? 0
+      : (
+          this._db
+            .query(
+              `SELECT COUNT(*) AS n FROM provisioning_audit
+                WHERE created_at < ? AND signal = 'purge'`,
+            )
+            .get(input.before) as { n: number }
+        ).n;
+    if (input.dryRun === true) {
+      return { matched, purgeRecordsKept, deleted: 0 };
+    }
+    const deleted = this._db
+      .prepare(
+        `DELETE FROM provisioning_audit WHERE created_at < ?${purgeFilter}`,
+      )
+      .run(input.before).changes;
+    return { matched, purgeRecordsKept, deleted };
   }
 
   deleteProvisionedAgent(agentId: string): boolean {

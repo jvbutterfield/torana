@@ -11,12 +11,25 @@ Deploying an agent through this provider moves the agent's _runtime_ to Torana.
 Torana keeps it online independently of the Desktop — closing the app no longer
 takes the agent offline, which is the entire point.
 
-It creates an **endpoint**, never an agent or a runner. The target agent must
-already exist in the gateway's `torana.yaml` with a runner configured; the
-provider names it with `torana_agent_id`. Everything about how that agent
-thinks — its system prompt, model, timeouts, parallelism — is Torana's
-configuration, not the Desktop's. Those fields are reported back in the deploy
-result rather than silently dropped, so you can see what did not apply.
+What a deploy means depends on the gateway and on the id you name:
+
+- **The agent is declared in the gateway's `torana.yaml`.** The deploy creates
+  an **endpoint** and attaches it. Everything about how that agent thinks — its
+  system prompt, model, timeouts, parallelism — is Torana's configuration, not
+  the Desktop's, and those fields are reported back in the deploy result rather
+  than silently dropped, so you can see what did not apply.
+- **The id is unknown and the gateway has a `provisioning` block.** The deploy
+  **creates the agent**: its record, its workspace, and its endpoint, in one
+  operation. Instructions, model, and timeouts _are_ applied, and the result
+  names the resulting instruction version. The harness is chosen **by name**
+  from the operator's allowlist (`torana_harness`, else derived from
+  `launch.command`); the binary path and base environment are the gateway's,
+  never the payload's.
+- **The id is unknown and the gateway has no `provisioning` block.** Refused
+  with an actionable error listing the agents it does know.
+
+A deploy naming an agent the gateway declares in YAML never mutates that
+agent's definition, whatever the payload carries.
 
 **There is no stop.** The remote-agents protocol has no `undeploy` op in v1, so
 Desktop's "Stop" for a remote agent does not call this binary at all: it
@@ -119,3 +132,48 @@ deliberate act.
 Reconciliation is keyed on the pubkey derived from the submitted key, so
 pressing Start on an already-running agent is a no-op (`"result": "unchanged"`)
 rather than a redeploy.
+
+## Deliberate divergences from the reference provider
+
+`buzz-backend-kubernetes` is the normative reference for the wire contract.
+Torana diverges in two places, both on purpose and both visible in the deploy
+result rather than silent.
+
+**1. Instruction changes apply to a running agent.** The reference provider
+returns a strict no-op for a live, started pod (`classify.rs`) and fingerprints
+env _keys_ only, excluding values (`intent.rs`) — so a system prompt travelling
+as a `policy_env` value would not register as divergence at all. Editing
+instructions there changes nothing until the pod restarts for an unrelated
+reason.
+
+That rule exists because pod replacement is the only lever that substrate has,
+and it is destructive: it kills whatever is running. Torana owns the runner
+process, so it keeps the safety property and drops the limitation. An accepted
+instruction change updates the record and recycles the agent's sessions with the
+existing drain-safe primitive, which waits for in-flight turns to finish. No
+running turn is ever interrupted; every turn started after the deploy returns
+success uses the new instructions.
+
+**2. No Desktop env layer is honored for Desktop-managed agents.** The reference
+`wire.rs` orders `policy_env` as tier 1 and `launch.env` as tier 2. For an agent
+Torana _created_, there is no user env tier to order: base env is harness-owned
+and identity env is Torana-owned, so `env_vars`, `launch.env`, and `policy_env`
+are all reported not-applied. Reserved identity keys are still refused loudly
+rather than dropped. Endpoint-only deploys against a YAML agent are unaffected.
+
+Wire contract pinned against Buzz Desktop `desktop-v0.5.8`.
+
+## Deleting a Desktop-managed agent
+
+There is no `undeploy` op, so deleting the agent in Desktop does not call this
+binary either. Desktop publishes an owner-signed NIP-09 tombstone against the
+agent's `kind:30177` record; the gateway verifies it and **stages** the
+deletion — drain, offline, then a persisted grace period (72 h by default)
+before anything durable is destroyed. It is reversible for that whole window
+with `torana agents restore <id>`.
+
+Two consequences worth knowing as a provider user. Desktop's tombstone publish
+is best-effort, so a delete that fails to publish leaves a running remote agent
+that only shows up in the gateway's reconciliation report. And re-deploying an
+agent whose deletion is staged un-stages it — a deploy is fresh owner intent —
+which is recorded loudly rather than done silently.

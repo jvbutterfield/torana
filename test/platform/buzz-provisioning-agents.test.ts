@@ -14,7 +14,10 @@ import yaml from "js-yaml";
 
 import { loadConfigFromString } from "../../src/config/load.js";
 import { upgradeV1Object } from "../../src/config/v2.js";
-import { parseProvisioningKey } from "../../src/config/provisioning-secrets.js";
+import {
+  parseProvisioningKey,
+  singleKeyring,
+} from "../../src/config/provisioning-secrets.js";
 import { applyMigrations } from "../../src/db/migrate.js";
 import { GatewayDB } from "../../src/db/gateway-db.js";
 import {
@@ -157,7 +160,7 @@ function makeHarness(
   const service = new BuzzProvisioningService({
     db,
     configV2: loaded.configV2,
-    key: parseProvisioningKey(KEY),
+    keyring: singleKeyring(parseProvisioningKey(KEY)),
     provisioning,
     dataDir,
     transport: {
@@ -418,7 +421,7 @@ describe("gateway not configured for agent creation", () => {
     const service = new BuzzProvisioningService({
       db,
       configV2: loaded.configV2,
-      key: parseProvisioningKey(KEY),
+      keyring: singleKeyring(parseProvisioningKey(KEY)),
       provisioning: null,
       dataDir: loaded.config.gateway.data_dir,
       transport: {

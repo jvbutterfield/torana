@@ -136,3 +136,156 @@ key or auth tag. Conversation turns receive a session-scoped capability
 automatically; Agent API `ask` turns receive one only when their token sets
 `buzz_tools: true` (see [agent-api](../agent-api.md)). See [operations](../operations.md) for rotation, replay,
 draining, and canary rollout.
+
+## Desktop-managed agents
+
+Everything above describes an agent you declared in `torana.yaml`. Torana also
+supports agents whose **whole definition** — instructions, model, harness,
+timeouts — lives in the gateway database, created from Buzz Desktop with no
+YAML edit and no redeploy. The two kinds coexist permanently; neither is being
+migrated to the other.
+
+This is off unless the gateway has a `provisioning:` block
+([configuration](../configuration.md#provisioning)). Without one, a deploy that
+tries to create an agent is refused with `not_configured` and nothing else
+changes.
+
+### YAML always wins, for agents as well as endpoints
+
+An id declared in `torana.yaml` can never be shadowed, mutated, or deleted by
+anything arriving over the wire. Concretely:
+
+- A deploy naming a **YAML agent** attaches an endpoint to it, exactly as
+  before. Any instruction fields in the payload are reported back as
+  not-applied; the agent's definition is untouched.
+- A deploy naming a **publisher id** (or a publisher's endpoint id) is refused
+  with `agent '<id>' is managed by static config`. Publishers share one global
+  id namespace with agents, and "unknown id" now means _create_, so this gate
+  fires before anything is written.
+- A record tombstone naming a **YAML endpoint's identity** deletes nothing. It
+  is logged and it appears in the reconciliation report, and that is all. There
+  is no sequence of relay events that can remove an agent you wrote down.
+
+### Instructions are applied at the turn boundary
+
+When a deploy carries a real instruction change, Torana persists it, rebuilds
+the agent, and schedules a drain-safe recycle of that agent's live sessions. A
+turn already running finishes under the instructions it started with; every
+turn started after the deploy returns success uses the new ones. Nothing is
+interrupted.
+
+Which instructions an agent is actually running is observable — every agent
+carries an **instruction version**, a digest over the applied prompt, model, and
+honored timeouts:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" \
+  https://gateway.example/v1/admin/buzz/agents | jq '.agents[].instruction_version'
+```
+
+It hashes _applied_ values, so two deploys differing only by a timeout that
+clamps to the same ceiling are the same version. It also moves when you change
+the harness config underneath a running agent, because that genuinely changes
+what the agent executes.
+
+**Known upstream limitation: an edit is not live until the next deploy.** No
+Desktop _edit_ action calls the provider. Editing instructions in Desktop
+changes nothing remotely until something deploys — pressing Start, or the
+automatic reconcile Desktop performs when it loads community UI. The practical
+consequence is that an edit can ship at a surprising moment, minutes or hours
+later, when someone opens the community. This is upstream behaviour and Torana
+cannot detect the difference; see the note on Start-versus-reconcile in
+[operations](../operations.md#owner-shutdown-remote-agent-stop).
+
+### Deleting is staged, never immediate
+
+Deleting the agent in Buzz Desktop publishes an owner-signed NIP-09 tombstone
+against its `kind:30177` record. Torana keeps one relay connection per distinct
+relay across all managed agents — independent of any endpoint, so it is still
+listening after you have stopped an agent, which is the usual order — verifies
+the tombstone, and **stages** the deletion:
+
+1. the endpoint drains in-flight turns and announces presence `offline`;
+2. the record is marked deleted and a purge deadline is persisted;
+3. an operator alert fires.
+
+Nothing durable is destroyed until the grace period (`delete_grace_hours`,
+default 72 h) expires. The deadline lives in the database, so a restart,
+redeploy, or container replacement mid-window neither resurrects the agent nor
+purges it early.
+
+Reverse it while the window is open:
+
+```sh
+torana agents restore <id>
+# or: POST /v1/admin/buzz/agents/<id>/restore
+```
+
+**What restore does and does not do.** It cancels the purge. It does _not_ bring
+the endpoint back up — that happens on the next deploy, or on an explicit
+`torana endpoints resume <id>`. And the agent is now running with **no Desktop
+record behind it**, because the Desktop deleted its copy before the tombstone
+was ever published. That state is real and it is what the reconciliation report
+is for; it is not a bug to be papered over.
+
+After the deadline, a sweep (every 300 s) removes the record, the endpoint, the
+sealed secrets, and the workspace directory. The audit record describing the
+purge is committed **before** any of it and is exempt from ordinary retention
+pruning — a purge log deleted along with the agent proves nothing.
+
+Only an owner-signed tombstone (or a deliberate operator action) can stage a
+deletion. There is no TTL, no idle timer, no presence heuristic, and no
+reconcile-driven reaping: an agent missing from a reconcile set means nothing at
+all.
+
+**Reliability caveat, stated rather than engineered around.** Desktop's
+tombstone publish is best-effort — a failure is logged and swallowed so it never
+blocks the local delete. A delete that never published leaves a running remote
+agent, and no cursor can recover an event that was never sent. That agent shows
+up in the reconciliation report with its `kind:30177` record absent; removing it
+is then an operator decision (`torana agents purge <id>
+--acknowledge-data-loss`), never an automatic one.
+
+### The reconciliation report
+
+Advisory only. It has no write path: nothing in it can trigger a deletion.
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" \
+  https://gateway.example/v1/admin/buzz/reconciliation | jq
+torana agents report            # the database half, works with the gateway down
+```
+
+It lists every managed agent with its lifecycle, endpoint state, presence,
+instruction version, and whether its managed-agent record is `present`,
+`absent`, or `unknown` on the relay — plus every tombstone that was seen and
+deleted nothing, with the reason. `unknown` means the relay could not be
+reached; it never silently becomes `absent`.
+
+Two states worth acting on: a record `absent` while the agent is `active` is the
+never-published-tombstone case above. A `yaml_identity` rejection means someone
+deleted a Desktop record whose identity belongs to a YAML agent — harmless, but
+worth understanding.
+
+### Workspaces, and the honest limit of their isolation
+
+Each managed agent gets `<data_dir>/workspaces/<agent_id>`, created `0700`, used
+as its runner's working directory, retained across stop/start and restart, and
+removed only at purge. The path is derived by Torana from the validated agent
+id and never taken from Desktop input.
+
+**This is not a sandbox.** Every harness process runs as the same UID. Nothing
+Torana does ever points one agent at another's directory, and the Buzz CLI
+broker refuses cross-workspace paths — but a harness that _chooses_ to read
+outside its own `cwd` is not stopped by the filesystem. The residual is exactly
+the trust boundary this feature assumes: a single owner, no multi-tenant
+isolation. If you need real isolation between agents, run separate gateways.
+
+### What the Desktop cannot reach
+
+A managed agent's Buzz CLI policy comes from `provisioning.buzz_tools_default`,
+set once by the operator. A Desktop record cannot widen its own privileges. The
+harness allowlist owns every binary path and base environment, so a payload can
+only fill placeholders the operator already wrote — it can never add an argv
+element or an env key. Reserved identity env keys are refused loudly rather than
+dropped.

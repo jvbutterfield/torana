@@ -157,6 +157,20 @@ class FakeRelayClient {
   }
 }
 
+/**
+ * Change a hex string's last character to something it definitely was not.
+ *
+ * Replacing it with a *fixed* character is a one-in-sixteen flake: schnorr
+ * signing draws fresh auxiliary randomness every run, so roughly one signature
+ * in sixteen already ends in that character and the "forgery" is byte-identical
+ * to the real thing. The test then verifies, stages the agent, and fails —
+ * intermittently, on CI, on one matrix job out of two.
+ */
+function corrupt(hex: string): string {
+  const last = hex.at(-1);
+  return `${hex.slice(0, -1)}${last === "a" ? "b" : "a"}`;
+}
+
 async function waitFor(
   predicate: () => boolean,
   what: string,
@@ -639,7 +653,7 @@ describe("what a live tombstone does", () => {
     const h = makeHarness();
     h.addAgent({ agentId: "canary", privateKeyHex: AGENT_KEY });
     const event = JSON.parse(JSON.stringify(tombstoneFor(AGENT_PUBKEY)));
-    event.sig = `${String(event.sig).slice(0, -1)}0`;
+    event.sig = corrupt(String(event.sig));
 
     await h.watcher.handleEvent(event, RELAY);
     expect(h.db.getProvisionedAgent("canary")?.lifecycle).toBe("active");

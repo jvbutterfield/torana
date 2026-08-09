@@ -19,7 +19,7 @@ import { BuzzProvisioningService } from "./platform/buzz/provisioning.js";
 import { BuzzAgentLifecycleService } from "./platform/buzz/agent-lifecycle.js";
 import { TombstoneWatcher } from "./platform/buzz/tombstone-watcher.js";
 import { AgentTimeoutRegistry } from "./platform/buzz/agent-timeouts.js";
-import { provisioningKeyFromEnv } from "./config/provisioning-secrets.js";
+import { provisioningKeyringFromEnv } from "./config/provisioning-secrets.js";
 import {
   logger,
   setLogLevel,
@@ -271,11 +271,11 @@ export async function startGateway(
   // exists. Endpoints restored from the database are merged into the endpoint
   // list the transport is built from, so a provisioned endpoint starts exactly
   // like a YAML one.
-  const provisioningKey = provisioningKeyFromEnv();
+  const provisioningKeyring = provisioningKeyringFromEnv();
   const provisioning = new BuzzProvisioningService({
     db,
     configV2: opts.configV2 ?? null,
-    key: provisioningKey,
+    keyring: provisioningKeyring,
     transport: null,
     maxEndpoints: normalized.sessions?.max_global,
     provisioning: normalized.provisioning ?? null,
@@ -318,6 +318,21 @@ export async function startGateway(
     probeRecords: (coordinates) =>
       tombstoneWatcher?.probeRecords(coordinates) ?? Promise.resolve(new Map()),
   });
+
+  // Rotation lands here, before anything reads a row: with a second key
+  // configured, every row still sealed under it moves onto the primary now, so
+  // "no rows on the outgoing key" becomes true within one deploy rather than
+  // whenever each agent happens to be redeployed (R9.6).
+  const reseal = provisioning.resealUnderPrimary();
+  for (const error of reseal.errors) {
+    log.error("provisioned endpoint could not be re-sealed", { error });
+  }
+  if (reseal.resealed > 0) {
+    log.info("re-sealed provisioned endpoints under the primary key", {
+      resealed: reseal.resealed,
+      already_primary: reseal.alreadyPrimary,
+    });
+  }
 
   const persisted = provisioning.loadPersisted();
   for (const error of persisted.errors) {
@@ -516,7 +531,7 @@ export async function startGateway(
     // ones included, for the lifetime of the process. `refresh()` is what makes
     // it track a fleet that changes at runtime; it is also called directly on
     // every create, stage, restore, and purge.
-    if (normalized.provisioning && provisioningKey) {
+    if (normalized.provisioning && provisioningKeyring) {
       tombstoneWatcher = new TombstoneWatcher({
         db,
         lifecycle: agentLifecycle,
