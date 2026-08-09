@@ -45,6 +45,7 @@ describe("provisioning config", () => {
     // operator who omits it does not hand every provisioned agent write access.
     expect(parsed.buzz_tools_default.policy).toBe("read_only");
     expect(parsed.buzz_tools_default.acknowledge_dangerous).toBe(false);
+    expect(parsed.harnesses.claude?.enabled).toBe(true);
   });
 
   test("rejects a misspelled placeholder in args", () => {
@@ -238,6 +239,72 @@ describe("provisioning config", () => {
     expect(result.success).toBe(false);
     expect(JSON.stringify(result.error?.issues)).toContain(
       "acknowledge_dangerous",
+    );
+  });
+
+  test("Codex yolo requires an explicit operator acknowledgement", () => {
+    const result = ProvisioningSchema.safeParse(
+      provisioning({
+        harnesses: {
+          "personal-unsafe": harness({
+            runner: {
+              type: "codex",
+              cli_path: "codex",
+              args: [],
+              env: {},
+              approval_mode: "yolo",
+            },
+          }),
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      "acknowledge_dangerous",
+    );
+  });
+
+  test("rejects Codex-only policy fields on another harness type", () => {
+    const result = ProvisioningSchema.safeParse(
+      provisioning({
+        harnesses: {
+          claude: harness({
+            runner: {
+              type: "claude-code",
+              cli_path: "claude",
+              args: [],
+              env: {},
+              acknowledge_dangerous: true,
+              approval_mode: "yolo",
+            },
+          }),
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain("approval_mode");
+  });
+
+  test("rejects a raw Codex bypass flag in harness args", () => {
+    const result = ProvisioningSchema.safeParse(
+      provisioning({
+        harnesses: {
+          "personal-unsafe": harness({
+            runner: {
+              type: "codex",
+              cli_path: "codex",
+              args: ["--dangerously-bypass-approvals-and-sandbox"],
+              env: {},
+              approval_mode: "yolo",
+              acknowledge_dangerous: true,
+            },
+          }),
+        },
+      }),
+    );
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.error?.issues)).toContain(
+      "approval_mode: yolo",
     );
   });
 

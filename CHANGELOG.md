@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.19] - 2026-08-09
+
+### Added
+
+- **Operator-gated managed Codex harnesses.** A provisioned `codex` harness
+  can now carry its operator-owned approval and sandbox policy into the real
+  runner configuration. `approval_mode: yolo` requires an explicit
+  acknowledgement, and the raw bypass flag cannot be smuggled through harness
+  arguments. Harnesses may set `enabled: false`, which refuses Desktop create
+  and update requests before projection; this supports an explicit
+  default-off, shared-trust personal-Codex mode.
+
 ## [2.0.0-rc.18] - 2026-08-09
 
 ### Fixed

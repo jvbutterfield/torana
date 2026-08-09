@@ -770,6 +770,11 @@ Each harness entry owns the binary path, the argv _shape_, and the base
 environment. Desktop supplies only values for placeholders the operator already
 wrote, so a payload can never add an argv element or an env key:
 
+Each harness may also set `enabled: false`. A disabled harness stays in the
+operator configuration but is refused before any Desktop request can create or
+update an agent through it. This supports a preconfigured, default-off
+high-risk harness.
+
 ```yaml
 provisioning:
   max_agents: 8
@@ -812,6 +817,49 @@ requested and applied values are reported in the deploy result. `type:
 claude-code` requires `acknowledge_dangerous: true` for the same reason a YAML
 runner does — every turn runs unsandboxed in the agent's workspace, and a
 provisioned agent does not get a quieter deal than one you wrote by hand.
+
+#### Optional shared-trust Codex harness
+
+There is deliberately no managed-Codex harness in the default deployment. If
+you operate a single-owner gateway and accept that a managed Codex agent can
+read and modify data available to the Torana process (including other managed
+workspaces and service credentials), you may explicitly add this **unsafe**
+harness and redeploy:
+
+```yaml
+personal-unsafe:
+  enabled: ${TORANA_MANAGED_CODEX_ENABLED:-false}
+  runner:
+    type: codex
+    cli_path: /app/deploy/bin/managed-agent-codex
+    args: ["--model", "{model}"]
+    env:
+      HOME: /home/node
+      CODEX_HOME: /data/state/codex-config/managed/{agent_id}
+      TORANA_MANAGED_SYSTEM_PROMPT: "{system_prompt}"
+      CODEX_DISABLE_AUTOUPDATER: "1"
+    approval_mode: yolo
+    acknowledge_dangerous: true
+  defaults:
+    model: gpt-5.5
+  ceilings:
+    turn_timeout_secs: 3600
+    idle_timeout_secs: 86400
+    max_turn_duration_secs: 3600
+```
+
+`approval_mode: yolo` is intentionally the only execution mode for this
+opt-in: it invokes Codex with its approval and sandbox bypass. It is **not an
+isolation boundary** and is unsuitable for multiple owners or untrusted
+prompts. Omit the harness to disable remote managed Codex creation entirely.
+Desktop cannot enable it, select `yolo`, or add arbitrary runner flags; it can
+only request this already-allowlisted harness by name. Torana rejects a yolo
+harness without `acknowledge_dangerous: true`, and rejects placing Codex's raw
+bypass flag in `args` so that acknowledgement cannot be sidestepped.
+
+The image-side wrapper is responsible for loading the supplied system prompt
+from `TORANA_MANAGED_SYSTEM_PROMPT` into this agent's `CODEX_HOME` and for
+linking its OAuth state. It must fail closed when that auth state is missing.
 
 **Adding a harness is a gateway config change and needs a redeploy.** Torana has
 no config hot-reload. This is the one documented exception to "no Railway-side

@@ -477,6 +477,17 @@ const HarnessRunnerTemplateSchema = z
      * refuses to set this on the operator's behalf.
      */
     acknowledge_dangerous: Bool.default(false),
+    /**
+     * Codex-only execution policy. These remain operator-owned harness
+     * settings: a Desktop provisioning request can choose a harness name but
+     * cannot choose its approval or sandbox policy.
+     */
+    approval_mode: z
+      .enum(["untrusted", "on-request", "never", "full-auto", "yolo"])
+      .optional(),
+    sandbox: z
+      .enum(["read-only", "workspace-write", "danger-full-access"])
+      .optional(),
   })
   .strict()
   .superRefine((runner, ctx) => {
@@ -511,6 +522,35 @@ const HarnessRunnerTemplateSchema = z
           "harness runner type 'claude-code' requires acknowledge_dangerous: true — every turn runs unsandboxed in the agent's workspace",
       });
     }
+    for (const field of ["approval_mode", "sandbox"] as const) {
+      if (runner.type !== "codex" && runner[field] !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: `${field} applies only to type 'codex', not '${runner.type}'`,
+        });
+      }
+    }
+    if (runner.type === "codex") {
+      if (runner.approval_mode === "yolo" && !runner.acknowledge_dangerous) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["acknowledge_dangerous"],
+          message:
+            "codex approval_mode: yolo requires acknowledge_dangerous: true — it bypasses Codex approvals and sandboxing",
+        });
+      }
+      for (const [index, arg] of runner.args.entries()) {
+        if (arg === "--dangerously-bypass-approvals-and-sandbox") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["args", index],
+            message:
+              "Codex yolo must be declared with approval_mode: yolo, not passed through args; this keeps the acknowledgement gate enforceable",
+          });
+        }
+      }
+    }
   });
 
 const HarnessCeilingsSchema = z
@@ -523,6 +563,8 @@ const HarnessCeilingsSchema = z
 
 const HarnessSchema = z
   .object({
+    /** Operator kill switch for one named harness. */
+    enabled: Bool.default(true),
     runner: HarnessRunnerTemplateSchema,
     defaults: z
       .object({ model: z.string().min(1).optional() })
