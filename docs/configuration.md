@@ -32,8 +32,8 @@ platforms:
   buzz:
     enabled: true
     cli_path: buzz
-    # Exact checksum of the pinned Buzz 0.5.8 binary in this image/host.
-    cli_sha256: 1854298e0a9f7ac8b8a6395b2b7411cb7fbd937a8643cd9c49584f1d9da5351d
+    # Exact checksum of the pinned Buzz 0.5.9 binary in this image/host.
+    cli_sha256: 909c7eb4c4e5f4978d404cb98ad176d2ea4f76253b56c06ae8f802b78295a5bb
     message_max_bytes: 65536
     max_frame_bytes: 524288
 
@@ -143,6 +143,11 @@ commands fail closed. A channel
 operation is denied when the bound endpoint is not a member, and message edits
 or deletes are limited to events authored by that endpoint.
 
+Changing a channel's visibility (`channels.update` with `visibility`) can expose
+a private channel. It is therefore denied to the standard `maintainer` profile
+and requires a `custom` policy that explicitly allows `channels.update` plus
+`acknowledge_dangerous: true`.
+
 The escape hatch `expose_private_key_to_runner: true` requires both an explicit
 `default_endpoint_id` and `acknowledge_dangerous: true`. It bypasses broker
 policy because the runner can invoke Buzz directly, so use it only inside a
@@ -150,10 +155,10 @@ separately isolated Torana installation.
 
 ### Pinned Buzz CLI installation
 
-The supported command manifest comes from Block Buzz tag `desktop-v0.5.8`,
-commit `f3de860574bb3119018b4592353e9761635aeb07`. On Apple Silicon, the verified
-release archive is `Buzz_0.5.8_aarch64.app.tar.gz` with SHA-256
-`67464b0ccd8a0b0cb305348f56f374354c60df50b9cbfb12b013549ea72601e3`;
+The supported command manifest comes from Block Buzz tag `desktop-v0.5.9`,
+commit `ee33722615ca1e7b8efb03e2ed641d99448c8899`. On Apple Silicon, the verified
+release archive is `Buzz_0.5.9_aarch64.app.tar.gz` with SHA-256
+`65bbb86f5cc82acc1645d3772847fd48f0f9a956539621e2fc0e7237c64900b8`;
 the bundled `buzz` executable has the default checksum shown above.
 
 For Linux images, build `buzz-cli` from that exact tag with the committed
@@ -549,14 +554,14 @@ doesn't match what the auth tag attests. See
 Grants this agent's runner a brokered Buzz capability. The runner receives a
 short-lived, endpoint-scoped token — not the private key.
 
-| Key                            | Type                                         | Default | Notes                                                        |
-| ------------------------------ | -------------------------------------------- | ------- | ------------------------------------------------------------ |
-| `policy`                       | `read_only\|collaborate\|maintainer\|custom` | —       | Command tier                                                 |
-| `allowed_commands[]`           | string[]                                     | —       | Required for `custom`; each must be a known command path     |
-| `acknowledge_dangerous`        | bool                                         | `false` | Required to allow a destructive command in `custom`          |
-| `default_endpoint_id`          | string                                       | —       | Which identity the runner publishes as                       |
-| `allowed_endpoint_ids[]`       | string[]                                     | —       | Bounds identity selection                                    |
-| `expose_private_key_to_runner` | bool                                         | `false` | Removes broker enforcement. See [`security.md`](security.md) |
+| Key                            | Type                                         | Default | Notes                                                         |
+| ------------------------------ | -------------------------------------------- | ------- | ------------------------------------------------------------- |
+| `policy`                       | `read_only\|collaborate\|maintainer\|custom` | —       | Command tier                                                  |
+| `allowed_commands[]`           | string[]                                     | —       | Required for `custom`; each must be a known command path      |
+| `acknowledge_dangerous`        | bool                                         | `false` | Required for dangerous custom commands and channel visibility |
+| `default_endpoint_id`          | string                                       | —       | Which identity the runner publishes as                        |
+| `allowed_endpoint_ids[]`       | string[]                                     | —       | Bounds identity selection                                     |
+| `expose_private_key_to_runner` | bool                                         | `false` | Removes broker enforcement. See [`security.md`](security.md)  |
 
 ### `publishers[]`
 

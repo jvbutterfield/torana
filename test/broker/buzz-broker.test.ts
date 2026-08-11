@@ -247,6 +247,62 @@ describe("Buzz credential broker", () => {
     expect(spawns).toBe(0);
   });
 
+  test("gates channel visibility changes behind an explicit dangerous custom policy", async () => {
+    let spawns = 0;
+    const spawnCli = async () => {
+      spawns += 1;
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    const allowedOptions = async () => new Set(["channel", "visibility"]);
+    const request = {
+      group: "channels",
+      command: "update",
+      options: { channel: CHANNEL, visibility: "open" },
+    } as const;
+
+    const maintainer = setup({
+      policy: "maintainer",
+      spawnCli,
+      allowedOptions,
+    });
+    expect(
+      (await maintainer.broker.execute(issue(maintainer.broker).token, request))
+        .error,
+    ).toContain("requires policy: custom");
+
+    const unacknowledged = setup({
+      policy: "custom",
+      allowedCommands: ["channels.update"],
+      spawnCli,
+      allowedOptions,
+    });
+    expect(
+      (
+        await unacknowledged.broker.execute(
+          issue(unacknowledged.broker).token,
+          request,
+        )
+      ).error,
+    ).toContain("acknowledge_dangerous: true");
+
+    const acknowledged = setup({
+      policy: "custom",
+      allowedCommands: ["channels.update"],
+      acknowledgeDangerous: true,
+      spawnCli,
+      allowedOptions,
+    });
+    expect(
+      (
+        await acknowledged.broker.execute(
+          issue(acknowledged.broker).token,
+          request,
+        )
+      ).ok,
+    ).toBe(true);
+    expect(spawns).toBe(1);
+  });
+
   test("enforces membership and endpoint-owned edit/delete targets", async () => {
     const foreign = finalizeEvent(
       {

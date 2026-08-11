@@ -1,13 +1,13 @@
 {
   "capturedAt": "2026-08-06",
-  "reverifiedAt": "2026-08-08",
+  "reverifiedAt": "2026-08-10",
   "purpose": "Pin the exact wire shape of Buzz Desktop's remote-agent Stop so Torana's matcher is written against the implementation rather than an assumption.",
   "source": {
     "repository": "https://github.com/block/buzz",
-    "tag": "desktop-v0.5.8",
-    "commit": "f3de860574bb3119018b4592353e9761635aeb07",
+    "tag": "desktop-v0.5.9",
+    "commit": "ee33722615ca1e7b8efb03e2ed641d99448c8899",
     "method": "read from the pinned source tree; not a live GUI capture",
-    "reverification": "0.5.5 -> 0.5.6: three of the four cited files had different blobs, so every assertion was re-read at the new commit rather than carried over. All three held verbatim; the files had moved for unrelated reasons. 0.5.6 -> 0.5.7: all four cited files are byte-identical (blob SHA compared at each tag), so this re-point carries no assertion risk. 0.5.7 -> 0.5.8: three of the four are byte-identical; crates/buzz-acp/src/lib.rs changed (65c9dd6203c2 -> b69a1f453a51), so its assertion was re-read at the new tag rather than carried over. The whole lib.rs delta is two test-module fixture lines renaming config::PermissionMode::DontAsk -> BypassPermissions; is_owner_control_command itself is byte-identical (block SHA-256 59337c25f8cb at both tags) and the assertion below holds verbatim. Verify by blob SHA, never by a compare file list — GitHub caps that list at 300 entries and a truncated list silently reads as 'unchanged'.",
+    "reverification": "0.5.5 -> 0.5.6: three of the four cited files had different blobs, so every assertion was re-read at the new commit rather than carried over. All three held verbatim; the files had moved for unrelated reasons. 0.5.6 -> 0.5.7: all four cited files are byte-identical (blob SHA compared at each tag), so this re-point carries no assertion risk. 0.5.7 -> 0.5.8: three of the four are byte-identical; crates/buzz-acp/src/lib.rs changed (65c9dd6203c2 -> b69a1f453a51), so its assertion was re-read at the new tag rather than carried over. The whole lib.rs delta is two test-module fixture lines renaming config::PermissionMode::DontAsk -> BypassPermissions; is_owner_control_command itself is byte-identical (block SHA-256 59337c25f8cb at both tags) and the assertion below holds verbatim. 0.5.8 -> 0.5.9: the Desktop sender files and buzz-core kind source are byte-identical; buzz-acp/src/lib.rs changed for agent usage and control-signal work, so is_owner_control_command and its owner-gated caller were re-read at ee33722615ca1e7b8efb03e2ed641d99448c8899 and retain the exact kind-9, trimmed-content, p-tag, and resolved-owner contract. Verify by blob SHA, never by a compare file list — GitHub caps that list at 300 entries and a truncated list silently reads as 'unchanged'.",
     "citations": [
       {
         "path": "desktop/src/features/agents/lib/managedAgentControlActions.ts",

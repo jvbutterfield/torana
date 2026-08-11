@@ -12,7 +12,7 @@
  *
  * The tombstone is built wire-identical to upstream `build_agent_delete`
  * (`desktop/src-tauri/src/managed_agents/agent_events.rs`, verified
- * byte-identical at `desktop-v0.5.8`): kind 5, empty content, exactly one `a`
+ * byte-identical through `desktop-v0.5.9`): kind 5, empty content, exactly one `a`
  * tag `30177:<owner>:<agent>`, and no `e` tag. Identities are generated fresh
  * per run, so the coordinate names an agent that has never existed and the
  * probe cannot affect a real managed-agent record.

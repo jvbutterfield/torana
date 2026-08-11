@@ -40,6 +40,7 @@ import {
 } from "../platform/buzz/protocol.js";
 import type { ConversationRef } from "../platform/types.js";
 import {
+  assertBuzzOptionPolicy,
   buzzCommandPath,
   isKnownBuzzCommand,
   isReadOnlyBuzzCommand,
@@ -378,6 +379,12 @@ export class BuzzCredentialBroker {
       if (!allowed.has(commandPath)) {
         throw new Error(`Buzz command '${commandPath}' is denied by policy`);
       }
+      assertBuzzOptionPolicy({
+        commandPath,
+        optionNames: Object.keys(request.options ?? {}),
+        profile: tools.policy,
+        acknowledgeDangerous: tools.acknowledgeDangerous,
+      });
       const allowedOptions = await this.allowedOptions(commandPath);
       for (const name of Object.keys(request.options ?? {})) {
         if (!allowedOptions.has(name)) {
