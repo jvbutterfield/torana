@@ -6,6 +6,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [2.0.0-rc.20] - 2026-08-10
+
+### Changed
+
+- The pinned Buzz CLI moved from `desktop-v0.5.8` to `desktop-v0.5.9`
+  (commit `ee33722615ca1e7b8efb03e2ed641d99448c8899`, Apple-silicon release
+  asset `509364738`). The default `platforms.buzz.cli_sha256` is now
+  `909c7eb4c4e5f4978d404cb98ad176d2ea4f76253b56c06ae8f802b78295a5bb` and
+  doctor C024 names Buzz 0.5.9.
+
+  The generated command manifest has no command-path changes. Buzz 0.5.9 adds
+  `--visibility` to the existing `channels update` command. Since that can make
+  a private channel open, Torana now denies the option to its standard
+  `maintainer` policy: it requires an explicit custom `channels.update` grant
+  and `acknowledge_dangerous: true`.
+
+  The Desktop remote-agent deploy and delete paths are unchanged. The local ACP
+  harness adds agent-usage accounting and control-signal work, but Torana does
+  not use that harness; the changed owner-stop source was re-read and retains
+  the pinned exact kind-9, trimmed `!shutdown`, mention, and owner checks.
+
 ## [2.0.0-rc.19] - 2026-08-09
 
 ### Added

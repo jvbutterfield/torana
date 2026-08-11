@@ -169,7 +169,7 @@ and identity env is Torana-owned, so `env_vars`, `launch.env`, and `policy_env`
 are all reported not-applied. Reserved identity keys are still refused loudly
 rather than dropped. Endpoint-only deploys against a YAML agent are unaffected.
 
-Wire contract pinned against Buzz Desktop `desktop-v0.5.8`.
+Wire contract pinned against Buzz Desktop `desktop-v0.5.9`.
 
 ## Deleting a Desktop-managed agent
 

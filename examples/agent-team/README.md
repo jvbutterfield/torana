@@ -4,7 +4,7 @@ This template shows three isolated personas with one Telegram and one Buzz
 endpoint each. Replace the names and workspaces with your actual team. It
 contains no credential values.
 
-The template pins the Buzz CLI binary from Block Buzz `desktop-v0.5.8` by its
+The template pins the Buzz CLI binary from Block Buzz `desktop-v0.5.9` by its
 verified executable SHA-256. Pin the Torana package or container by exact
 `2.0.0` version and image digest only after the release gates in
 `docs/release-readiness.md` are complete; do not deploy a floating tag.

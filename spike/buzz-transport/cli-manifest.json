@@ -7,7 +7,7 @@
     "stdout": "",
     "stderr": "{\"error\":\"user_error\",\"message\":\"error: unexpected argument '--version' found\\n\\nUsage: buzz [OPTIONS] <COMMAND>\\n\\nFor more information, try '--help'.\\n\",\"retryable\":false}"
   },
-  "sha256": "1854298e0a9f7ac8b8a6395b2b7411cb7fbd937a8643cd9c49584f1d9da5351d",
+  "sha256": "909c7eb4c4e5f4978d404cb98ad176d2ea4f76253b56c06ae8f802b78295a5bb",
   "commands": [
     {
       "command": "agents",

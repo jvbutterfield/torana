@@ -122,6 +122,29 @@ export const DANGEROUS_BUZZ_COMMANDS = new Set([
   "workflows.approve",
 ]);
 
+/**
+ * Options whose capability impact is materially broader than the command's
+ * pre-existing use. `channels.update --visibility open` can expose a private
+ * channel, so it must not arrive through the general maintainer allowance.
+ */
+export function assertBuzzOptionPolicy(args: {
+  commandPath: string;
+  optionNames: Iterable<string>;
+  profile: BuzzPolicyProfile;
+  acknowledgeDangerous?: boolean;
+}): void {
+  const optionNames = new Set(args.optionNames);
+  if (
+    args.commandPath === "channels.update" &&
+    optionNames.has("visibility") &&
+    (args.profile !== "custom" || !args.acknowledgeDangerous)
+  ) {
+    throw new Error(
+      "Buzz option '--visibility' requires policy: custom and acknowledge_dangerous: true",
+    );
+  }
+}
+
 export function knownBuzzCommands(): string[] {
   return [...commandPaths].sort();
 }
@@ -175,9 +198,9 @@ export function buzzCommandPath(input: {
 }
 
 export const BUZZ_CLI_PIN = Object.freeze({
-  applicationVersion: "0.5.8",
-  tag: "desktop-v0.5.8",
-  commit: "f3de860574bb3119018b4592353e9761635aeb07",
+  applicationVersion: "0.5.9",
+  tag: "desktop-v0.5.9",
+  commit: "ee33722615ca1e7b8efb03e2ed641d99448c8899",
   sha256: manifest.sha256,
   manifestSchemaVersion: manifest.schemaVersion,
 });
