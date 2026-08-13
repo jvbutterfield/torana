@@ -22,7 +22,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # A tagged release attaches the provider binaries to the matching GitHub
+      # Release after npm publication. Manual dry-runs remain artifact-only.
+      contents: write
       id-token: write
     steps:
       # fetch-depth: 0 so the on-main check below can compute merge-base. A
@@ -122,15 +124,21 @@ jobs:
             --outfile dist-provider/linux-x64/buzz-backend-torana
       - name: Checksum provider binaries
         run: |
-          cd dist-provider
-          find . -type f -name 'buzz-backend-torana' -print0 \
-            | xargs -0 sha256sum > SHA256SUMS
-          cat SHA256SUMS
+          mkdir release-provider
+          cp dist-provider/darwin-arm64/buzz-backend-torana \
+            release-provider/buzz-backend-torana-darwin-arm64
+          cp dist-provider/linux-x64/buzz-backend-torana \
+            release-provider/buzz-backend-torana-linux-x64
+          (
+            cd release-provider
+            sha256sum buzz-backend-torana-* > SHA256SUMS
+            cat SHA256SUMS
+          )
       - name: Upload provider binaries
         uses: actions/upload-artifact@v4
         with:
           name: buzz-backend-torana
-          path: dist-provider/
+          path: release-provider/
           if-no-files-found: error
 
       # Compute the npm dist-tag: prerelease versions (anything with a `-`
@@ -167,3 +175,16 @@ jobs:
       - name: Publish to npm
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run == false }}
         run: npm publish --provenance --access public --tag ${{ steps.tag.outputs.dist_tag }}
+
+      # The provider README directs operators to the GitHub Release, not an
+      # expiring Actions artifact. Publish only after npm has succeeded so a
+      # downloadable provider always corresponds to a released package.
+      - name: Publish provider release assets
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-provider/* \
+            --verify-tag \
+            --title "Torana $GITHUB_REF_NAME" \
+            --generate-notes

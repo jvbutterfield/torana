@@ -40,12 +40,26 @@ back on its own after one.
 
 ## Install
 
-Download the release artifact for your platform, verify its checksum against the
-published `SHA256SUMS`, and put it on your `PATH`:
+From the GitHub Release matching your Torana version, download the provider
+binary for your platform and `SHA256SUMS`. Verify the binary before putting it
+on your `PATH`:
+
+macOS (Apple silicon):
 
 ```sh
-sha256sum -c SHA256SUMS
-install -m 0755 buzz-backend-torana ~/.local/bin/buzz-backend-torana
+asset=buzz-backend-torana-darwin-arm64
+grep -F "  $asset" SHA256SUMS | shasum -a 256 -c -
+mkdir -p ~/.local/bin
+install -m 0755 "$asset" ~/.local/bin/buzz-backend-torana
+```
+
+Linux x64:
+
+```sh
+asset=buzz-backend-torana-linux-x64
+grep -F "  $asset" SHA256SUMS | sha256sum -c -
+mkdir -p ~/.local/bin
+install -m 0755 "$asset" ~/.local/bin/buzz-backend-torana
 ```
 
 macOS (Apple silicon) and Linux x64 are the supported targets. **Windows is not
